@@ -1,0 +1,8 @@
+{
+  "_comment": "Dashboard OIDC relying-party config. Config-mirrored to kv _config/oidc/rp/default on deploy; oidc.rp('default') falls back to it (engine: oidc.js). Declarative so a wipe self-heals — no hand-seed needed. operator allowlist (_admin/operator/*) stays in kv (dynamic), not here.",
+  "issuer": "https://auth.rewindjs.com",
+  "client_id": "admin-dashboard",
+  "redirect_uri": "https://app.rewindjs.com/_rp/callback",
+  "post_login": "/",
+  "operator_prefix": "_admin/operator/"
+}
