@@ -282,10 +282,13 @@ export const api = {
 
   /// Flip the live deployment pointer. `dep_id` is the hex string from
   /// `deploy`. Ownership-gated server-side (publishRelease — step3 B5).
-  /// The worker proposes the release through raft.
+  /// The worker proposes the release through raft. Pass the hex string straight
+  /// through — sha256-derived dep_ids exceed 2^53, so converting to a JS number
+  /// (parseInt) would round and release the wrong manifest. publishRelease
+  /// parses the hex string to an exact u64.
   releaseDeployment(instance_id, dep_id) {
-    const n = typeof dep_id === "string" ? parseInt(dep_id, 16) : dep_id;
-    return rest("POST", "/v1/instances/" + seg(instance_id) + "/release", { dep_id: n });
+    const hex = typeof dep_id === "string" ? dep_id : dep_id.toString(16);
+    return rest("POST", "/v1/instances/" + seg(instance_id) + "/release", { dep_id: hex });
   },
 
   /// High-level helper: deploy a bundle then release it. Returns the

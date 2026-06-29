@@ -151,10 +151,23 @@ export function publishRelease(instance_id, dep_id) {
         response.status = 400;
         return { error: "invalid instance_id" };
     }
-    const n = parseInt(dep_id, 10);
-    if (!Number.isFinite(n) || n < 1) {
-        response.status = 400;
-        return { error: "dep_id must be a positive integer" };
+    // dep_id rides as a HEX STRING (the form `deploy` returns) — sha256-derived
+    // dep_ids exceed 2^53, so a JSON number would round at parse time and release
+    // the wrong manifest. The engine parses the hex string to an exact u64. A
+    // number is still accepted for legacy callers (lossy above 2^53).
+    let dep;
+    if (typeof dep_id === "string") {
+        if (!/^[0-9a-fA-F]{1,16}$/.test(dep_id)) {
+            response.status = 400;
+            return { error: "dep_id must be a hex u64" };
+        }
+        dep = dep_id;
+    } else {
+        if (!Number.isFinite(dep_id) || dep_id < 1) {
+            response.status = 400;
+            return { error: "dep_id must be a positive integer" };
+        }
+        dep = dep_id;
     }
     const auth = request.auth || {};
     if (!auth.sub) return jsonError(401, "unauthenticated");
@@ -162,7 +175,7 @@ export function publishRelease(instance_id, dep_id) {
         return jsonError(403, "not your instance");
     }
     try {
-        platform.releases.publish(instance_id, n);
+        platform.releases.publish(instance_id, dep);
     } catch (e) {
         if (e && e.code === "InstanceNotFound") {
             response.status = 404;
@@ -171,7 +184,7 @@ export function publishRelease(instance_id, dep_id) {
         throw e;
     }
     response.status = 202;
-    return { instance_id: instance_id, dep_id: n, status: "queued" };
+    return { instance_id: instance_id, dep_id: dep, status: "queued" };
 }
 
 // ── OIDC relying-party surface (auth-domain-plan §4.7 "3-6 part 2")
@@ -660,6 +673,17 @@ export function onFetchResult() {
         response.status = request.status;
         return new TextDecoder().decode(request.body || new Uint8Array());
     }
+    // Relay the real upstream status when the door returned one — a CP 409
+    // (provision: already placed, idempotent) or 421/503 (leader transient)
+    // must reach the CLI so it can act on it (continue / retry) instead of
+    // being flattened. Only a genuine door/transport failure (no upstream
+    // status) becomes 502. The dashboard already treats any non-2xx as an
+    // error (api.js throws ApiError on res.status), so this is strictly more
+    // informative for both callers.
+    if (request.status && request.status >= 400) {
+        response.status = request.status;
+        return new TextDecoder().decode(request.body || new Uint8Array());
+    }
     response.status = 502;
     return JSON.stringify({ error: "internal door fetch failed",
                             status: request.status || 0 });
@@ -861,6 +885,47 @@ function finishSources(dep, entries, sources) {
     return JSON.stringify({ ok: true, dep_id: dep, entries: out });
 }
 
+// ── Deployment history (deployments list + rollback support) ────────
+//
+// Lists a tenant's release history from the per-tenant `_release/{ts_ms:020}` →
+// `{dep_id:016x}` log (worker_dispatch stamps one on every release) plus the
+// live pointer `_deploy/current`. Composable — reads via `platform.scope(t).kv`,
+// no engine change (rewind-cli-plan §2 "deployments/rollback were blocked: no
+// read endpoint"). Powers `rewind deployments <t>`; `rewind rollback` is just a
+// publishRelease at an older dep_id. Authz mirrors deploy/release: operator
+// (is_root) any tenant; a customer only their own.
+function handleHistory(tenant) {
+    const auth = request.auth || {};
+    if (!auth.sub) return jsonError(401, "unauthenticated");
+    if (!validId(tenant)) return jsonError(400, "invalid tenant");
+    if (!auth.is_root &&
+        ownedInstances(accountHashFor(auth.sub)).indexOf(tenant) === -1) {
+        return jsonError(403, "not your instance");
+    }
+    const sk = platform.scope(tenant).kv;
+    let curHex;
+    try { curHex = sk.get("_deploy/current"); }
+    catch (e) { return jsonError(404, "instance not found"); }
+    // `_release/{ts_ms:020}` keys are lex-ascending by timestamp; reverse for
+    // newest-first. Release cadence is low, so a 1000-row cap is generous.
+    const rows = sk.prefix("_release/", "", 1000);
+    const releases = rows.map(function (row) {
+        const depHex = row.value;
+        return {
+            ts_ms: parseInt(row.key.slice("_release/".length), 10),
+            dep_id: parseInt(depHex, 16),
+            dep_hex: depHex,
+            live: !!curHex && depHex === curHex,
+        };
+    }).reverse();
+    return {
+        tenant: tenant,
+        current: curHex ? parseInt(curHex, 16) : null,
+        current_hex: curHex || null,
+        releases: releases,
+    };
+}
+
 // ── REST router ─────────────────────────────────────────────────────
 //
 // One declarative table IS the whole admin surface: METHOD + path pattern →
@@ -914,6 +979,8 @@ const ROUTES = [
     ["POST",   "/v1/deploy/reset",              "open",          (c) => handleWsReset(c.rawBody || "{}")],
     ["POST",   "/v1/deploy/file",               "open",          (c) => handleWsFile(c.rawBody || "{}")],
     ["POST",   "/v1/deploy/cut",                "open",          (c) => handleWsCut(c.rawBody || "{}")],
+    // deployment history (handler enforces ownership) — /v1/history/{tenant}
+    ["GET",    "/v1/history/:id",               "self",          (c) => handleHistory(c.params.id)],
     // log query door (handler enforces is_root) — /v1/logs/{tenant}/{list|count|show/{id}}
     ["GET",    "/v1/logs/*",                    "self",          (c) => handleLogQuery(c.path, c.qs)],
     // source read door (handler enforces canAccess) — /v1/sources/{tenant}/{dep}
