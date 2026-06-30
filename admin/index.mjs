@@ -2,13 +2,16 @@ function validId(id) {
     return typeof id === "string" && /^[A-Za-z0-9_-]{1,64}$/.test(id);
 }
 
+// Operator sees every tenant; a customer sees only the tenants of the accounts
+// they belong to (was: ALL tenants leaked to any authenticated session).
 export function listInstance() {
-    const entries = platform.root.prefix("instance/", "", 1000);
-    return {
-        instances: entries.map((e) => ({
-            id: e.key.slice("instance/".length),
-        })),
-    };
+    const a = request.auth || {};
+    if (a.is_root) {
+        const entries = platform.root.prefix("instance/", "", 1000);
+        return { instances: entries.map((e) => ({ id: e.key.slice("instance/".length) })) };
+    }
+    if (!a.sub) { response.status = 401; return { error: "unauthenticated" }; }
+    return { instances: accessibleInstances(accountHashFor(a.sub)).map((id) => ({ id })) };
 }
 
 export function getInstance(id) {
@@ -27,6 +30,13 @@ export function createInstance(id) {
 
 export function deleteInstance(id) {
     if (!validId(id)) { response.status = 400; return { error: "invalid id" }; }
+    // Clean up the ownership overlay before dropping the routing row, so we don't
+    // orphan the account marker / reverse pointer (a pre-teams leak too).
+    const aid = kv.get("instance/" + id + "/owner");
+    if (aid !== null) {
+        kv.delete("account/" + aid + "/instances/" + id);
+        kv.delete("instance/" + id + "/owner");
+    }
     platform.root.delete("instance/" + id);
     const doms = platform.root.prefix("domain/", "", 1000);
     for (let i = 0; i < doms.length; i++) {
@@ -61,19 +71,14 @@ export function assignDomain(host, instance_id) {
     return { host: host, instance_id: instance_id };
 }
 
-// X-Rove-Scope no longer rebinds the global `kv` (that conflated
-// "which principal" with "which store" and made auth impossible to
-// validate in a scoped dispatch — auth-domain-plan §4.7 "Primitive-
-// fix pivot"). `kv` is now ALWAYS __admin__-home. A scoped KV browse
-// reaches the target explicitly via the `platform.scope(id).kv`
-// control-plane accessor; an unscoped browse uses __admin__'s own kv.
-// Returns the kv-like store, or null after stamping a 4xx (unknown
-// instance → 404, mirroring the old dispatch-level behavior).
-function scopedKvStore() {
-    const tgt = request.headers["x-rove-scope"];
-    if (!tgt || tgt.length === 0) return kv;
+// Per-tenant KV browse. The instance id comes from the route
+// (`/v1/instances/:id/kv`) — `kv` (the global) is ALWAYS __admin__-home, so a
+// scoped browse reaches the target explicitly via `platform.scope(id).kv`.
+// __admin__'s own kv is reached by id `__admin__` (operator-gated via canAccess,
+// is_root bypass). Returns the store, or null after stamping a 404.
+function kvStoreFor(id) {
     try {
-        return platform.scope(tgt).kv;
+        return platform.scope(id).kv;
     } catch (e) {
         if (e && e.code === "InstanceNotFound") {
             response.status = 404;
@@ -83,58 +88,43 @@ function scopedKvStore() {
     }
 }
 
-export function listKv(prefix, cursor, limit) {
-    const store = scopedKvStore();
+// GET /v1/instances/:id/kv — `?key=` for a single value, else a prefix list
+// (`?prefix=&cursor=&limit=`).
+function kvRead(id, q) {
+    const store = kvStoreFor(id);
     if (store === null) return { error: "unknown instance" };
-    const p = prefix || "";
-    const c = cursor || "";
-    const l = Math.max(1, Math.min(parseInt(limit ?? 100, 10) || 100, 1000));
+    if (q.key) {
+        const v = store.get(q.key);
+        if (v === null) { response.status = 404; return { error: "not found" }; }
+        return v;
+    }
+    const p = q.prefix || "";
+    const c = q.cursor || "";
+    const l = Math.max(1, Math.min(parseInt(q.limit ?? 100, 10) || 100, 1000));
     const entries = store.prefix(p, c, l);
-    const body = {
-        entries: entries.map((e) => ({ key: e.key, value: e.value })),
-    };
+    const body = { entries: entries.map((e) => ({ key: e.key, value: e.value })) };
     if (entries.length === l && entries.length > 0) {
         body.next_cursor = entries[entries.length - 1].key;
     }
     return body;
 }
 
-export function getKv(key) {
-    if (!key) {
-        response.status = 400;
-        return { error: "missing key" };
-    }
-    const store = scopedKvStore();
-    if (store === null) return { error: "unknown instance" };
-    const v = store.get(key);
-    if (v === null) {
-        response.status = 404;
-        return { error: "not found" };
-    }
-    return v;
-}
-
-export function setKv(key, value) {
-    if (!key) {
-        response.status = 400;
-        return { error: "missing key" };
-    }
+// PUT /v1/instances/:id/kv  {key, value}
+function kvSet(id, key, value) {
+    if (!key) { response.status = 400; return { error: "missing key" }; }
     if (typeof value !== "string") {
-        response.status = 400;
-        return { error: "value must be a string" };
+        response.status = 400; return { error: "value must be a string" };
     }
-    const store = scopedKvStore();
+    const store = kvStoreFor(id);
     if (store === null) return { error: "unknown instance" };
     store.set(key, value);
     return { key: key };
 }
 
-export function deleteKv(key) {
-    if (!key) {
-        response.status = 400;
-        return { error: "missing key" };
-    }
-    const store = scopedKvStore();
+// DELETE /v1/instances/:id/kv?key=
+function kvDelete(id, key) {
+    if (!key) { response.status = 400; return { error: "missing key" }; }
+    const store = kvStoreFor(id);
     if (store === null) return { error: "unknown instance" };
     store.delete(key);
     response.status = 204;
@@ -168,8 +158,7 @@ export function publishRelease(instance_id, dep_id) {
     }
     const auth = request.auth || {};
     if (!auth.sub) return jsonError(401, "unauthenticated");
-    if (!auth.is_root &&
-        ownedInstances(accountHashFor(auth.sub)).indexOf(instance_id) === -1) {
+    if (!auth.is_root && !canAccess(accountHashFor(auth.sub), instance_id)) {
         return jsonError(403, "not your instance");
     }
     try {
@@ -233,29 +222,294 @@ const PLAN_LIMITS = {
     free: { max_instances: 1 },
 };
 
-function accountHashFor(email) { return crypto.sha256(email); }
+// Non-personal (team) accounts a single user may OWN. Pre-billing abuse guard:
+// each free account carries its own free instance, so uncapped team creation
+// would void the per-account limit. Phase 10 billing replaces this with a
+// plan-gated allowance. Operators (is_root) are exempt.
+const MAX_TEAM_ACCOUNTS = 2;
+const INVITE_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
+
+// The account/user hash. ONE normalization point: the IdP lowercases+trims
+// email before it becomes `sub` (auth/index.mjs), so an invite that hashes a
+// user-typed address MUST normalize identically or accept would silently miss.
+// For an already-normalized `sub` this is a no-op (same bytes → same hash), so
+// existing account/{hash}/* rows are unaffected.
+function userHashFor(email) { return crypto.sha256(String(email).trim().toLowerCase()); }
+function accountHashFor(email) { return userHashFor(email); }
 
 function planLimitsFor(accountHash) {
     const plan = kv.get("account/" + accountHash + "/plan") || "free";
     return PLAN_LIMITS[plan] || PLAN_LIMITS.free;
 }
 
-// Owned-instance count for this account. The old "pending
-// reservation" half is gone: provisioning is now synchronous behind
-// a proven-authenticated OIDC session (no unredeemed-reservation
-// abuse vector — the IdP owns the email round-trip).
+// Owned-instance count for an account. Works for ANY account id (personal or
+// team): reads `account/{aid}/instances/`. The old "pending reservation" half
+// is gone: provisioning is synchronous behind a proven OIDC session.
 function ownedInstances(accountHash) {
     return kv.prefix("account/" + accountHash + "/instances/", "", 1000)
         .map((e) => e.key.slice(("account/" + accountHash + "/instances/").length));
 }
 
-// POST ?fn=provisionInstance, args [name]. Identity is the
-// OIDC-verified id_token `sub` the RP guard put on request.auth —
-// NOT a client-supplied field (closes the old signup trust-the-body
-// gap). Creates the tenant + deploys starter + records ownership.
-// Synchronous behind a proven session, so no pending-reservation
-// dance. All account/* rows are __admin__-home kv.
-export function provisionInstance(name) {
+// ── Team account model (membership overlay) ─────────────────────────
+// An "account" is the team / billing entity. A user is a MEMBER of one or more
+// accounts; every user has a permanent personal account whose id IS their own
+// hash (`aid === userHash`). Roles: "owner" | "member". All rows are
+// __admin__-home kv. See the teams plan for the full schema.
+
+// THE authz primitive — is `userHash` an active member of the account that owns
+// `tenant`? O(1): at most two kv.get on one store, no scans.
+function canAccess(userHash, tenant) {
+    const aid = kv.get("instance/" + tenant + "/owner");
+    if (aid !== null) {
+        const role = kv.get("account/" + aid + "/members/" + userHash);
+        return role === "owner" || role === "member"; // NOT "invited:*"
+    }
+    // LEGACY FALLBACK until the reverse pointer is backfilled: only the legacy
+    // owner's own marker exists, so this grants exactly the pre-teams set (owner
+    // only) — membership can't leak here (it needs instance/{id}/owner set).
+    return kv.get("account/" + userHash + "/instances/" + tenant) !== null;
+}
+
+function roleInAccount(aid, userHash) {
+    return kv.get("account/" + aid + "/members/" + userHash); // "owner"|"member"|"invited:member"|null
+}
+function isActiveMember(aid, userHash) {
+    const r = roleInAccount(aid, userHash);
+    return r === "owner" || r === "member";
+}
+
+// The account ids a user actively belongs to (reverse index), personal always
+// included even pre-backfill.
+function accountsForUser(userHash) {
+    const accts = kv.prefix("user/" + userHash + "/accounts/", "", 1000)
+        .map((e) => e.key.slice(("user/" + userHash + "/accounts/").length));
+    if (accts.indexOf(userHash) === -1) accts.push(userHash);
+    return accts;
+}
+
+// Union of instances across every account the user can reach (dedup).
+function accessibleInstances(userHash) {
+    const seen = {}, out = [];
+    for (const aid of accountsForUser(userHash))
+        for (const id of ownedInstances(aid))
+            if (!seen[id]) { seen[id] = 1; out.push(id); }
+    return out;
+}
+
+// Idempotent lazy migration: materialize this user's personal account + backfill
+// instance→owner pointers for tenants they already own. Set-if-absent, so it's a
+// no-op after the first call. Called from handleSession + provisionInstance.
+function backfillSelf(userHash, email) {
+    if (kv.get("account/" + userHash + "/members/" + userHash) === null) {
+        kv.set("account/" + userHash + "/members/" + userHash, "owner");
+        kv.set("user/" + userHash + "/accounts/" + userHash, "owner");
+        if (email) kv.set("account/" + userHash + "/email/" + userHash, email);
+    }
+    for (const id of ownedInstances(userHash))
+        if (kv.get("instance/" + id + "/owner") === null)
+            kv.set("instance/" + id + "/owner", userHash);
+}
+
+// Active owners of an account (drives the last-owner guard).
+function ownerCount(aid) {
+    return kv.prefix("account/" + aid + "/members/", "", 1000)
+        .filter((e) => e.value === "owner").length;
+}
+
+// A personal account's id IS its owner's hash, so it has a member row keyed by
+// the aid itself; a team account (aid = sha256(uuid)) never does.
+function isPersonalAccount(aid) { return roleInAccount(aid, aid) === "owner"; }
+
+// Backfill instance→owner pointers for an account so a freshly-added member can
+// reach existing tenants even if the owner hasn't logged in since teams shipped.
+function backfillAccountInstances(aid) {
+    for (const id of ownedInstances(aid))
+        if (kv.get("instance/" + id + "/owner") === null)
+            kv.set("instance/" + id + "/owner", aid);
+}
+
+// Team (non-personal) accounts this user owns — counted against MAX_TEAM_ACCOUNTS.
+function ownedTeamAccountCount(userHash) {
+    return accountsForUser(userHash)
+        .filter((aid) => aid !== userHash && roleInAccount(aid, userHash) === "owner").length;
+}
+
+function accountName(aid) {
+    const meta = kv.get("account/" + aid + "/meta");
+    if (meta) { try { return JSON.parse(meta).name || null; } catch (_) {} }
+    return null;
+}
+
+// ── Team account endpoints ──────────────────────────────────────────
+// Routed by the ROUTES table (below) + gated by routeAuthz before invocation:
+// createAccount/acceptInvite/leaveAccount are "authed" (own checks inside);
+// invite/remove/revoke/setRole are "accountOwner"; listMembers is
+// "accountMember". `caller` is the OIDC sub's hash. See the teams plan for the
+// schema.
+
+// Create a new team (billing) account; caller becomes its owner. Capped per user.
+export function createAccount(name) {
+    const a = request.auth || {};
+    if (!a.sub) return jsonError(401, "unauthenticated");
+    const nm = String(name == null ? "" : name).trim();
+    if (nm.length === 0 || nm.length > 64) return jsonError(400, "invalid name");
+    const caller = accountHashFor(a.sub);
+    backfillSelf(caller, a.sub);
+    if (!a.is_root && ownedTeamAccountCount(caller) >= MAX_TEAM_ACCOUNTS) {
+        response.status = 403;
+        return { error: "team_limit_reached", limit: MAX_TEAM_ACCOUNTS };
+    }
+    const aid = crypto.sha256(crypto.randomUUID()); // unguessable + replay-safe
+    kv.set("account/" + aid + "/members/" + caller, "owner");
+    kv.set("user/" + caller + "/accounts/" + aid, "owner");
+    kv.set("account/" + aid + "/email/" + caller, a.sub);
+    kv.set("account/" + aid + "/plan", "free");
+    kv.set("account/" + aid + "/meta", JSON.stringify({ name: nm, created_ms: Date.now() }));
+    response.status = 201;
+    return { ok: true, aid: aid, name: nm };
+}
+
+// Promote/demote a member (ownership transfer). Owner-only; last-owner-guarded.
+export function setMemberRole(aid, memberHash, role) {
+    if (role !== "owner" && role !== "member") return jsonError(400, "invalid role");
+    if (isPersonalAccount(aid)) return jsonError(400, "cannot change roles on a personal account");
+    const cur = roleInAccount(aid, memberHash);
+    if (cur !== "owner" && cur !== "member") return jsonError(404, "not a member");
+    if (cur === "owner" && role === "member" && ownerCount(aid) <= 1)
+        return jsonError(409, "last_owner");
+    kv.set("account/" + aid + "/members/" + memberHash, role);
+    kv.set("user/" + memberHash + "/accounts/" + aid, role);
+    response.status = 200;
+    return { ok: true, aid: aid, member: memberHash, role: role };
+}
+
+// Invite by email (tokened magic-link). `addr` is NOT named `email` on purpose —
+// a local `email` would shadow the global `email` API and break `email.send`.
+export function inviteMember(aid, addr) {
+    const a = request.auth || {};
+    const caller = accountHashFor(a.sub);
+    const to = String(addr == null ? "" : addr).trim().toLowerCase();
+    if (!to || to.indexOf("@") < 1) return jsonError(400, "invalid email");
+    const h = userHashFor(to);
+    if (isActiveMember(aid, h)) return jsonError(409, "already_member");
+    // Re-invite: drop any prior pending token for this email, then mint fresh.
+    const prev = kv.get("account/" + aid + "/pending/" + h);
+    if (prev) { try { kv.delete("invite/" + JSON.parse(prev).tokenHash); } catch (_) {} }
+    const rawToken = base64url.encode(crypto.getRandomValues(new Uint8Array(32)));
+    const tokenHash = crypto.sha256(rawToken); // sha256-at-rest: leaked kv ≠ live tokens
+    const exp_ms = Date.now() + INVITE_TTL_MS;
+    kv.set("invite/" + tokenHash, JSON.stringify({
+        aid: aid, emailHash: h, email: to, role: "member", exp_ms: exp_ms, invited_by: caller }));
+    kv.set("account/" + aid + "/pending/" + h, JSON.stringify({
+        email: to, tokenHash: tokenHash, role: "member", invited_by: caller,
+        invited_ms: Date.now(), exp_ms: exp_ms }));
+    backfillAccountInstances(aid);
+    // The rows above are the source of truth; the email is a re-sendable nudge.
+    const acceptUrl = "https://" + request.host + "/#/invite/" + rawToken;
+    const resendKey = kv.get("resend_key");
+    if (resendKey) {
+        email.send({
+            key: resendKey,
+            from: kv.get("platform_email_from") || "team@" + request.host,
+            to: to,
+            subject: (accountName(aid) || "A rewind team") + " invited you",
+            text: "You've been invited to a team on rewind.\n\nSign in with this "
+                + "email, then accept:\n" + acceptUrl + "\n\nThis invite expires in 7 days.",
+        });
+        response.status = 200;
+        return { ok: true, email: to };
+    }
+    response.status = 200;
+    return { ok: true, email: to, accept_url: acceptUrl }; // dev/test seam (no Resend key)
+}
+
+// Accept an invite. The token finds the invite; acceptance is BOUND to the
+// invited email — the logged-in sub must hash to the invited address.
+export function acceptInvite(token) {
+    const a = request.auth || {};
+    if (!a.sub) return jsonError(401, "unauthenticated");
+    if (typeof token !== "string" || !token) return jsonError(400, "missing token");
+    const tokenHash = crypto.sha256(token);
+    const raw = kv.get("invite/" + tokenHash);
+    if (!raw) return jsonError(404, "invite not found");
+    let inv; try { inv = JSON.parse(raw); } catch (_) { return jsonError(500, "bad invite"); }
+    const caller = accountHashFor(a.sub);
+    if (caller !== inv.emailHash)
+        return jsonError(403, "sign in with the invited email address");
+    if (Date.now() > inv.exp_ms) return jsonError(410, "invite expired"); // owner can re-send
+    kv.set("account/" + inv.aid + "/members/" + caller, "member");
+    kv.set("user/" + caller + "/accounts/" + inv.aid, "member");
+    kv.set("account/" + inv.aid + "/email/" + caller, a.sub);
+    kv.delete("invite/" + tokenHash);                          // single-use
+    kv.delete("account/" + inv.aid + "/pending/" + inv.emailHash);
+    response.status = 200;
+    return { ok: true, aid: inv.aid, name: accountName(inv.aid) };
+}
+
+// List active members + pending invites of an account (member-visible).
+export function listMembers(aid) {
+    const mpre = "account/" + aid + "/members/";
+    const members = kv.prefix(mpre, "", 1000).map((e) => {
+        const h = e.key.slice(mpre.length);
+        return { hash: h, role: e.value, email: kv.get("account/" + aid + "/email/" + h) || null };
+    });
+    const ppre = "account/" + aid + "/pending/";
+    const pending = kv.prefix(ppre, "", 1000).map((e) => {
+        let p = {}; try { p = JSON.parse(e.value); } catch (_) {}
+        return { hash: e.key.slice(ppre.length), email: p.email || null,
+                 role: p.role || "member", invited_ms: p.invited_ms || null,
+                 exp_ms: p.exp_ms || null, status: "invited" };
+    });
+    return { aid: aid, name: accountName(aid), members: members, pending: pending };
+}
+
+// Remove an active member (owner-only; can't strand the last owner).
+export function removeMember(aid, memberHash) {
+    const cur = roleInAccount(aid, memberHash);
+    if (cur !== "owner" && cur !== "member") return jsonError(404, "not a member");
+    if (cur === "owner" && ownerCount(aid) <= 1) return jsonError(409, "last_owner");
+    kv.delete("account/" + aid + "/members/" + memberHash);
+    kv.delete("account/" + aid + "/email/" + memberHash);
+    kv.delete("user/" + memberHash + "/accounts/" + aid);
+    response.status = 204;
+    return null;
+}
+
+// Cancel a pending invite (owner-only). Keyed by the invitee's email hash.
+export function revokeInvite(aid, emailHash) {
+    const raw = kv.get("account/" + aid + "/pending/" + emailHash);
+    if (!raw) return jsonError(404, "no pending invite");
+    try { kv.delete("invite/" + JSON.parse(raw).tokenHash); } catch (_) {}
+    kv.delete("account/" + aid + "/pending/" + emailHash);
+    response.status = 204;
+    return null;
+}
+
+// Leave a team account. Personal accounts are permanent; an owner must transfer
+// ownership (setMemberRole) before leaving so the account never goes ownerless.
+export function leaveAccount(aid) {
+    const a = request.auth || {};
+    if (!a.sub) return jsonError(401, "unauthenticated");
+    const caller = accountHashFor(a.sub);
+    if (aid === caller) return jsonError(400, "cannot leave your personal account");
+    const cur = roleInAccount(aid, caller);
+    if (cur !== "owner" && cur !== "member") return jsonError(404, "not a member");
+    if (cur === "owner" && ownerCount(aid) <= 1)
+        return jsonError(409, "last_owner");
+    kv.delete("account/" + aid + "/members/" + caller);
+    kv.delete("account/" + aid + "/email/" + caller);
+    kv.delete("user/" + caller + "/accounts/" + aid);
+    response.status = 204;
+    return null;
+}
+
+// POST ?fn=provisionInstance, args [name, account?]. Identity is the
+// OIDC-verified id_token `sub` the RP guard put on request.auth — NOT a
+// client-supplied field (closes the old signup trust-the-body gap). Creates the
+// tenant under `account` (defaults to the caller's personal account); any active
+// member of that account may provision, counting against THAT account's plan.
+// All account/* rows are __admin__-home kv.
+export function provisionInstance(name, account) {
     const auth = request.auth;
     const sub = auth && auth.sub;
     if (!sub) return jsonError(401, "unauthenticated");
@@ -265,9 +519,14 @@ export function provisionInstance(name) {
         return jsonError(409, "name unavailable");
     }
 
-    const accHash = accountHashFor(sub);
-    const limits = planLimitsFor(accHash);
-    const owned = ownedInstances(accHash);
+    const caller = accountHashFor(sub);
+    backfillSelf(caller, sub);
+    const aid = (typeof account === "string" && account) ? account : caller;
+    if (!isActiveMember(aid, caller)) {
+        return jsonError(403, "not a member of that account");
+    }
+    const limits = planLimitsFor(aid);
+    const owned = ownedInstances(aid);
     if (owned.length >= limits.max_instances) {
         response.status = 403;
         return {
@@ -276,8 +535,8 @@ export function provisionInstance(name) {
             owned: owned.length,
         };
     }
-    if (kv.get("account/" + accHash + "/plan") === null) {
-        kv.set("account/" + accHash + "/plan", "free");
+    if (kv.get("account/" + aid + "/plan") === null) {
+        kv.set("account/" + aid + "/plan", "free");
     }
 
     // platform.instances.create is idempotent (retry-safe).
@@ -290,18 +549,34 @@ export function provisionInstance(name) {
     // and the customer can push their own code via the files API.
     try { platform.instances.deployStarter(name); } catch (_) {}
 
-    kv.set("account/" + accHash + "/instances/" + name, "");
+    kv.set("account/" + aid + "/instances/" + name, "");
+    kv.set("instance/" + name + "/owner", aid); // reverse pointer for canAccess
     response.status = 201;
-    return { ok: true, name: name };
+    return { ok: true, name: name, account: aid };
 }
 
-// GET /v1/session — whoami. request.auth = {sub,is_root} (set by the
-// RP guard in _middlewares). `owned` lets the SPA route a customer
-// with no instance to the provisioning view.
+// GET /v1/session — whoami. request.auth = {sub,is_root} (set by the RP guard in
+// _middlewares). Returns the caller's accounts (personal + teams) with role +
+// instances; `active_account` is a UI default (the personal account). `owned` is
+// kept (personal-account instances) for back-compat with older SPA builds.
 function handleSession() {
     const a = request.auth || {};
-    const owned = a.sub ? ownedInstances(accountHashFor(a.sub)) : [];
-    return { is_root: !!a.is_root, sub: a.sub || null, owned: owned };
+    if (!a.sub) return { is_root: !!a.is_root, sub: null, accounts: [], active_account: null, owned: [] };
+    const h = accountHashFor(a.sub);
+    backfillSelf(h, a.sub);
+    const pre = "user/" + h + "/accounts/";
+    const accounts = kv.prefix(pre, "", 1000).map((e) => {
+        const aid = e.key.slice(pre.length);
+        return { aid: aid, role: e.value, is_personal: aid === h,
+                 name: accountName(aid), instances: ownedInstances(aid) };
+    });
+    const personal = accounts.find((x) => x.is_personal) || accounts[0] || null;
+    return {
+        is_root: !!a.is_root, sub: a.sub,
+        accounts: accounts,
+        active_account: personal ? personal.aid : h,
+        owned: personal ? personal.instances : [],
+    };
 }
 
 // ── Log query chokepoint (step3-auth-plan.md A5) ────────────────────
@@ -420,7 +695,7 @@ function deployGate(body) {
     if (!validId(b.tenant)) { jsonError(400, "invalid tenant"); return null; }
     if (!auth.is_root) {
         if (!auth.sub) { jsonError(401, "unauthenticated"); return null; }
-        if (ownedInstances(accountHashFor(auth.sub)).indexOf(b.tenant) === -1) {
+        if (!canAccess(accountHashFor(auth.sub), b.tenant)) {
             jsonError(403, "not your instance"); return null;
         }
     }
@@ -503,8 +778,7 @@ function handleReadSources(tenant, depArg) {
     const auth = request.auth || {};
     if (!auth.is_root && !auth.sub) return jsonError(401, "unauthenticated");
     if (!validId(tenant)) return jsonError(400, "invalid tenant");
-    if (!auth.is_root &&
-        ownedInstances(accountHashFor(auth.sub)).indexOf(tenant) === -1) {
+    if (!auth.is_root && !canAccess(accountHashFor(auth.sub), tenant)) {
         return jsonError(403, "not your instance");
     }
     let dep = depArg;
@@ -587,123 +861,163 @@ function finishSources(dep, entries, sources) {
     return JSON.stringify({ ok: true, dep_id: dep, entries: out });
 }
 
-// ── fn-RPC dispatch (JS recipe) ─────────────────────────────────────
+// ── REST router ─────────────────────────────────────────────────────
 //
-// The platform no longer interprets `?fn=` / `{fn,args}` (decisions.md
-// §4.5 — only the activation's conventional export is invoked);
-// named-function routing is the handler's own job. This is the
-// documented recipe from handler-shape.md: parse the same wire shapes
-// the dashboard has always sent (api.js is unchanged) and dispatch to
-// a local table. Reading `request.query` / `request.body` here is what
-// puts the dispatch inputs on the replay tape.
-const FNS = {
-    listInstance, getInstance, createInstance, deleteInstance,
-    listDomain, assignDomain,
-    listKv, getKv, setKv, deleteKv,
-    publishRelease, provisionInstance,
-};
+// One declarative table IS the whole admin surface: METHOD + path pattern →
+// authz class → a thunk that pulls args from the matched params/query/body and
+// calls the (unchanged) handler. This replaces the old fn-RPC dispatch AND the
+// path if-ladder, so there is a single router and a single fail-closed gate.
+//
+// Patterns: `:name` captures one segment; a trailing `*` captures the rest (the
+// handler re-parses, e.g. the logs path). Authz classes (is_root bypasses all;
+// `_middlewares` runs its OIDC guard first, so anything but `open`/M2M already
+// carries request.auth):
+//   open          no extra gate — pre-auth/self-gating (session, logout, /_rp/*)
+//   authed        any logged-in session
+//   root          operator-only
+//   tenant/Read/Write  params.id is an instance → canAccess(caller, id)
+//   accountOwner  params.aid → caller is its owner
+//   accountMember params.aid → caller is an active member
+//   self          the handler gates internally (deploy/logs/cp/sources)
+const ROUTES = [
+    // session / auth handshake
+    ["GET",    "/v1/session",                   "open",          (c) => handleSession()],
+    ["POST",   "/v1/logout",                    "open",          (c) => oidc.rp("default").logout()],
+    ["POST",   "/v1/cli/exchange",              "open",          (c) => oidc.rp("default").exchangeToken(c.body.id_token)],
+    ["GET",    "/_rp/login",                    "open",          (c) => oidc.rp("default").beginLogin()],
+    ["GET",    "/_rp/callback",                 "open",          (c) => oidc.rp("default").handleCallback()],
+    ["GET",    "/_rp/poll",                     "open",          (c) => oidc.rp("default").pollStatus()],
+    ["GET",    "/_rp/logout",                   "open",          (c) => oidc.rp("default").logoutRedirect()],
+    // instances
+    ["GET",    "/v1/instances",                 "authed",        (c) => listInstance()],
+    ["POST",   "/v1/instances",                 "authed",        (c) => provisionInstance(c.body.name, c.body.account)],
+    ["PUT",    "/v1/instances/:id",             "root",          (c) => createInstance(c.params.id)],  // operator raw
+    ["GET",    "/v1/instances/:id",             "tenant",        (c) => getInstance(c.params.id)],
+    ["DELETE", "/v1/instances/:id",             "tenant",        (c) => deleteInstance(c.params.id)],
+    ["POST",   "/v1/instances/:id/release",     "tenant",        (c) => publishRelease(c.params.id, c.body.dep_id)],
+    ["GET",    "/v1/instances/:id/kv",          "tenantRead",    (c) => kvRead(c.params.id, c.query)],
+    ["PUT",    "/v1/instances/:id/kv",          "tenantWrite",   (c) => kvSet(c.params.id, c.body.key, c.body.value)],
+    ["DELETE", "/v1/instances/:id/kv",          "tenantWrite",   (c) => kvDelete(c.params.id, c.query.key)],
+    // domains (operator)
+    ["GET",    "/v1/domains",                   "root",          (c) => listDomain()],
+    ["PUT",    "/v1/domains/:host",             "root",          (c) => assignDomain(c.params.host, c.body.instance_id)],
+    // accounts / teams
+    ["POST",   "/v1/accounts",                  "authed",        (c) => createAccount(c.body.name)],
+    ["GET",    "/v1/accounts/:aid/members",     "accountMember", (c) => listMembers(c.params.aid)],
+    ["POST",   "/v1/accounts/:aid/invites",     "accountOwner",  (c) => inviteMember(c.params.aid, c.body.email)],
+    ["DELETE", "/v1/accounts/:aid/invites/:eh", "accountOwner",  (c) => revokeInvite(c.params.aid, c.params.eh)],
+    ["PUT",    "/v1/accounts/:aid/members/:h",  "accountOwner",  (c) => setMemberRole(c.params.aid, c.params.h, c.body.role)],
+    ["DELETE", "/v1/accounts/:aid/members/:h",  "accountOwner",  (c) => removeMember(c.params.aid, c.params.h)],
+    ["POST",   "/v1/accounts/:aid/leave",       "authed",        (c) => leaveAccount(c.params.aid)],
+    ["POST",   "/v1/invites/accept",            "authed",        (c) => acceptInvite(c.body.token)],
+    // deploy chokepoint (root-token M2M or session-ownership; deployGate self-gates)
+    ["POST",   "/v1/deploy/reset",              "open",          (c) => handleWsReset(c.rawBody || "{}")],
+    ["POST",   "/v1/deploy/file",               "open",          (c) => handleWsFile(c.rawBody || "{}")],
+    ["POST",   "/v1/deploy/cut",                "open",          (c) => handleWsCut(c.rawBody || "{}")],
+    // log query door (handler enforces is_root) — /v1/logs/{tenant}/{list|count|show/{id}}
+    ["GET",    "/v1/logs/*",                    "self",          (c) => handleLogQuery(c.path, c.qs)],
+    // source read door (handler enforces canAccess) — /v1/sources/{tenant}/{dep}
+    ["GET",    "/v1/sources/*",                 "self",          (c) => handleSourcesPath(c.path)],
+    // CP control + read doors (handlers enforce is_root)
+    ["POST",   "/v1/cp/:op",                    "self",          (c) => handleCpPost(c.params.op, c.rawBody)],
+    ["GET",    "/v1/cp/:op",                    "self",          (c) => handleCpRead(c.params.op, c.qs)],
+];
 
-function rpcDispatch() {
-    let fn = null, args = [];
-    for (const part of (request.query || "").split("&")) {
+function parseQuery(qs) {
+    const out = {};
+    for (const part of (qs || "").split("&")) {
+        if (!part) continue;
         const eq = part.indexOf("=");
         const k = eq === -1 ? part : part.slice(0, eq);
-        if (k !== "fn" && k !== "args") continue;
-        const v = eq === -1 ? "" : decodeURIComponent(part.slice(eq + 1).replace(/\+/g, "%20"));
-        if (k === "fn" && v) fn = v;
-        else if (k === "args" && v) { try { args = JSON.parse(v); } catch (_) {} }
+        out[k] = eq === -1 ? "" : decodeURIComponent(part.slice(eq + 1).replace(/\+/g, "%20"));
     }
-    if (!fn && request.body) {
-        try {
-            const b = JSON.parse(request.body);
-            if (b && typeof b.fn === "string") {
-                fn = b.fn;
-                args = Array.isArray(b.args) ? b.args : [];
-            }
-        } catch (_) {}
-    }
-    if (!fn) return null;
-    const f = FNS[fn];
-    if (!f) { response.status = 404; return { error: "no such fn: " + fn }; }
-    return { result: f(...args) };
+    return out;
 }
 
-// ── Path-routed surface (default export) ────────────────────────────
-//
-// fn-RPC first (the dashboard's `?fn=`/`{fn,args}` calls all target
-// `/`), then `/_rp/*` — the browser-facing OIDC relying-party
-// handshake (oidc.rp) — and `/v1/*`, the dashboard's whoami/logout.
-// The async completion modules `_rp/complete.mjs` / `_rp/jwks.mjs`
-// are invoked directly by callback dispatch, NOT routed here.
-// Everything below is either pre-auth (see _middlewares
-// PRE_AUTH_PATHS) or trusts request.auth.
-export default function() {
-    const rpc = rpcDispatch();
-    if (rpc !== null) return rpc.result;
+function parseBody() {
+    try { return JSON.parse(request.body || "{}") || {}; } catch (_) { return {}; }
+}
 
-    const fullPath = request.path;
-    const q = fullPath.indexOf("?");
-    const path = q === -1 ? fullPath : fullPath.slice(0, q);
-    const method = request.method;
-    const rp = oidc.rp("default");
-
-    if (method === "GET"  && path === "/_rp/login")    return rp.beginLogin();
-    if (method === "GET"  && path === "/_rp/callback") return rp.handleCallback();
-    if (method === "GET"  && path === "/_rp/poll")     return rp.pollStatus();
-    // Browser-facing full logout (RP-Initiated): clears the RP session AND
-    // ends the IdP SSO session so /authorize stops silently re-logging in.
-    if (method === "GET"  && path === "/_rp/logout")   return rp.logoutRedirect();
-
-    if (method === "POST" && path === "/v1/logout")  return rp.logout();
-    if (method === "GET"  && path === "/v1/session") return handleSession();
-
-    // CLI/device gateway (Track 3): the `rewind` customer CLI POSTs its
-    // device-grant id_token here → RP session bound to this request's sid.
-    // Pre-auth (the CLI has no session yet — this establishes one).
-    if (method === "POST" && path === "/v1/cli/exchange") {
-        let b; try { b = JSON.parse(request.body || "{}"); } catch (_) { b = {}; }
-        return rp.exchangeToken(b.id_token);
+// Match METHOD+path against ROUTES → {authz, thunk, params} or null. `:x`
+// captures a segment; a trailing `*` matches the rest. Exact segment count
+// otherwise. Specific routes precede wildcards in the table.
+function matchRoute(method, path) {
+    const segs = path.split("/");
+    for (const route of ROUTES) {
+        if (route[0] !== method) continue;
+        const pat = route[1].split("/");
+        const params = {};
+        let ok = true, wild = false;
+        for (let i = 0; i < pat.length; i++) {
+            if (pat[i] === "*") { wild = true; break; }
+            if (i >= segs.length) { ok = false; break; }
+            if (pat[i].charCodeAt(0) === 58 /* ':' */) params[pat[i].slice(1)] = decodeURIComponent(segs[i]);
+            else if (pat[i] !== segs[i]) { ok = false; break; }
+        }
+        if (!ok) continue;
+        if (!wild && pat.length !== segs.length) continue;
+        return { authz: route[2], thunk: route[3], params: params };
     }
+    return null;
+}
 
-    // Deploy chokepoint — per-file workspace flow. request.auth is set by
-    // _middlewares (operator root-token M2M or an OIDC session); each op
-    // gates on is_root OR ownership of the target tenant.
-    if (method === "POST" && path === "/v1/deploy/reset") return handleWsReset(request.body || "{}");
-    if (method === "POST" && path === "/v1/deploy/file")  return handleWsFile(request.body || "{}");
-    if (method === "POST" && path === "/v1/deploy/cut")   return handleWsCut(request.body || "{}");
-
-    // Log query chokepoint → rewind-logs.internal door (A5).
-    if (method === "GET" && path.startsWith("/v1/logs/")) {
-        return handleLogQuery(path, q === -1 ? "" : fullPath.slice(q + 1));
+// The single fail-closed gate, keyed on the route's class + matched path params.
+function routeAuthz(cls, params) {
+    const a = request.auth || {};
+    if (a.is_root) return null;
+    if (cls === "open" || cls === "self") return null;
+    if (cls === "root") return jsonError(403, "operator only");
+    if (!a.sub) return jsonError(401, "unauthenticated");
+    if (cls === "authed") return null;
+    const caller = accountHashFor(a.sub);
+    if (cls === "tenant" || cls === "tenantRead" || cls === "tenantWrite") {
+        if (!validId(params.id)) return jsonError(400, "invalid id");
+        return canAccess(caller, params.id) ? null : jsonError(403, "not your instance");
     }
-
-    // Source read → rove-blob-read.internal door. /v1/sources/{tenant}/{dep|current}.
-    if (method === "GET" && path.startsWith("/v1/sources/")) {
-        const rest = path.slice("/v1/sources/".length);
-        const slash = rest.indexOf("/");
-        if (slash < 1) return jsonError(400, "bad sources path");
-        return handleReadSources(rest.slice(0, slash), rest.slice(slash + 1));
+    if (cls === "accountOwner") {
+        return roleInAccount(params.aid, caller) === "owner" ? null : jsonError(403, "not an owner");
     }
+    if (cls === "accountMember") {
+        return isActiveMember(params.aid, caller) ? null : jsonError(403, "not a member");
+    }
+    return jsonError(403, "forbidden");
+}
 
-    // CP control chokepoint → rewind-cp.internal door (B4). The operator
-    // POSTs the same {tenant, …} body the CP /_control/* routes expect; the
-    // worker attaches the move-secret. `move` picks move-live when body.live.
-    if (method === "POST" && path === "/v1/cp/provision") return handleCpOp("provision", request.body || "{}");
-    if (method === "POST" && path === "/v1/cp/host")      return handleCpOp("host", request.body || "{}");
-    if (method === "POST" && path === "/v1/cp/plan")      return handleCpOp("plan", request.body || "{}");
-    if (method === "POST" && path === "/v1/cp/move") {
+// `move` picks move-live when body.live; other CP ops forward the body verbatim
+// through the rewind-cp.internal door (handleCpOp enforces is_root).
+function handleCpPost(op, rawBody) {
+    if (op === "move") {
         let live = false;
-        try { live = !!JSON.parse(request.body || "{}").live; } catch (_) {}
-        return handleCpOp(live ? "move-live" : "move", request.body || "{}");
+        try { live = !!JSON.parse(rawBody || "{}").live; } catch (_) {}
+        return handleCpOp(live ? "move-live" : "move", rawBody || "{}");
     }
-    // CP read surface for the cluster page (operator-only).
-    if (method === "GET" && path === "/v1/cp/route") {
-        return handleCpRead("route", q === -1 ? "" : fullPath.slice(q + 1));
-    }
-    if (method === "GET" && path === "/v1/cp/plan") {
-        return handleCpRead("plan", q === -1 ? "" : fullPath.slice(q + 1));
-    }
+    return handleCpOp(op, rawBody || "{}");
+}
 
-    response.status = 404;
-    return { error: "not found" };
+// /v1/sources/{tenant}/{dep|current} — split the wildcard tail for the read door.
+function handleSourcesPath(path) {
+    const rest = path.slice("/v1/sources/".length);
+    const slash = rest.indexOf("/");
+    if (slash < 1) return jsonError(400, "bad sources path");
+    return handleReadSources(rest.slice(0, slash), rest.slice(slash + 1));
+}
+
+// ── Single entry point (default export) ─────────────────────────────
+// `_middlewares` runs its OIDC guard before this and sets request.auth (or 401s
+// for non-pre-auth paths). The async completion modules (`_rp/complete.mjs`,
+// `_rp/jwks.mjs`), the streamed `v1/upload` module, and the `on*` continuation
+// exports above are invoked by callback dispatch — NOT routed here.
+export default function() {
+    const fullPath = request.path;
+    const qi = fullPath.indexOf("?");
+    const path = qi === -1 ? fullPath : fullPath.slice(0, qi);
+    const qs = qi === -1 ? "" : fullPath.slice(qi + 1);
+    const m = matchRoute(request.method, path);
+    if (!m) { response.status = 404; return { error: "not found" }; }
+    const denied = routeAuthz(m.authz, m.params);
+    if (denied) return denied;
+    return m.thunk({
+        params: m.params, query: parseQuery(qs), qs: qs,
+        body: parseBody(), rawBody: request.body || "", path: path,
+    });
 }

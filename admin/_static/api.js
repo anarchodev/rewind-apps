@@ -7,19 +7,13 @@
 // (`credentials: "include"`). No tokens in localStorage, no
 // rove_session cookie, no client-held credential.
 //
-// Every RPC call is a named function on the `__admin__` handler:
-// `?fn=<name>` (GET, URL-encoded JSON args) or `POST {fn, args}`.
-// Path-routed surfaces (deploy, logs, cp) are plain same-origin fetches
-// that carry the session cookie.
-//
-// Two scopes for the RPC handler, both reached on the bare admin host:
-// 1. No header             → `kv` = root store (tenant / domain CRUD).
-// 2. `X-Rove-Scope: <id>`  → per-tenant KV browsing (platform.scope).
-//
-// Logs, deploy, and cluster (CP) ops go through the admin app's OWN
-// same-origin chokepoints (`/v1/logs/*`, `/v1/deploy`, `/v1/cp/*`),
-// which issue the privileged internal-door fetches server-side. No
-// services token, log token, or move-secret ever enters the browser.
+// One REST surface on the `__admin__` handler: `GET/POST/PUT/DELETE /v1/...`
+// (instances, accounts/members/invites, per-tenant kv, releases, domains), all
+// same-origin fetches carrying the session cookie. The deploy/logs/cp/sources
+// paths are chokepoints that issue the privileged internal-door fetches
+// server-side — no services token, log token, or move-secret enters the browser.
+// Per-tenant kv is nested under the instance (`/v1/instances/:id/kv`); there is
+// no `X-Rove-Scope` header anymore.
 
 const BASE_KEY = "rove.admin.api_base";
 
@@ -40,31 +34,16 @@ function adminBase() {
   return window.location.origin;
 }
 
-/// Call a named export on the admin handler. `?fn=<name>&args=...` for
-/// GET, JSON body for POST. Sends cookies. `scope` sets the target
-/// tenant via the `X-Rove-Scope` header for per-tenant KV browsing.
-async function rpc(fn, args, { method = "GET", scope = null } = {}) {
-  const argsArr = args ?? [];
-  const base = adminBase();
-  const headers = {};
-  if (scope) headers["X-Rove-Scope"] = scope;
-  let url, init;
-  if (method === "POST") {
-    url = base + "/";
-    headers["Content-Type"] = "application/json";
-    init = {
-      method: "POST",
-      headers,
-      credentials: "include",
-      body: JSON.stringify({ fn, args: argsArr }),
-    };
-  } else {
-    const qs = new URLSearchParams({ fn });
-    if (argsArr.length > 0) qs.set("args", JSON.stringify(argsArr));
-    url = `${base}/?${qs.toString()}`;
-    init = { method: "GET", headers, credentials: "include" };
+/// Call the admin REST API. `path` is `/v1/...` (already query-encoded); `body`
+/// (when given) is JSON. Sends the session cookie. Parses JSON or text; throws
+/// ApiError on non-2xx. The one transport for every admin operation.
+async function rest(method, path, body) {
+  const init = { method, credentials: "include", headers: {} };
+  if (body !== undefined) {
+    init.headers["Content-Type"] = "application/json";
+    init.body = JSON.stringify(body);
   }
-  const res = await fetch(url, init);
+  const res = await fetch(adminBase() + path, init);
   const ct = res.headers.get("content-type") ?? "";
   const parsed = ct.includes("application/json")
     ? await res.json().catch(() => null)
@@ -72,6 +51,9 @@ async function rpc(fn, args, { method = "GET", scope = null } = {}) {
   if (!res.ok) throw new ApiError(res.status, res.statusText, parsed);
   return parsed;
 }
+
+/// Encode a path segment (instance id, account id, hash, host).
+const seg = (s) => encodeURIComponent(String(s));
 
 /// Minimal JSON POST used by /v1/logout. Returns the parsed body or
 /// throws on non-2xx. Always same-origin, cookie-authenticated.
@@ -141,12 +123,16 @@ export const api = {
   logout() {
     return postJson(adminBase() + "/v1/logout", {});
   },
-  /// Provision the caller's first instance. Identity is the
-  /// OIDC-verified session `sub` server-side — `name` is the only arg.
-  provisionInstance(name) {
-    return rpc("provisionInstance", [name], { method: "POST" });
+  /// Provision an instance into `account` (defaults to the caller's
+  /// personal account). Identity is the OIDC-verified session `sub`
+  /// server-side; any active member of `account` may provision, counting
+  /// against that account's plan.
+  provisionInstance(name, account = null) {
+    return rest("POST", "/v1/instances", account ? { name, account } : { name });
   },
-  /// Returns `{is_root, sub, owned}` on a valid session, null on 401.
+  /// Returns `{is_root, sub, accounts, active_account, owned}` on a valid
+  /// session, null on 401. `accounts` is [{aid, role, is_personal, name,
+  /// instances}]; `owned` is the personal account's instances (back-compat).
   async whoami() {
     try {
       const res = await fetch(adminBase() + "/v1/session", {
@@ -162,38 +148,82 @@ export const api = {
     }
   },
 
-  // ── Admin scope: tenant CRUD + domains (kv = root) ──────────────
-  listInstances() {
-    return rpc("listInstance");
+  // ── Teams / accounts ─────────────────────────────────────────────
+  //
+  // An account is the team / billing entity. Every user has a permanent
+  // personal account; team accounts are created explicitly. Members share
+  // ownership of the account's tenants; invites are tokened magic-links by
+  // email. All gated server-side (owner-only for invite/remove/role; member
+  // for list; the personal account is non-leavable).
+  createAccount(name) {
+    return rest("POST", "/v1/accounts", { name });
   },
-  createInstance(id) {
-    return rpc("createInstance", [id], { method: "POST" });
+  listMembers(aid) {
+    return rest("GET", "/v1/accounts/" + seg(aid) + "/members");
   },
-  getInstance(id) {
-    return rpc("getInstance", [id]);
+  inviteMember(aid, email) {
+    return rest("POST", "/v1/accounts/" + seg(aid) + "/invites", { email });
   },
-  deleteInstance(id) {
-    return rpc("deleteInstance", [id], { method: "POST" });
+  acceptInvite(token) {
+    return rest("POST", "/v1/invites/accept", { token });
   },
-  listDomains() {
-    return rpc("listDomain");
+  setMemberRole(aid, memberHash, role) {
+    return rest("PUT", "/v1/accounts/" + seg(aid) + "/members/" + seg(memberHash), { role });
   },
-  assignDomain(host, instance_id) {
-    return rpc("assignDomain", [host, instance_id], { method: "POST" });
+  removeMember(aid, memberHash) {
+    return rest("DELETE", "/v1/accounts/" + seg(aid) + "/members/" + seg(memberHash));
+  },
+  revokeInvite(aid, emailHash) {
+    return rest("DELETE", "/v1/accounts/" + seg(aid) + "/invites/" + seg(emailHash));
+  },
+  leaveAccount(aid) {
+    return rest("POST", "/v1/accounts/" + seg(aid) + "/leave");
+  },
+  /// The UI's "active account" selection (which account new instances land
+  /// in / the members page targets). Persisted client-side; falls back to
+  /// whoami's `active_account` (the personal account).
+  getActiveAccount() {
+    return localStorage.getItem("rove.admin.active_account");
+  },
+  setActiveAccount(aid) {
+    if (aid) localStorage.setItem("rove.admin.active_account", aid);
   },
 
-  // ── Tenant scope: KV (kv={instance_id}.app.db) ───────────────────
+  // ── Instances + domains ──────────────────────────────────────────
+  // listInstances → caller's accessible tenants (operator: all). createInstance
+  // is the operator raw create (PUT); customers provision via provisionInstance.
+  listInstances() {
+    return rest("GET", "/v1/instances");
+  },
+  createInstance(id) {
+    return rest("PUT", "/v1/instances/" + seg(id));
+  },
+  getInstance(id) {
+    return rest("GET", "/v1/instances/" + seg(id));
+  },
+  deleteInstance(id) {
+    return rest("DELETE", "/v1/instances/" + seg(id));
+  },
+  listDomains() {
+    return rest("GET", "/v1/domains");
+  },
+  assignDomain(host, instance_id) {
+    return rest("PUT", "/v1/domains/" + seg(host), { instance_id });
+  },
+
+  // ── Per-tenant KV (nested under the instance; no X-Rove-Scope) ────
   listKv(instance_id, { prefix = "", cursor = "", limit = 100 } = {}) {
-    return rpc("listKv", [prefix, cursor, limit], { scope: instance_id });
+    const qs = new URLSearchParams({ prefix, cursor, limit: String(limit) }).toString();
+    return rest("GET", "/v1/instances/" + seg(instance_id) + "/kv?" + qs);
   },
   getKv(instance_id, key) {
-    return rpc("getKv", [key], { scope: instance_id });
+    return rest("GET", "/v1/instances/" + seg(instance_id) + "/kv?key=" + seg(key));
   },
   setKv(instance_id, key, value) {
-    return rpc("setKv", [key, value], { method: "POST", scope: instance_id });
+    return rest("PUT", "/v1/instances/" + seg(instance_id) + "/kv", { key, value });
   },
   deleteKv(instance_id, key) {
-    return rpc("deleteKv", [key], { method: "POST", scope: instance_id });
+    return rest("DELETE", "/v1/instances/" + seg(instance_id) + "/kv?key=" + seg(key));
   },
 
   // ── Deploy (per-file workspace flow) ─────────────────────────────
@@ -252,10 +282,10 @@ export const api = {
 
   /// Flip the live deployment pointer. `dep_id` is the hex string from
   /// `deploy`. Ownership-gated server-side (publishRelease — step3 B5).
-  /// Same-origin RPC; the worker proposes the release through raft.
+  /// The worker proposes the release through raft.
   releaseDeployment(instance_id, dep_id) {
     const n = typeof dep_id === "string" ? parseInt(dep_id, 16) : dep_id;
-    return rpc("publishRelease", [instance_id, n], { method: "POST" });
+    return rest("POST", "/v1/instances/" + seg(instance_id) + "/release", { dep_id: n });
   },
 
   /// High-level helper: deploy a bundle then release it. Returns the
