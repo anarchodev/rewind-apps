@@ -14,12 +14,18 @@
 // PUT /v1/upload?tenant=X&path=Y&content_type=Z   (raw bytes as the body)
 const WS = "_workspace/";
 
-// Ownership (mirrors web/admin/index.mjs — duplicated rather than imported so
-// this stays a standalone onHeaders module, incl. in the baked genesis bundle).
+// Access check — mirrors `canAccess` in admin/index.mjs (duplicated rather than
+// imported so this stays a standalone onHeaders module, incl. in the baked
+// genesis bundle). Same normalization (trim+lowercase) and same membership +
+// legacy-fallback logic, so a team member can upload to a shared tenant.
 function ownsTenant(sub, tenant) {
-  const hash = crypto.sha256(sub);
-  const pre = "account/" + hash + "/instances/";
-  return kv.prefix(pre, "", 1000).some((e) => e.key.slice(pre.length) === tenant);
+  const hash = crypto.sha256(String(sub).trim().toLowerCase());
+  const aid = kv.get("instance/" + tenant + "/owner");
+  if (aid !== null) {
+    const role = kv.get("account/" + aid + "/members/" + hash);
+    return role === "owner" || role === "member"; // NOT "invited:*"
+  }
+  return kv.get("account/" + hash + "/instances/" + tenant) !== null; // legacy fallback
 }
 
 // Returns the authorized actor ({ is_root } / { sub }) for `tenant`, or null
