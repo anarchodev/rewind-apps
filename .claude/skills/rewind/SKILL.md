@@ -1,6 +1,6 @@
 ---
 name: rewind
-description: Deploy / release / replay first-party app content (this repo's tenants) using the `rewind` customer CLI — the dogfooded, OIDC-authed path we expect customers to use. Use when asked to deploy, ship, release, roll back, replay, or pull logs for a rewind-apps tenant (marketing, docs, admin, auth, agent-sample, or a customer-style app). This is the tenant-CONTENT path; deploying platform binaries is a different repo (rewind-infra `/deploy`).
+description: Deploy / release / replay / simulate first-party app content (this repo's tenants) using the `rewind` customer CLI — the dogfooded, OIDC-authed path we expect customers to use. Use when asked to deploy, ship, release, roll back, replay, simulate/sim a request, or pull logs for a rewind-apps tenant (marketing, docs, admin, auth, agent-sample, or a customer-style app). This is the tenant-CONTENT path; deploying platform binaries is a different repo (rewind-infra `/deploy`).
 ---
 
 # /rewind — ship app content with the customer CLI
@@ -73,18 +73,89 @@ manifest-driven bulk path (it replaces the old `publish_firstparty.py`). It need
 an **operator (`is_root`) session** — `rewind status` shows whether yours is.
 Default stages + releases per the manifest; `--no-release` to stage only.
 
-## Replay a production request (debugging — pull then replay)
+## Run a handler offline — `sim` / `replay` (no cluster, no network)
 
-Deterministic re-execution is `pull` → `replay` (this is today's "sim"; the
-dedicated `sim` verb is not built yet — see Gaps):
+Both run the working-tree handler through the **real engine** offline and return
+the activation's **effect log**. Use this for a saga (`on.fetch` + resume),
+concurrency, a regression, or "does my change still behave?" — not for every
+change (reasoning + deploy is fine for a simple one). Two ways to get the world:
+
+**A real request → `pull`, then `replay`:**
 
 1. `rewind logs <tenant> [--limit N]` → find the `req_id`.
-2. `rewind pull <tenant> <req_id> -o /tmp/fixture.json` → the recorded request +
-   tape.
-3. `rewind replay /tmp/fixture.json [--source-dir <dir>] [-o out.json]` →
-   re-executes locally (no cluster, no network) and emits the LLM-JSON result.
-   `--source-dir` replays the working-tree handler against the recorded effects,
-   so you can confirm a fix reproduces / diverges before deploying.
+2. `rewind pull <tenant> <req_id> -o world.json` → a self-contained `world.json`
+   (the real request + the state it read). Hand-editable.
+3. `rewind replay world.json --source-dir <dir>` → re-executes locally;
+   `--source-dir` runs your working-tree handler against the recorded inputs, so
+   you confirm a fix reproduces / diverges before deploying.
+
+**A new request → author a `world.json`, then `sim`.** You don't scaffold — the
+schema has defaults, so the minimum is tiny, and the effect log tells you the
+rest:
+
+```json
+{ "request": { "method": "POST", "path": "/checkout", "body": { "id": "c_1" } } }
+```
+
+Fields (all but `request` default): `entry` (`index.mjs`), `activation`
+(`inbound`), `export` (the conventional export for the kind — set it only for a
+callback), `kv` (**a little starting store, closed-world: a key not in it reads
+_absent_ (`not_found`)**; non-string values auto-JSON-stringify), `seed` (`0`),
+`now_ms`.
+
+Per-activation `request` shapes:
+
+```json
+// inbound (export "default")
+{ "activation": "inbound",
+  "request": { "method": "POST", "path": "/checkout",
+               "headers": { "content-type": "application/json" },
+               "body": { "id": "c_1", "total": 4200 } },
+  "kv": { "config/rate": "10" } }
+
+// fetch_chunk — an on.fetch result resuming a saga (export "onFetchResult" or a
+// {to}). The result rides request.status/.body; body is BYTES; ctx threads.
+{ "activation": "fetch_chunk", "export": "onCharge",
+  "request": { "status": 200, "ok": true, "done": true, "fetchId": "ftch_1",
+               "body": { "id": "ch_1", "paid": true } },
+  "ctx": { "cartId": "c_1" } }
+
+// ws_message (export "onMessage")
+{ "activation": "ws_message",
+  "request": { "activation": { "opcode": "text", "data": "hello" } },
+  "ctx": { "room": "general" } }
+
+// on.kv / on.timer wake (export "onWake")
+{ "activation": "kv_wake",
+  "request": { "activation": { "wakes": [ { "kind": "kv", "prefix": "orders/" } ] } },
+  "ctx": {} }
+```
+
+`rewind sim world.json --source-dir .` returns the ordered **effect log**:
+
+```json
+{ "response": { "status": 202, "headers": {}, "cookies": [] },
+  "disposition": "terminal", "body": "accepted",
+  "effects": [
+    { "kind": "read",  "key": "config/rate", "present": true },
+    { "kind": "read",  "key": "user/c_1",    "present": false },
+    { "kind": "write", "key": "order/c_1",   "value": "…" },
+    { "kind": "fetch", "url": "…/charge", "ctx": {}, "to": "onCharge" },
+    { "kind": "log",   "level": "info", "message": "charging c_1" } ],
+  "error": null, "ok": true }
+```
+
+- `response` is the HEAD (status/headers/cookies — the ambient `response`
+  global). `disposition` is `terminal` (+`body`) or `held` (+`ctx`, from `next()`).
+- `effects` is **one list, occurrence order** — reads, writes, cmds
+  (fetch/webhook/…/stream) and `console` as `{kind:"log"}` — the causal trace.
+  Filter by `kind` for a typed view.
+
+**The loop — minimal → run → fill.** Don't pre-guess the `kv`. Write just
+`request`, run, and read the effects: the `present:false` reads and emitted
+`fetch`es are exactly what the handler consumed (real, resolved keys/URLs). Add
+those keys to `kv` (values whose shape you know — you wrote the handler) and
+re-run. It converges without guessing.
 
 ## Other verbs
 
@@ -108,10 +179,22 @@ dedicated `sim` verb is not built yet — see Gaps):
   rejected, that's the operator boundary, not a bug.
 - **`{tenant}.rewindjs.app` hosts need no `host add`** (wildcard); apex/system
   hosts on `rewindjs.com` need it once.
+- **(sim) a fetch result's `request.body` is BYTES** — a `fetch_chunk` is a
+  binary activation. Decode it: `JSON.parse(new TextDecoder().decode(request.body))`.
+  Plain `JSON.parse(request.body)` throws "unexpected data at the end".
+- **(sim) the response HEAD is `response.*`; the RETURN value is the body or
+  `next()`.** Write `response.status = 202; return "accepted"` — NOT
+  `return { status: 202 }`, which ships a **200** with that object as the body.
+- **(sim) it's what-if, not proof.** Durability shims (`webhook`/`schedule`/`cron`)
+  are recorded, not re-run. A green sim means "the logic handles these inputs,"
+  not "prod is correct."
 
 ## Gaps (surface, don't work around)
 
-- **`sim` is not a verb yet** (planned). Use `pull` → `replay` for deterministic
-  re-execution today.
+- **Multi-activation sagas aren't drivable in one command.** `sim` runs ONE
+  activation. A request where an inbound fires `on.fetch`es whose resumes race —
+  supplying the fetch responses, threading `ctx`, exploring interleavings — is
+  prototyped (a scenario driver) but not a `rewind` verb yet. For now, `sim` each
+  activation or `pull` the real request; surface the saga case as the gap.
 - If `rewind` can't express a customer-needed operation, note it as a CLI/product
   gap rather than dropping to operator tooling.
