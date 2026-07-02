@@ -172,11 +172,13 @@ re-run. It converges without guessing.
   exceed 2^53, so anything that coerces it to a number releases the wrong build.
 - **`deploy` stages; it does not release** unless you pass `--release`. The live
   flip is the approval gate — keep it explicit.
-- **System tenants** deploy to their id, not their dir (`admin` → `__admin__`,
-  `auth` → `__auth__`); the manifest encodes this. Whether the privileged
-  `__admin__`/`__auth__` can be deployed over the *customer* (non-root) session
-  or still need an operator session is unconfirmed — if a system-tenant deploy is
-  rejected, that's the operator boundary, not a bug.
+- **System tenants** (`__admin__`, `__auth__`) are **operator-owned** — deploy /
+  release them with `rewind-ops` (the **`deploy-admin`** skill), NOT this customer
+  path. They deploy to their id, not their dir (`admin` → `__admin__`, `auth` →
+  `__auth__`; the manifest encodes this). A **403** releasing a system tenant here
+  is the ownership boundary working, not a bug — unless your OIDC session is
+  itself an operator (`is_root`), in which case it's allowed but `deploy-admin` is
+  still the intended path.
 - **`{tenant}.rewindjs.app` hosts need no `host add`** (wildcard); apex/system
   hosts on `rewindjs.com` need it once.
 - **(sim) a fetch result's `request.body` is BYTES** — a `fetch_chunk` is a
