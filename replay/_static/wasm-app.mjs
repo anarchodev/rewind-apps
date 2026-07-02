@@ -993,14 +993,18 @@ async function inspectAndRenderVars(eventOrdinal) {
     }
 
     // Layer 2: nearest varSnapshot from materialise's pre-computed
-    // pass. With targetSnapshots ≈ rail width, the nearest snapshot
-    // is at most a few events away and renders instantly. If we hit
-    // the exact event, no need to follow up. Otherwise queue an
-    // inspectAt below to refine.
+    // pass — painted instantly for scrub feedback, but treated as an
+    // APPROXIMATION only. The coarse pass snapshots at every event, and
+    // `arena_snapshot_here` isn't reliable at that density (it can miss
+    // the deep call frames — e.g. at a throw inside a nested call it
+    // captures only the outer epilogue frame), so we never trust it as
+    // the final answer: Layer 3's windowed `inspectAt` always refines
+    // the settled playhead below. (During a fast drag the seq guard
+    // drops stale refinements, so the coarse paint is what the user
+    // sees mid-drag; the exact frames land when the playhead settles.)
     const snap = nearestVarSnapshot(state.mat, eventOrdinal);
     if (snap && snap.frames && snap.frames.length > 0) {
         renderVariablesFrames(snap.frames);
-        if (snap.eventOrdinal === eventOrdinal) return;  // exact hit
     } else {
         renderVariablesLoading();
     }
@@ -1220,7 +1224,12 @@ async function main() {
         record: bundle.request || {},
         requestReads: tapes.request_reads,
         bodyBytes: bundle.request?.body_bytes ?? null,
-        exportName: exportForActivation(bundle.activation),
+        // Prefer the export the run ACTUALLY dispatched to, recorded on
+        // the log record (`bundle.entry_fn`, from record.tapes.export —
+        // the `{to}` override / onFetchResult|Chunk|Done). Fall back to
+        // deriving it from the activation kind when the record didn't
+        // carry one (a plain inbound `default`, or a pre-export capture).
+        exportName: bundle.entry_fn || exportForActivation(bundle.activation),
         binaryBody: bundle.activation === "inbound_chunk" || bundle.activation === "fetch_chunk",
     });
     const entrySrcWithEpilogue = entrySrc + epilogue;

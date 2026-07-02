@@ -342,8 +342,11 @@ export const api = {
 
   // ── Logs (same-origin chokepoint, RP cookie) ─────────────────────
   //
-  // request_ids are decimal numbers; pagination cursor is
-  // `{received_ns, request_id}`.
+  // request_id / deployment_id are opaque prefixed tokens (`req_<16hex>`
+  // / `dep_<16hex>`, commit d561287) — the log server emits them and
+  // requires them verbatim on `/show/{id}` and `?after_request_id=`. Pass
+  // them through unmodified; the pagination cursor is
+  // `{received_ns, request_id}` where request_id is the `req_` token.
   async listLogs(instance_id, { limit = 100, after = null } = {}) {
     const params = { limit: String(limit) };
     if (after) {
@@ -423,8 +426,25 @@ export const api = {
 
     const tapeBlobs = {
       kv: decodeB64(tapesField.kv_tape_b64),
+      module: decodeB64(tapesField.module_tree_b64),
       request_reads: decodeB64(tapesField.request_reads_tape_b64),
+      // Non-inbound channels (callback / continuation replay). The log
+      // server records these for fetch_chunk / ws_message / wake
+      // activations; the shell decodes them to rebuild request.ctx +
+      // the flattened fetch-result surface. Null for a plain inbound
+      // request (the channels were empty).
+      fetch_responses: decodeB64(tapesField.fetch_responses_tape_b64),
+      trigger_payload: decodeB64(tapesField.trigger_payload_tape_b64),
     };
+    // The WS-frame / activation Msg bytes ([opcode][data]) for a
+    // ws_message activation — raw, not an RTAP tape.
+    const activationBytes = decodeB64(tapesField.activation_bytes_b64);
+    // The resolved dispatch export the activation actually ran (the
+    // `{to}` override or onFetchResult/Chunk/Done), recorded server-side
+    // per commit 41f9d30. Emitted only when set; absent for a plain
+    // inbound `default`, in which case the shell falls back to deriving
+    // the export from `activation`.
+    const exportName = tapesField.export || null;
     const seed = tapesField.seed != null ? BigInt(tapesField.seed) : 0n;
     const timestamp_ns = tapesField.timestamp_ns != null
       ? BigInt(tapesField.timestamp_ns) : 0n;
@@ -462,6 +482,11 @@ export const api = {
       js_engine_version,
       tape_blobs: tapeBlobs,
       activation: record.activation,
+      // The recorded export the shell should invoke. Null → the shell
+      // derives it from `activation` (exportForActivation).
+      entry_fn: exportName,
+      activation_bytes: activationBytes,
+      activation_bytes_truncated: !!tapesField.activation_bytes_truncated,
       sources_unavailable: sourcesUnavailable,
       historical_manifest_missing: sourcesUnavailable,
     };

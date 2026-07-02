@@ -55,6 +55,20 @@ export class CursorEngine {
         };
     }
 
+    // `arena_snapshot_here()` walks the live JS frames by EXECUTING JS,
+    // which itself emits trace events. Calling it from inside a
+    // `host_trace` callback (as the var-snapshot passes do) therefore
+    // re-enters that same callback — and since the callback snapshots
+    // again, the re-entry recurses without bound ("Maximum call stack
+    // size exceeded"). Suppress tracing for the duration of the snapshot
+    // so the snapshot's own trace events are dropped; restore it after.
+    _snapshotSuppressingTrace() {
+        const saved = this.M.host_trace;
+        this.M.host_trace = null;
+        try { this._snapshot(); }
+        finally { this.M.host_trace = saved; }
+    }
+
     _installReplay(replay) {
         for (const k of Object.keys(replay.tapes)) {
             replay.tapes[k]._cursor = 0;
@@ -334,7 +348,7 @@ export class CursorEngine {
             eventIdx++;
             if (eventIdx % step === 0) {
                 pendingSnapshotJson = null;
-                this._snapshot();
+                this._snapshotSuppressingTrace();
                 let frames = [];
                 if (pendingSnapshotJson !== null) {
                     try { frames = JSON.parse(pendingSnapshotJson); }
@@ -423,7 +437,7 @@ export class CursorEngine {
             eventIdx++;
             if (eventIdx >= lo && eventIdx <= hi) {
                 pendingSnapshotJson = null;
-                this._snapshot();
+                this._snapshotSuppressingTrace();
                 let frames = [];
                 if (pendingSnapshotJson !== null) {
                     try { frames = JSON.parse(pendingSnapshotJson); }
