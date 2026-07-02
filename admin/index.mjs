@@ -151,24 +151,20 @@ export function publishRelease(instance_id, dep_id) {
         response.status = 400;
         return { error: "invalid instance_id" };
     }
-    // dep_id rides as a HEX STRING (the form `deploy` returns) — sha256-derived
-    // dep_ids exceed 2^53, so a JSON number would round at parse time and release
-    // the wrong manifest. The engine parses the hex string to an exact u64. A
-    // number is still accepted for legacy callers (lossy above 2^53).
-    let dep;
-    if (typeof dep_id === "string") {
-        if (!/^[0-9a-fA-F]{1,16}$/.test(dep_id)) {
-            response.status = 400;
-            return { error: "dep_id must be a hex u64" };
-        }
-        dep = dep_id;
-    } else {
-        if (!Number.isFinite(dep_id) || dep_id < 1) {
-            response.status = 400;
-            return { error: "dep_id must be a positive integer" };
-        }
-        dep = dep_id;
+    // dep_id MUST be a HEX STRING (the form `deploy`/cut returns) — sha256-derived
+    // dep_ids exceed 2^53, so a JSON number silently loses precision (JSON.parse →
+    // f64) and would release the WRONG (rounded) manifest. Reject a number
+    // outright rather than coerce it lossily; the earlier back-compat number path
+    // was the source of the "must be a positive integer" 400 (a coerced/NaN id).
+    if (typeof dep_id !== "string") {
+        response.status = 400;
+        return { error: "dep_id must be a hex string (u64); a JSON number loses precision above 2^53 — pass the hex id `deploy`/cut returned" };
     }
+    if (!/^[0-9a-fA-F]{1,16}$/.test(dep_id)) {
+        response.status = 400;
+        return { error: "dep_id must be a hex u64 (1–16 hex digits)" };
+    }
+    const dep = dep_id;
     const auth = request.auth || {};
     if (!auth.sub) return jsonError(401, "unauthenticated");
     if (!auth.is_root && !canAccess(accountHashFor(auth.sub), instance_id)) {
