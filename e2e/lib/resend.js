@@ -17,6 +17,13 @@ const VERIFY_RE = /https?:\/\/[^\s"'<>]+\/login\/verify\?mt=[A-Za-z0-9_\-=]+/;
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+// Magic-link tokens are single-use, and specs run in ONE worker (workers: 1),
+// so back-to-back logins with the same operator email can otherwise race: a
+// later test grabs the *previous* test's still-fresh-but-already-consumed
+// email and its token fails verify. This process-level set guarantees each
+// email is returned at most once per run, independent of clock skew/timing.
+const consumedEmailIds = new Set();
+
 async function resendGet(apiKey, path) {
   const res = await fetch(`${RESEND_BASE}${path}`, {
     headers: { Authorization: `Bearer ${apiKey}` },
@@ -83,14 +90,17 @@ export async function waitForMagicLink(
             (addr) => String(addr).toLowerCase() === wantTo,
           );
           const createdMs = e.created_at ? Date.parse(e.created_at) : 0;
-          // 5s skew tolerance against the locally-captured `sinceMs`.
-          const fresh = !sinceMs || createdMs >= sinceMs - 5_000;
+          // Small skew tolerance against the locally-captured `sinceMs`.
+          // Kept tight (emails arrive <1s after submit, clocks are aligned)
+          // so a prior test's email just outside this window is excluded;
+          // `consumedEmailIds` is the real guard against same-email reuse.
+          const fresh = !sinceMs || createdMs >= sinceMs - 2_000;
           const subjOk =
             !subjectIncludes ||
             String(e.subject || "")
               .toLowerCase()
               .includes(subjectIncludes.toLowerCase());
-          return toMatch && fresh && subjOk;
+          return toMatch && fresh && subjOk && !consumedEmailIds.has(e.id);
         })
         .sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at));
 
@@ -100,7 +110,10 @@ export async function waitForMagicLink(
           return null;
         });
         const link = full && extractMagicLink(full);
-        if (link) return { link, email: full };
+        if (link) {
+          consumedEmailIds.add(c.id);
+          return { link, email: full };
+        }
       }
     }
 
