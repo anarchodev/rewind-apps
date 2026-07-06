@@ -1,0 +1,1263 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>rewind.js docs — reference</title>
+<meta name="description" content="Generated reference for every rewind.js handler global — signatures, options, examples — straight from the shipped shims.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' rx='3' fill='%2311111b'/%3E%3Cpath d='M9 4 L4.5 8 L9 12 Z M13 4 L8.5 8 L13 12 Z' fill='%23cba6f7'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="/docs.css">
+</head>
+<body>
+<div class="wrap">
+<aside>
+  <a class="brand" href="/"><span class="glyph">◀◀&hairsp;</span>rewind<b>.js</b></a>
+  <div class="tagline">documentation</div>
+  <nav>
+    <div class="group">Start</div>
+    <a href="/">Overview</a>
+    <a href="/quickstart">Quickstart</a>
+    <div class="group">Reference</div>
+    <a href="/handlers">Handlers</a>
+    <a href="/effects">Effects &amp; replay</a>
+    <a href="/reference" class="active">Globals reference</a>
+    <div class="group">More</div>
+    <a href="https://rewindjs.com">rewindjs.com</a>
+  </nav>
+</aside>
+<main>
+<article>
+  <div class="kicker">Reference</div>
+  <h1>Globals reference</h1>
+  <p class="lede">Every ambient global a handler can reach, generated from the
+     shipped shims' own documentation — the same source whose examples are
+     compiled and executed by the engine's test gate. This page cannot lag the
+     code, because it is the code.</p>
+
+<p>
+<a href="#kv"><code>kv</code></a> · <a href="#after"><code>after</code></a> · <a href="#next"><code>next</code></a> · <a href="#stream"><code>stream</code></a> · <a href="#webhook"><code>webhook</code></a> · <a href="#email"><code>email</code></a> · <a href="#scheduler"><code>scheduler</code></a> · <a href="#schedule-cron"><code>schedule / cron</code></a> · <a href="#cron-helpers"><code>cron helpers</code></a> · <a href="#retry"><code>retry</code></a> · <a href="#blob"><code>blob</code></a> · <a href="#segments"><code>segments</code></a> · <a href="#browser"><code>browser</code></a> · <a href="#crypto"><code>crypto</code></a> · <a href="#jwt"><code>jwt</code></a> · <a href="#base64"><code>base64</code></a> · <a href="#base64url"><code>base64url</code></a> · <a href="#hex"><code>hex</code></a> · <a href="#textencoder-textdecoder"><code>TextEncoder / TextDecoder</code></a> · <a href="#urlsearchparams"><code>URLSearchParams</code></a> · <a href="#console"><code>console</code></a> · <a href="#users"><code>users</code></a> · <a href="#sessions"><code>sessions</code></a> · <a href="#oauth"><code>oauth</code></a> · <a href="#oidc"><code>oidc</code></a> · <a href="#activitypub"><code>activitypub</code></a> · <a href="#platform"><code>platform</code></a> · <a href="#platform-root"><code>platform.root</code></a> · <a href="#platform-instances"><code>platform.instances</code></a> · <a href="#platform-releases"><code>platform.releases</code></a> · <a href="#platform-auth"><code>platform.auth</code></a>
+</p>
+<h2>Effects &amp; state</h2>
+<h3 id="kv"><code>kv</code></h3>
+<p>Tenant-scoped key/value store. Keys and values are strings. Every key lives in this tenant's <code>app.db</code>; reads and writes never cross tenant boundaries. All operations are replay-deterministic — the same handler run against the same recorded tape observes identical results.</p><p>Writes made via <code>kv.set</code> / <code>kv.delete</code> are buffered in the request transaction and commit atomically when the handler returns; they also replicate through Raft to followers.</p>
+<h4 id="kv-get"><code>get(key)</code></h4>
+<p>Read the value for <code>key</code>.</p>
+<table><tr><th>Param</th><th>Type</th><th></th></tr>
+<tr><td><code>key</code></td><td><code>string</code></td><td><p>The key to look up.</p></td></tr>
+</table>
+<p><b>Returns</b> <code>string|null</code> — The stored string, or <code>null</code> if the key does not exist.</p>
+<pre><code>const raw = kv.get(`user/${id}`);
+if (raw === null) return new Response("not found", { status: 404 });
+const user = JSON.parse(raw);</code></pre>
+<h4 id="kv-set"><code>set(key, value)</code></h4>
+<p>Write <code>value</code> under <code>key</code>, overwriting any existing value. The write is staged in the request transaction and commits when the handler returns successfully.</p><p>Throws if <code>key</code> falls in a platform-reserved prefix (<code>err.code === "reserved_key"</code>) or if a registered trigger rejects the write (<code>err.code === "trigger_rejected"</code>).</p>
+<table><tr><th>Param</th><th>Type</th><th></th></tr>
+<tr><td><code>key</code></td><td><code>string</code></td><td><p>The key to write.</p></td></tr>
+<tr><td><code>value</code></td><td><code>string</code></td><td><p>The string value to store. Serialize structured data yourself (e.g. <code>JSON.stringify</code>).</p></td></tr>
+</table>
+<p><b>Returns</b> <code>void</code></p>
+<pre><code>kv.set(`user/${user.id}`, JSON.stringify(user));</code></pre>
+<h4 id="kv-delete"><code>delete(key)</code></h4>
+<p>Delete <code>key</code>. A no-op if the key does not exist. Staged in the request transaction like <code>set</code>.</p>
+<table><tr><th>Param</th><th>Type</th><th></th></tr>
+<tr><td><code>key</code></td><td><code>string</code></td><td><p>The key to delete.</p></td></tr>
+</table>
+<p><b>Returns</b> <code>void</code></p>
+<pre><code>kv.delete(`session/${sid}`);</code></pre>
+<h4 id="kv-prefix"><code>prefix(prefix, cursor?, limit?)</code></h4>
+<p>Scan keys sharing a common prefix, in key order. Paginated: pass the last key of one page back as <code>cursor</code> to fetch the next.</p>
+<table><tr><th>Param</th><th>Type</th><th></th></tr>
+<tr><td><code>prefix</code></td><td><code>string</code></td><td><p>Key prefix to scan (e.g. <code>"user/"</code>).</p></td></tr>
+<tr><td><code>cursor <em>(optional)</em></code></td><td><code>string</code></td><td><p>Resume after this key. Omit, <code>null</code>, or <code>""</code> to start from the beginning of the prefix.</p></td></tr>
+<tr><td><code>limit <em>(optional)</em></code></td><td><code>number</code></td><td><p>Max entries to return. Clamped to the range 1–1000; non-positive values fall back to 100.</p></td></tr>
+</table>
+<p><b>Returns</b> <code>Array&lt;{key: string, value: string</code> — &gt;} Matching entries in ascending key order. An empty array ends the scan.</p>
+<pre><code>let cursor;
+const all = [];
+for (;;) {
+const page = kv.prefix("user/", cursor, 1000);
+if (page.length === 0) break;
+all.push(...page);
+cursor = page[page.length - 1].key;
+}</code></pre>
+<h3 id="after"><code>after</code></h3>
+<p>Connection wake triggers — re-invoke a held handler when something happens, while it still holds the socket. Register them in the body before returning <code>next()</code> (or while streaming). The runtime arms every <code>after.*</code> wake before firing any connectionless effect of the same activation, so a wake is never missed even when a callback writes the key it watches.</p>
+<pre><code>// SSE-style: stream rows, then wait for more under a prefix.
+stream.start();
+after.kv(`notif/${user}/`, { on: "onNotify" });
+return next({ user });</code></pre>
+<h4 id="after-ms"><code>ms(ms, opts?)</code></h4>
+<p>Wake the held connection after <code>ms</code> milliseconds. Named for its unit — durations are milliseconds; there is deliberately no <code>after.seconds</code> family (write <code>after.ms(5 * 60_000)</code>). Without <code>on</code>, the wake lands in the <code>onWake</code> export.</p>
+<table><tr><th>Param</th><th>Type</th><th></th></tr>
+<tr><td><code>ms</code></td><td><code>number</code></td><td><p>Delay in milliseconds (must be &gt; 0).</p></td></tr>
+<tr><td><code>opts <em>(optional)</em></code></td><td><code>object</code></td><td></td></tr>
+<tr><td><code>opts.on <em>(optional)</em></code></td><td><code>string</code></td><td><p>Export to resume into (<code>"module.method"</code> or a bare <code>"method"</code>); defaults to <code>onWake</code>.</p></td></tr>
+</table>
+<p><b>Returns</b> <code>void</code></p>
+<pre><code>after.ms(30_000, { on: "onTimeout" }); // deadline for a join</code></pre>
+<h4 id="after-kv"><code>kv(prefix, opts?)</code></h4>
+<p>Wake the held connection after any key under <code>prefix</code> changes — anchored to the version this activation read, so a write between "you read" and "you parked" still fires it. Without <code>on</code>, the wake lands in the <code>onWake</code> export.</p>
+<table><tr><th>Param</th><th>Type</th><th></th></tr>
+<tr><td><code>prefix</code></td><td><code>string</code></td><td><p>Tenant-scoped key prefix to watch.</p></td></tr>
+<tr><td><code>opts <em>(optional)</em></code></td><td><code>object</code></td><td></td></tr>
+<tr><td><code>opts.on <em>(optional)</em></code></td><td><code>string</code></td><td><p>Export to resume into; defaults to <code>onWake</code>.</p></td></tr>
+</table>
+<p><b>Returns</b> <code>void</code></p>
+<pre><code>after.kv(`rooms/${roomId}/`);             // default onWake
+after.kv(`jobs/${id}/`, { on: "onJob" }); // explicit target</code></pre>
+<h4 id="after-fetch"><code>fetch(url, opts?, dst?)</code></h4>
+<p>Perform an outbound HTTP request and wake the held connection on its result. Connection-scoped: the result resumes THIS chain's <code>{on}</code> export (defaults: <code>onFetchResult</code> for a non-streamed whole body, <code>onFetchChunk</code>/<code>onFetchDone</code> for a streamed one) while it still holds the socket; if the activation doesn't hold the socket the fetch is inert (its durable twin is <code>webhook.send</code>). With <code>opts.stream</code> each upstream writeback wakes the handler as it arrives.</p>
+<table><tr><th>Param</th><th>Type</th><th></th></tr>
+<tr><td><code>url</code></td><td><code>string</code></td><td><p>Upstream URL.</p></td></tr>
+<tr><td><code>opts <em>(optional)</em></code></td><td><code>object</code></td><td></td></tr>
+<tr><td><code>opts.method <em>(optional)</em></code></td><td><code>string</code></td><td><p>HTTP method.</p></td></tr>
+<tr><td><code>opts.headers <em>(optional)</em></code></td><td><code>Object&lt;string,string&gt;</code></td><td><p>Request headers.</p></td></tr>
+<tr><td><code>opts.body <em>(optional)</em></code></td><td><code>string|Uint8Array</code></td><td><p>Request body.</p></td></tr>
+<tr><td><code>opts.stream <em>(optional)</em></code></td><td><code>boolean</code></td><td><p>false → one result event; true → one event per upstream chunk as it arrives.</p></td></tr>
+<tr><td><code>opts.timeout_ms <em>(optional)</em></code></td><td><code>number</code></td><td><p>Per-request timeout.</p></td></tr>
+<tr><td><code>dst <em>(optional)</em></code></td><td><code>object</code></td><td></td></tr>
+<tr><td><code>dst.on <em>(optional)</em></code></td><td><code>string</code></td><td><p>Export the result wakes; overrides the per-event-shape defaults for every event of this fetch.</p></td></tr>
+</table>
+<p><b>Returns</b> <code>string</code> — The fetch id (<code>ftch_…</code>, opaque — compare to <code>request.fetchId</code>).</p>
+<pre><code>after.fetch('https://api.example.com/stream', { stream: true },
+{ on: 'onUpstream' });
+return next();</code></pre>
+<h3 id="next"><code>next</code></h3>
+<p>The held-connection disposition.</p>
+<h4 id="next-next"><code>next(ctx?)</code></h4>
+<p>Park the held connection and continue on the next activation. <code>ctx</code> threads small per-connection state forward as <code>request.ctx</code> (a stream cursor, a fan-in accumulator) — it is NOT heap state across activations (the arena resets); durable state lives in <code>kv</code>. The runtime resumes THIS module's conventional export for the activation kind. Close the connection by returning a terminal body instead.</p>
+<table><tr><th>Param</th><th>Type</th><th></th></tr>
+<tr><td><code>ctx <em>(optional)</em></code></td><td><code>*</code></td><td><p>Per-connection state for the next activation.</p></td></tr>
+</table>
+<p><b>Returns</b> <code>object</code> — The opaque park descriptor — return it.</p>
+<pre><code>stream.write(`data: ${row.value}\n\n`);
+after.kv(`feed/${id}/`);
+return next({ since: row.seq });</code></pre>
+<h3 id="stream"><code>stream</code></h3>
+<p>Connection output — produce a streamed response over time. Pair with <code>on.*</code> (to wait for more) and <code>return next()</code> (to keep the socket); close by returning a terminal body. The response head is the ambient <code>response.*</code> global, committed to the wire by the first <code>stream.start()</code> / <code>stream.write()</code> (or a terminal return).</p>
+<pre><code>// SSE: open, emit rows, then wait for more under a prefix.
+const rows = kv.prefix(`feed/${id}/`, request.ctx?.cursor);
+response.headers = { 'content-type': 'text/event-stream' };
+stream.start();
+for (const r of rows) stream.write(`data: ${r.value}\n\n`);
+after.kv(`feed/${id}/`, { on: 'onNotify' });
+return next({ cursor: rows.at(-1)?.key ?? request.ctx?.cursor });</code></pre>
+<h4 id="stream-start"><code>start()</code></h4>
+<p>Open the streamed response: commit the ambient <code>response.*</code> head and begin the stream so the client's <code>onopen</code> fires before any data. Optional — the first <code>stream.write()</code> opens it implicitly.</p>
+<p><b>Returns</b> <code>void</code></p>
+<h4 id="stream-write"><code>write(chunk)</code></h4>
+<p>Emit one chunk to the held socket. **Commit-gated**: the chunk reaches the wire only after this activation's writes commit. Call it as many times per activation as you like; raw bytes (SSE <code>data:</code> framing is yours to write).</p>
+<table><tr><th>Param</th><th>Type</th><th></th></tr>
+<tr><td><code>chunk</code></td><td><code>string|Uint8Array</code></td><td><p>The bytes to emit.</p></td></tr>
+</table>
+<p><b>Returns</b> <code>void</code></p>
+<h3 id="webhook"><code>webhook</code></h3>
+<p>Durable outbound HTTP — at-least-once delivery, replay-deterministic. Customer code that hardcoded the previous <code>http.send</code> surface should migrate to <code>webhook.send</code>; the customer-visible API is the same call shape (<code>url</code>/<code>method</code>/<code>body</code>/<code>headers</code>/<code>on_result</code>/<code>context</code> plus the new <code>handle</code> and <code>fire_at_ns</code>).</p>
+<h4 id="webhook-send"><code>send(url, opts?)</code></h4>
+<p>Send a webhook. Writes a durable <code>_send/owed/{id}</code> marker through raft, then fires the request via {@link http.fetch}. On failure the platform retries with exponential backoff (1s, 2s, 4s, …, capped at 60s, max 5 attempts) — controlled by the baked <code>__system/webhook_onresult</code> shim, not customer code. Deferred fires (scheduled sends, retries, crash recovery) ride the durable {@link scheduler} and survive leader changes.</p><p>The handler's commit gates the marker: if the handler throws or raft faults, no marker is written and no request fires. After commit the platform owns delivery; the customer's <code>on_result</code> module sees one terminal result event (success or give-up after the retry budget).</p>
+<table><tr><th>Param</th><th>Type</th><th></th></tr>
+<tr><td><code>url</code></td><td><code>string</code></td><td><p>Target URL.</p></td></tr>
+<tr><td><code>opts <em>(optional)</em></code></td><td><code>object</code></td><td></td></tr>
+<tr><td><code>opts.method <em>(optional)</em></code></td><td><code>string</code></td><td><p>HTTP method.</p></td></tr>
+<tr><td><code>opts.body <em>(optional)</em></code></td><td><code>string</code></td><td><p>Request body (string only — the durable marker is JSON).</p></td></tr>
+<tr><td><code>opts.headers <em>(optional)</em></code></td><td><code>Object&lt;string,string&gt;</code></td><td><p>Extra headers. <code>X-Rove-Schedule-Id</code> and <code>X-Rove-Schedule-Version</code> are added by the platform on fire — don't set them yourself.</p></td></tr>
+<tr><td><code>opts.handle <em>(optional)</em></code></td><td><code>string</code></td><td><p>Customer-chosen idempotency handle. Same handle → same id → same <code>_send/owed/{id}</code> row (last write wins). Omit for a fresh random id.</p></td></tr>
+<tr><td><code>opts.fire_at_ns <em>(optional)</em></code></td><td><code>bigint|number</code></td><td><p>Epoch nanoseconds. <code>&gt; now</code> defers the fire to a durable scheduled wake (the marker is written but no <code>http.fetch</code> happens until the wake fires). Omit or <code>&lt;= now</code> for fire-as-soon-as-handler-commits.</p></td></tr>
+<tr><td><code>opts.on <em>(optional)</em></code></td><td><code>string</code></td><td><p>Module path of a customer result handler. Receives the terminal event on the unified flattened surface (handler-shape §7): the response on <code>request.bytes</code> / <code>.text</code> / <code>.json</code>, <code>request.status</code> / <code>.ok</code> / <code>.bodyTruncated</code>; the threaded <code>ctx</code> value bare on <code>request.ctx</code>; delivery metadata (<code>attempts</code>, <code>error?</code>, <code>id</code>, <code>headers</code>) on <code>request.activation.*</code>. There is no <code>request.result</code>.</p></td></tr>
+<tr><td><code>opts.ctx <em>(optional)</em></code></td><td><code>*</code></td><td><p>Opaque customer payload echoed back as <code>request.ctx</code> on the result event.</p></td></tr>
+</table>
+<p><b>Returns</b> <code>string</code> — The marker id. Same value as the <code>handle</code> when one was supplied.</p>
+<pre><code>webhook.send("https://hooks.example.com/x", {
+body: JSON.stringify({ event: "order.paid", id }),
+on: "hooks/onDelivered",
+ctx: { order_id: id },
+});</code></pre>
+<pre><code>// Scheduled fire — write the marker now, fire in 5 minutes.
+webhook.send("https://example.test/reminder", {
+body: "ping",
+handle: "reminder/" + user_id,        // idempotent
+fire_at_ns: BigInt(Date.now() + 300_000) * 1_000_000n,
+});</code></pre>
+<h3 id="email"><code>email</code></h3>
+<p>Transactional email through Resend.</p>
+<h4 id="email-send"><code>send(opts)</code></h4>
+<p>Send an email. Builds the Resend API request and dispatches it via {@link webhook.send} (durable; fires after the handler commits).</p>
+<table><tr><th>Param</th><th>Type</th><th></th></tr>
+<tr><td><code>opts</code></td><td><code>object</code></td><td></td></tr>
+<tr><td><code>opts.key</code></td><td><code>string</code></td><td><p>Resend API key (sent as <code>Authorization: Bearer</code>).</p></td></tr>
+<tr><td><code>opts.from</code></td><td><code>string</code></td><td><p>Sender address.</p></td></tr>
+<tr><td><code>opts.to</code></td><td><code>string|string[]</code></td><td><p>Recipient(s).</p></td></tr>
+<tr><td><code>opts.subject</code></td><td><code>string</code></td><td><p>Subject line.</p></td></tr>
+<tr><td><code>opts.text <em>(optional)</em></code></td><td><code>string</code></td><td><p>Plain-text body.</p></td></tr>
+<tr><td><code>opts.html <em>(optional)</em></code></td><td><code>string</code></td><td><p>HTML body.</p></td></tr>
+<tr><td><code>opts.reply_to <em>(optional)</em></code></td><td><code>string</code></td><td><p>Reply-To address.</p></td></tr>
+<tr><td><code>opts.cc <em>(optional)</em></code></td><td><code>string|string[]</code></td><td><p>CC recipient(s).</p></td></tr>
+<tr><td><code>opts.bcc <em>(optional)</em></code></td><td><code>string|string[]</code></td><td><p>BCC recipient(s).</p></td></tr>
+<tr><td><code>opts.on <em>(optional)</em></code></td><td><code>string</code></td><td><p>Result handler module in this tenant (forwarded to <code>webhook.send</code>).</p></td></tr>
+<tr><td><code>opts.ctx <em>(optional)</em></code></td><td><code>*</code></td><td><p>Echoed back as <code>request.ctx</code> on the result event.</p></td></tr>
+<tr><td><code>opts.max_attempts <em>(optional)</em></code></td><td><code>number</code></td><td><p>Override the built-in webhook.send retry budget (default 5).</p></td></tr>
+<tr><td><code>opts.timeout_ms <em>(optional)</em></code></td><td><code>number</code></td><td><p>Per-attempt timeout.</p></td></tr>
+</table>
+<p><b>Returns</b> <code>string</code> — The schedule id from {@link webhook.send}.</p>
+<pre><code>const key = kv.get("secret/resend") ?? "re_dev_placeholder";
+const user = { email: "ada@example.com", name: "Ada" };
+email.send({
+key,
+from: "noreply@acme.dev",
+to: user.email,
+subject: "Welcome",
+html: `&lt;h1&gt;Hi ${user.name}&lt;/h1&gt;`,
+});</code></pre>
+<h3 id="scheduler"><code>scheduler</code></h3>
+<p>Durable, one-shot, absolute-time scheduled wakes. The canonical timer primitive — cron, webhook retry, delayed jobs, lease/TTL expiry all compose on <code>scheduler.at</code>. At-least-once *firing*; the target owns dedup + any retry.</p>
+<pre><code>scheduler.in(30 * 60_000, "jobs/reminder", { userId });
+scheduler.at(cron.dailyAt(3, 0), "jobs/cleanup", null,
+{ key: "cleanup/daily" }); // idempotent, re-armable</code></pre>
+<h4 id="scheduler-at"><code>at(whenNs, target, msg?, opts?)</code></h4>
+<p>Schedule <code>target</code> to run at absolute time <code>whenNs</code>. At-least-once firing — the target sees <code>request.activation = { kind: "durable_wake", id, key, scheduled_at_ns, msg }</code> and owns dedup. <code>whenNs</code> rounds up to the next 1 s tick. Re-arming = call again with the same <code>opts.key</code> (moves <code>when</code>/<code>target</code>/<code>msg</code>, last-write-wins).</p>
+<table><tr><th>Param</th><th>Type</th><th></th></tr>
+<tr><td><code>whenNs</code></td><td><code>bigint</code></td><td><p>Absolute fire time, nanoseconds since epoch (e.g. from <code>cron.dailyAt</code> / <code>cron.fromNow</code>). A past time fires on the next sweep.</p></td></tr>
+<tr><td><code>target</code></td><td><code>string</code></td><td><p>Handler module specifier to invoke (same shape as a subscription module path).</p></td></tr>
+<tr><td><code>msg <em>(optional)</em></code></td><td><code>*</code></td><td><p>JSON-serializable payload, surfaced as <code>request.activation.msg</code>. Capped at 16 KiB serialized.</p></td></tr>
+<tr><td><code>opts <em>(optional)</em></code></td><td><code>object</code></td><td></td></tr>
+<tr><td><code>opts.key <em>(optional)</em></code></td><td><code>string</code></td><td><p>Idempotency key. Same key ⇒ same id ⇒ last-write-wins. Omit for a fresh random id.</p></td></tr>
+</table>
+<p><b>Returns</b> <code>string</code> — The stable schedule id.</p>
+<pre><code>const id = scheduler.at(cron.fromNow("1h"), "jobs/expire", { leaseId });</code></pre>
+<h4 id="scheduler-in"><code>in(delayMs, target, msg?, opts?)</code></h4>
+<p>Convenience: schedule <code>target</code> <code>delayMs</code> milliseconds from now. Rounds up to the next 1 s tick (so a sub-second delay fires at the next tick).</p>
+<table><tr><th>Param</th><th>Type</th><th></th></tr>
+<tr><td><code>delayMs</code></td><td><code>number</code></td><td><p>Delay from now in milliseconds (≤ 0 ⇒ fire on the next sweep).</p></td></tr>
+<tr><td><code>target</code></td><td><code>string</code></td><td><p>Handler module specifier.</p></td></tr>
+<tr><td><code>msg <em>(optional)</em></code></td><td><code>*</code></td><td><p>JSON-serializable payload (see {@link scheduler.at}).</p></td></tr>
+<tr><td><code>opts <em>(optional)</em></code></td><td><code>object</code></td><td></td></tr>
+<tr><td><code>opts.key <em>(optional)</em></code></td><td><code>string</code></td><td><p>Idempotency key (see {@link scheduler.at}).</p></td></tr>
+</table>
+<p><b>Returns</b> <code>string</code> — The stable schedule id.</p>
+<pre><code>scheduler.in(5000, "jobs/poll");</code></pre>
+<h4 id="scheduler-cancel"><code>cancel(id)</code></h4>
+<p>Cancel a scheduled wake by id. Removes both the <code>_sched/by_id</code> and <code>_sched/by_time</code> entries. Idempotent: cancelling an unknown / already-fired id returns <code>false</code>.</p>
+<table><tr><th>Param</th><th>Type</th><th></th></tr>
+<tr><td><code>id</code></td><td><code>string</code></td><td><p>The id returned by <code>at</code> / <code>after</code> (or <code>_idFromKey(opts.key)</code>).</p></td></tr>
+</table>
+<p><b>Returns</b> <code>boolean</code> — <code>true</code> iff an entry was removed.</p>
+<pre><code>scheduler.cancel(id);</code></pre>
+<h4 id="scheduler-get"><code>get(id)</code></h4>
+<p>Look up a scheduled wake by id.</p>
+<table><tr><th>Param</th><th>Type</th><th></th></tr>
+<tr><td><code>id</code></td><td><code>string</code></td><td><p>The id returned by <code>at</code> / <code>after</code>.</p></td></tr>
+</table>
+<p><b>Returns</b> <code>{id: string, whenNs: bigint, target: string,
+key: (string|null)</code> — | null} The schedule, or <code>null</code> if unknown / already fired.</p>
+<pre><code>const s = scheduler.get(id);
+if (s) console.log(s.target, s.whenNs);</code></pre>
+<h3 id="schedule-cron"><code>schedule / cron</code></h3>
+<p>Durable, connectionless timers.</p>
+<h4 id="schedule-cron-schedule"><code>schedule(when, target, ctx?)</code></h4>
+<p>Run <code>target</code> once, at a time. Connectionless + durable.</p>
+<table><tr><th>Param</th><th>Type</th><th></th></tr>
+<tr><td><code>when</code></td><td><code>object</code></td><td><p><code>{ at }</code> (absolute) or <code>{ in }</code> (delay). <code>at</code>: bigint ns | number ms-since-epoch | Date | ISO string. <code>in</code>: number ms | duration string (<code>"24h"</code>, <code>"30m"</code>, …).</p></td></tr>
+<tr><td><code>target</code></td><td><code>string</code></td><td><p>Module specifier to run, e.g. <code>"sendReminder"</code>.</p></td></tr>
+<tr><td><code>ctx <em>(optional)</em></code></td><td><code>*</code></td><td><p>JSON-serializable value delivered as <code>request.activation.msg</code>.</p></td></tr>
+</table>
+<p><b>Returns</b> <code>string</code> — The schedule id (cancel via <code>scheduler.cancel(id)</code>).</p>
+<pre><code>schedule({ in: "24h" }, "sendReminder", { user });
+schedule({ at: cron.dailyAt(3, 0) }, "jobs/cleanup");</code></pre>
+<h3 id="cron-helpers"><code>cron helpers</code></h3>
+<p>Fire-time helpers for durable scheduling.</p>
+<h4 id="cron-helpers-tofireatns"><code>toFireAtNs(input)</code></h4>
+<p>Coerce a time input to BigInt nanoseconds-since-epoch.</p>
+<table><tr><th>Param</th><th>Type</th><th></th></tr>
+<tr><td><code>input</code></td><td><code>bigint|number|Date|string|null</code></td><td><p>BigInt (ns, passed through); number/Date (ms-since-epoch); string (duration suffix like <code>"30s"</code>/<code>"5m"</code>/<code>"2h"</code>/<code>"1d"</code>/<code>"1w"</code> relative to now, or ISO-8601); <code>null</code> → <code>0n</code> (fire ASAP).</p></td></tr>
+</table>
+<p><b>Returns</b> <code>bigint</code> — Nanoseconds since epoch.</p>
+<pre><code>cron.toFireAtNs("2h");                     // 2 hours from now
+cron.toFireAtNs("2026-06-01T03:00:00Z");   // absolute</code></pre>
+<h4 id="cron-helpers-parseduration"><code>parseDuration(s)</code></h4>
+<p>Parse a duration string to milliseconds.</p>
+<table><tr><th>Param</th><th>Type</th><th></th></tr>
+<tr><td><code>s</code></td><td><code>string</code></td><td><p><code>&lt;n&gt;&lt;unit&gt;</code>, unit ∈ <code>s|m|h|d|w</code> (e.g. <code>"5m"</code>, <code>"1w"</code>).</p></td></tr>
+</table>
+<p><b>Returns</b> <code>number|null</code> — Milliseconds, or <code>null</code> if <code>s</code> isn't a duration (callers fall back to ISO parsing).</p>
+<pre><code>cron.parseDuration("2h"); // 7200000</code></pre>
+<h4 id="cron-helpers-fromnow"><code>fromNow(s)</code></h4>
+<p><code>now + parseDuration(s)</code> as a fire time.</p>
+<table><tr><th>Param</th><th>Type</th><th></th></tr>
+<tr><td><code>s</code></td><td><code>string</code></td><td><p>Duration string (see {@link cron.parseDuration}).</p></td></tr>
+</table>
+<p><b>Returns</b> <code>bigint</code> — Nanoseconds since epoch.</p>
+<pre><code>webhook.send("https://hooks.example.com/x", { fire_at_ns: cron.fromNow("30m") });</code></pre>
+<h4 id="cron-helpers-dailyat"><code>dailyAt(hour, minute)</code></h4>
+<p>Next occurrence of <code>hour:minute</code> UTC; tomorrow's slot if today's has passed.</p>
+<table><tr><th>Param</th><th>Type</th><th></th></tr>
+<tr><td><code>hour</code></td><td><code>number</code></td><td><p>0–23.</p></td></tr>
+<tr><td><code>minute</code></td><td><code>number</code></td><td><p>0–59.</p></td></tr>
+</table>
+<p><b>Returns</b> <code>bigint</code> — Nanoseconds since epoch.</p>
+<pre><code>cron.dailyAt(3, 0); // next 03:00 UTC</code></pre>
+<h4 id="cron-helpers-weeklyat"><code>weeklyAt(dayOfWeek, hour, minute)</code></h4>
+<p>Next occurrence of <code>dayOfWeek</code> at <code>hour:minute</code> UTC.</p>
+<table><tr><th>Param</th><th>Type</th><th></th></tr>
+<tr><td><code>dayOfWeek</code></td><td><code>number</code></td><td><p>0=Sunday … 6=Saturday.</p></td></tr>
+<tr><td><code>hour</code></td><td><code>number</code></td><td><p>0–23.</p></td></tr>
+<tr><td><code>minute</code></td><td><code>number</code></td><td><p>0–59.</p></td></tr>
+</table>
+<p><b>Returns</b> <code>bigint</code> — Nanoseconds since epoch.</p>
+<pre><code>cron.weeklyAt(1, 9, 0); // next Monday 09:00 UTC</code></pre>
+<h4 id="cron-helpers-hourly"><code>hourly()</code></h4>
+<p>Top of the next hour (UTC).</p>
+<p><b>Returns</b> <code>bigint</code> — Nanoseconds since epoch.</p>
+<pre><code>webhook.send("https://hooks.example.com/x", { fire_at_ns: cron.hourly() });</code></pre>
+<h4 id="cron-helpers-next"><code>next(expr, now_ms?)</code></h4>
+<p>Next match of a 5-field crontab expression (UTC), at minute granularity. Day-of-month / day-of-week follow Vixie cron: when both are restricted, a match on *either* counts.</p><p>Fields: <code>minute hour day-of-month month day-of-week</code>. Each accepts <code>*</code> (any), <code>N</code>, <code>N,M,...</code> (list), <code>N-M</code> (range), or a trailing <code>/N</code> step on <code>*</code> or a range (e.g. a star then slash-15 in the minute field = every 15 minutes).</p>
+<table><tr><th>Param</th><th>Type</th><th></th></tr>
+<tr><td><code>expr</code></td><td><code>string</code></td><td><p>e.g. <code>"0 3 * * *"</code> (daily 03:00) or <code>"0 9 * * 1-5"</code> (weekdays 09:00).</p></td></tr>
+<tr><td><code>now_ms <em>(optional)</em></code></td><td><code>number</code></td><td><p>Base time (ms since epoch); defaults to <code>Date.now()</code>. Mainly for testing.</p></td></tr>
+</table>
+<p><b>Returns</b> <code>bigint</code> — Nanoseconds since epoch of the next match.</p>
+<pre><code>webhook.send("https://hooks.example.com/x", { fire_at_ns: cron.next("0 3 * * *") });</code></pre>
+<h3 id="retry"><code>retry</code></h3>
+<p>Customer-side retry policy layered on {@link webhook.send}. All retry state lives in this tenant's own context — no platform retry loop, no cross-tenant privileges. The chain only advances when the on_result handler explicitly calls {@link retry.next}.</p>
+<pre><code>// Fire with a policy.
+retry.send({
+url: "https://stripe.com/charge",
+on: "charges/handler",
+max_attempts: 3,
+backoff_ms: [1000, 5000, 30000], // or a number, or omit
+ctx: { charge_id: 42 },
+});
+
+// charges/handler.mjs — the {on} handler. The result arrives
+// on the unified flattened surface (handler-shape §7).
+export default function () {
+const event = {
+ok: request.ok, status: request.status, body: request.text,
+error: request.activation.error, context: request.ctx,
+};
+if (retry.shouldRetry(event)) { retry.next(event); return; }
+const ctx = retry.stripContext(event);
+// ... your terminal handling ...
+}</code></pre>
+<h4 id="retry-send"><code>send(opts)</code></h4>
+<p>Fire a one-shot <code>webhook.send</code> wrapped with a retry policy. The on_result module receives events with <code>event.context._retry</code> populated; drive the chain with the helpers below.</p>
+<table><tr><th>Param</th><th>Type</th><th></th></tr>
+<tr><td><code>opts</code></td><td><code>object</code></td><td></td></tr>
+<tr><td><code>opts.url</code></td><td><code>string</code></td><td><p>Target URL.</p></td></tr>
+<tr><td><code>opts.on</code></td><td><code>string</code></td><td><p>Result handler module path in this tenant (non-empty).</p></td></tr>
+<tr><td><code>opts.max_attempts <em>(optional)</em></code></td><td><code>number</code></td><td><p>Total attempts incl. the first (positive integer).</p></td></tr>
+<tr><td><code>opts.backoff_ms <em>(optional)</em></code></td><td><code>number|number[]</code></td><td><p>Constant delay, a per-attempt schedule, or omit for exponential 1s/4s/16s… capped at 60s.</p></td></tr>
+<tr><td><code>opts.method <em>(optional)</em></code></td><td><code>string</code></td><td><p>HTTP method.</p></td></tr>
+<tr><td><code>opts.headers <em>(optional)</em></code></td><td><code>Object&lt;string,string&gt;</code></td><td><p>Request headers.</p></td></tr>
+<tr><td><code>opts.body <em>(optional)</em></code></td><td><code>string</code></td><td><p>Request body.</p></td></tr>
+<tr><td><code>opts.timeout_ms <em>(optional)</em></code></td><td><code>number</code></td><td><p>Per-request timeout.</p></td></tr>
+<tr><td><code>opts.fire_at_ns <em>(optional)</em></code></td><td><code>bigint</code></td><td><p>Delay the first attempt.</p></td></tr>
+<tr><td><code>opts.ctx <em>(optional)</em></code></td><td><code>*</code></td><td><p>Echoed back (under your own keys; <code>_retry</code> is reserved).</p></td></tr>
+</table>
+<p><b>Returns</b> <code>string</code> — The {@link webhook.send} schedule id.</p>
+<h4 id="retry-shouldretry"><code>shouldRetry(event)</code></h4>
+<p>Whether <code>event</code> should be retried: a failure with attempts remaining. Always <code>false</code> on success or when retry context is absent.</p>
+<table><tr><th>Param</th><th>Type</th><th></th></tr>
+<tr><td><code>event</code></td><td><code>object</code></td><td><p>The (flat) result event with <code>ok</code> + <code>context._retry</code>. See the module comment for how to flatten from <code>request.ctx</code>.</p></td></tr>
+</table>
+<p><b>Returns</b> <code>boolean</code></p>
+<h4 id="retry-next"><code>next(event)</code></h4>
+<p>Schedule the next attempt (applies the backoff). No-op returning <code>null</code> if the event isn't retryable — check {@link retry.shouldRetry} first.</p>
+<table><tr><th>Param</th><th>Type</th><th></th></tr>
+<tr><td><code>event</code></td><td><code>object</code></td><td><p>The result event.</p></td></tr>
+</table>
+<p><b>Returns</b> <code>string|null</code> — New schedule id, or <code>null</code>.</p>
+<h4 id="retry-stripcontext"><code>stripContext(event)</code></h4>
+<p><code>event.context</code> with the reserved <code>_retry</code> meta removed. Returns a fresh object (no mutation); idempotent on events that never went through {@link retry.send}.</p>
+<table><tr><th>Param</th><th>Type</th><th></th></tr>
+<tr><td><code>event</code></td><td><code>object</code></td><td><p>The result event.</p></td></tr>
+</table>
+<p><b>Returns</b> <code>object|null</code> — Your original context, or <code>null</code>.</p>
+<h4 id="retry-attempt"><code>attempt(event)</code></h4>
+<p>Current 1-based attempt number (1 on the first fire, 2 on the first retry, …). <code>null</code> when retry context is missing.</p>
+<table><tr><th>Param</th><th>Type</th><th></th></tr>
+<tr><td><code>event</code></td><td><code>object</code></td><td><p>The result event.</p></td></tr>
+</table>
+<p><b>Returns</b> <code>number|null</code></p>
+<h3 id="blob"><code>blob</code></h3>
+<p>Content-addressed tenant object storage.</p>
+<h4 id="blob-put"><code>put(bytes, opts?)</code></h4>
+<p>Store bytes content-addressed. Returns the sha256 hash (the object's permanent key) synchronously — index it in kv in the same activation; the index write, the durable <code>_blob/owed/{hash}</code> marker, and the rest of your writeset commit atomically, then the PUT fires post-commit (idempotent: same bytes → same key).</p><p>Durability semantics (P1): the owed marker is written before the PUT and cleared by the platform when the PUT succeeds. On terminal PUT failure the marker persists with <code>failed: true</code> as durable evidence, and your <code>on_result</code> module (if given) sees <code>ok: false</code> — re-putting the same bytes is always safe. Automatic re-PUT via source-activation re-execution is the §2.5 recovery model and lands after P1.</p>
+<table><tr><th>Param</th><th>Type</th><th></th></tr>
+<tr><td><code>bytes</code></td><td><code>string|Uint8Array</code></td><td><p>Object content. Strings store their UTF-8 bytes; use Uint8Array for binary. Bounded by the activation arena — multi-MB media wants the streaming verbs (P2/P3, not yet shipped).</p></td></tr>
+<tr><td><code>opts <em>(optional)</em></code></td><td><code>object</code></td><td></td></tr>
+<tr><td><code>opts.content_type <em>(optional)</em></code></td><td><code>string</code></td><td><p>Stored Content-Type, returned on direct GETs of the object.</p></td></tr>
+<tr><td><code>opts.on <em>(optional)</em></code></td><td><code>string</code></td><td><p>Module path receiving the terminal result on the unified flattened surface (handler-shape §7): <code>request.ok</code> / <code>request.status</code> top-level, the echoed <code>context</code> (the threaded value) IS <code>request.ctx</code>, and the stored <code>hash</code> is on <code>request.activation.hash</code>.</p></td></tr>
+<tr><td><code>opts.ctx <em>(optional)</em></code></td><td><code>*</code></td><td><p>Opaque payload echoed to the <code>on</code> module as <code>request.ctx</code>.</p></td></tr>
+</table>
+<p><b>Returns</b> <code>string</code> — The object's sha256 hash (64 hex chars).</p>
+<pre><code>const hash = blob.put(JSON.stringify(event));
+kv.set(`timeline/${room}/${seq}`, JSON.stringify({ hash }));</code></pre>
+<h4 id="blob-get"><code>get(hash, opts?)</code></h4>
+<p>Read an object. Connection-scoped (<code>after.fetch</code> semantics): the result resumes THIS held connection — by default in <code>onFetchResult</code>, or the export named by <code>to</code>. Inert in a connectionless activation. A missing object surfaces as a non-2xx result; reads carry no marker — the caller retries.</p>
+<table><tr><th>Param</th><th>Type</th><th></th></tr>
+<tr><td><code>hash</code></td><td><code>string</code></td><td><p>The object's sha256 hash.</p></td></tr>
+<tr><td><code>opts <em>(optional)</em></code></td><td><code>object</code></td><td></td></tr>
+<tr><td><code>opts.on <em>(optional)</em></code></td><td><code>string</code></td><td><p>Export name to resume in.</p></td></tr>
+<tr><td><code>opts.ctx <em>(optional)</em></code></td><td><code>*</code></td><td><p>Delivered as <code>request.ctx</code> on the resume (JSON round-trip).</p></td></tr>
+<tr><td><code>opts.stream <em>(optional)</em></code></td><td><code>boolean</code></td><td><p>Per-chunk delivery (default false: one whole-body result, up to <code>max_bytes</code>).</p></td></tr>
+<tr><td><code>opts.max_bytes <em>(optional)</em></code></td><td><code>number</code></td><td><p>Whole-body transport cap (default 8 MB). The per-request arena (100 MiB allocation volume) comfortably covers decoding bodies this size; for serving bytes your handler doesn't execute on, prefer the <code>blob.url</code> redirect — the bytes then never touch the worker.</p></td></tr>
+</table>
+<p><b>Returns</b> <code>string</code> — The fetch id.</p>
+<pre><code>export default function () {
+const rec = JSON.parse(kv.get(`media/${id}`) ?? "{}");
+if (rec.hash) { blob.get(rec.hash, { on: "onBlob" }); return next(); }
+return next();
+}
+export function onBlob() { return request.bytes; } // flattened payload accessors; request.status top-level</code></pre>
+<h4 id="blob-url"><code>url(hash, opts?)</code></h4>
+<p>Mint a presigned download URL for an object — the zero-copy read path. Answer a download request with a redirect and the bytes flow storage→client without touching the worker:</p><p>response.status = 307; response.headers = { location: blob.url(hash, { ttl: 300 }) }; return "";</p><p>The URL's timestamp derives from the activation's taped clock, so replay reproduces it exactly.</p>
+<table><tr><th>Param</th><th>Type</th><th></th></tr>
+<tr><td><code>hash</code></td><td><code>string</code></td><td><p>The object's sha256 hash.</p></td></tr>
+<tr><td><code>opts <em>(optional)</em></code></td><td><code>object</code></td><td></td></tr>
+<tr><td><code>opts.ttl <em>(optional)</em></code></td><td><code>number</code></td><td><p>Validity in seconds (default 300, max 604800 = 7 days).</p></td></tr>
+<tr><td><code>opts.content_type <em>(optional)</em></code></td><td><code>string</code></td><td><p>Signed response Content-Type override (S3 returns exactly this).</p></td></tr>
+</table>
+<p><b>Returns</b> <code>string</code> — The presigned URL.</p>
+<h4 id="blob-write"><code>write(bytes)</code></h4>
+<p>Append bytes to this connection's upload session (created on the first write). The session accumulates across the chain's activations — write each streamed <code>after.fetch</code> chunk from its resume, or call repeatedly within one activation — then {@link blob.seal} turns the whole accumulation into one content-addressed object.</p><p>Caps (P2): 64 MiB per session, 2 open sessions per tenant — exceeding either throws. A session whose chain dies without sealing is swept after ~2 minutes idle; nothing reaches storage before <code>seal</code>, so abandonment costs nothing.</p>
+<table><tr><th>Param</th><th>Type</th><th></th></tr>
+<tr><td><code>bytes</code></td><td><code>string|Uint8Array</code></td><td><p>Chunk to append. Strings append their UTF-8 bytes; use Uint8Array for binary.</p></td></tr>
+</table>
+<p><b>Returns</b> <code>number</code> — Total session bytes after the append.</p>
+<pre><code>export function onMirrorChunk() {
+if (!request.done) { blob.write(request.bytes); return next(); }
+blob.seal({ on: "onStored", content_type: "image/png" });
+return next();
+}</code></pre>
+<h4 id="blob-seal"><code>seal(opts)</code></h4>
+<p>Seal this connection's upload session: hash the accumulated bytes (sha256 = the object's key), return the hash synchronously, and PUT the bytes content-addressed. The PUT's result resumes THIS connection at the <code>to</code> export with <code>request.status</code>; thread the hash there via <code>next({ hash })</code> (the chain-ctx idiom). Connection-scoped like <code>after.fetch</code>: without a held connection the seal is inert.</p><p>Durability contract: there is no owed marker — your <code>to</code> export observing a 2xx status IS the signal the object is durable; write your kv index there. On failure, re-uploading the same bytes is always safe (same hash, idempotent PUT).</p>
+<table><tr><th>Param</th><th>Type</th><th></th></tr>
+<tr><td><code>opts</code></td><td><code>object</code></td><td></td></tr>
+<tr><td><code>opts.on</code></td><td><code>string</code></td><td><p>Export resumed with the PUT result (required).</p></td></tr>
+<tr><td><code>opts.content_type <em>(optional)</em></code></td><td><code>string</code></td><td><p>Stored Content-Type.</p></td></tr>
+</table>
+<p><b>Returns</b> <code>string</code> — The object's sha256 hash (64 hex chars).</p>
+<pre><code>export function onHeaders() {
+blob.receive({ on: "onStored" });
+return next();
+}
+
+export function onStored() {
+if (request.status !== 200) { response.status = 502; return "store failed"; }
+kv.set(`media/${mxc()}`, JSON.stringify({ hash: request.ctx.hash }));
+return JSON.stringify({ content_uri: request.ctx.hash });
+}</code></pre>
+<h4 id="blob-receive"><code>receive(opts)</code></h4>
+<p>Pipe the entire inbound request body socket → content-addressed storage with ZERO chunk activations (Case B, blob-storage-plan §3.5; <code>docs/architecture/routing-and-ingress.md</code>). Only callable from an <code>onHeaders</code> export — the body hasn't been accepted yet; calling <code>blob.receive</code> then <code>return next()</code> opens the valve. Bytes stream to a tenant-prefix S3 multipart at the client's rate (flow-controlled to the upload rate) and NEVER enter a handler activation or the tape — the completion event is all replay needs.</p><p>The chain resumes at <code>to</code> when the object is durable: <code>request.ctx = { hash, len }</code> with <code>request.activation.ok === true</code>. On failure (client disconnect, storage error) <code>to</code> runs with <code>request.activation.ok === false</code> and nothing was stored — S3 multipart is commit-gated, so a torn upload is invisible.</p><p>The litmus (vs <code>onChunk</code> + blob.write): does your logic depend on the CONTENT of the bytes? No → this, one PUT. Yes → the chunk path, which tapes what you read.</p>
+<table><tr><th>Param</th><th>Type</th><th></th></tr>
+<tr><td><code>opts</code></td><td><code>object</code></td><td></td></tr>
+<tr><td><code>opts.on</code></td><td><code>string</code></td><td><p>Export resumed with <code>{hash, len}</code> when the object is durable (required).</p></td></tr>
+</table>
+<pre><code>export function onHeaders() {
+if (!authed(request.headers)) { response.status = 401; return "no"; }
+blob.receive({ on: "onStored" });
+return next();
+}
+export function onStored() {
+if (!request.activation.ok) { response.status = 502; return "store failed"; }
+kv.set(`media/${request.ctx.hash}`, JSON.stringify({ len: request.ctx.len }));
+return JSON.stringify({ hash: request.ctx.hash });
+}</code></pre>
+<h3 id="segments"><code>segments</code></h3>
+<p>Sealed-segment append log: hot kv tail + content-addressed history.</p><p>The canonical recipe for event-sourced state (timelines, event logs, audit trails): <code>append</code> is a kv write riding your handler's writeset; a cron-driven <code>seal</code> compacts old rows into blob storage so the kv footprint stays bounded by the working set.</p>
+<h4 id="segments-append"><code>append(stream, value)</code></h4>
+<p>Append one record to a stream's hot tail. An ordinary kv write — atomic with the rest of this activation's writeset, read-your- writes within it.</p>
+<table><tr><th>Param</th><th>Type</th><th></th></tr>
+<tr><td><code>stream</code></td><td><code>string</code></td><td><p>Stream id (<code>[A-Za-z0-9_-]{1,64}</code>).</p></td></tr>
+<tr><td><code>value</code></td><td><code>string</code></td><td><p>The record. Non-strings are rejected — serialize yourself (<code>JSON.stringify</code>) so reads are symmetric.</p></td></tr>
+</table>
+<p><b>Returns</b> <code>number</code> — The record's sequence number (0-based, monotonic per stream).</p>
+<pre><code>const seq = segments.append(`room-${id}`, JSON.stringify(event));
+kv.set(`latest/${id}`, String(seq));</code></pre>
+<h4 id="segments-get"><code>get(stream, seq, opts?)</code></h4>
+<p>Read one record. Hot records return synchronously; sealed records need a blob fetch, so the result resumes THIS held connection at <code>opts.to</code> — use {@link segments.slice} there to extract the record from the segment.</p>
+<table><tr><th>Param</th><th>Type</th><th></th></tr>
+<tr><td><code>stream</code></td><td><code>string</code></td><td><p>Stream id.</p></td></tr>
+<tr><td><code>seq</code></td><td><code>number</code></td><td><p>Sequence number.</p></td></tr>
+<tr><td><code>opts <em>(optional)</em></code></td><td><code>object</code></td><td></td></tr>
+<tr><td><code>opts.on <em>(optional)</em></code></td><td><code>string</code></td><td><p>Export resumed with the segment for a sealed read. Required when the record may be sealed.</p></td></tr>
+</table>
+<p><b>Returns</b> <code>string|null|undefined</code> — The value (hot), <code>null</code> (no such record), or <code>undefined</code> (sealed — the fetch is in flight, return <code>next()</code> and finish in <code>opts.to</code>).</p>
+<pre><code>export default function () {
+const v = segments.get("room-7", 42, { on: "onSeg" });
+if (typeof v === "string") return v;          // hot
+if (v === null) { response.status = 404; return "gone"; }
+return next();                                 // sealed
+}
+export function onSeg() {
+if (!request.done) return next();
+return segments.slice(request);
+}</code></pre>
+<h4 id="segments-slice"><code>slice(req)</code></h4>
+<p>Extract the requested record from a sealed-segment fetch resume. Call from the <code>to</code> export <code>segments.get</code> routed to, after <code>request.done</code>.</p>
+<table><tr><th>Param</th><th>Type</th><th></th></tr>
+<tr><td><code>req</code></td><td><code>object</code></td><td><p>The <code>request</code> global of the resume.</p></td></tr>
+</table>
+<p><b>Returns</b> <code>string</code> — The record value.</p>
+<h4 id="segments-seal"><code>seal(stream, opts?)</code></h4>
+<p>Seal the oldest hot records into one content-addressed segment. Call from a cron target per stream (the cadence IS your kv-cap ↔ object-storage trade-off knob). The call only serializes + fires the durable PUT; the swap — index row written, hot rows deleted, one atomic writeset — runs in <code>__system/segments_onsealed</code> strictly after storage confirmed the bytes, so a crash anywhere leaves the log readable and the next seal retries idempotently.</p>
+<table><tr><th>Param</th><th>Type</th><th></th></tr>
+<tr><td><code>stream</code></td><td><code>string</code></td><td><p>Stream id.</p></td></tr>
+<tr><td><code>opts <em>(optional)</em></code></td><td><code>object</code></td><td></td></tr>
+<tr><td><code>opts.min <em>(optional)</em></code></td><td><code>number</code></td><td><p>Skip the seal entirely when fewer hot rows than this (avoids confetti segments).</p></td></tr>
+<tr><td><code>opts.max <em>(optional)</em></code></td><td><code>number</code></td><td><p>Seal at most this many rows per call (bounds the segment blob and this activation's work).</p></td></tr>
+</table>
+<p><b>Returns</b> <code>number</code> — Rows being sealed (0 = below <code>min</code>, no-op).</p>
+<pre><code>// cron("*\/5 * * * *", "sealRooms") in your module:
+export function sealRooms() {
+for (const s of JSON.parse(kv.get("rooms") ?? "[]"))
+segments.seal(`room-${s}`);
+}</code></pre>
+<h3 id="browser"><code>browser</code></h3>
+<p>Server-side helpers for driving the in-page agent SDK.</p>
+<h4 id="browser-message"><code>message(request)</code></h4>
+<p>Decode an inbound agent frame from an <code>onMessage</code> activation. Returns the parsed object (<code>{t, ...}</code>), or <code>null</code> if this activation is not a parseable agent frame.</p>
+<table><tr><th>Param</th><th>Type</th><th></th></tr>
+<tr><td><code>request</code></td><td><code>object</code></td><td><p>The handler's <code>request</code>.</p></td></tr>
+</table>
+<p><b>Returns</b> <code>object|null</code></p>
+<h4 id="browser-act"><code>act(action)</code></h4>
+<p>Tell the page to perform one action. <code>action</code> is <code>{op, ...}</code> where <code>op</code> is one of the ops from {@link browser.tools}: <code>click</code> / <code>type</code> / <code>scroll</code> / <code>navigate</code> / <code>snapshot</code>. Include an <code>id</code> to correlate the page's <code>result</code> frame.</p>
+<table><tr><th>Param</th><th>Type</th><th></th></tr>
+<tr><td><code>action</code></td><td><code>object</code></td><td><p>e.g. <code>{id, op:"click", ref:"12"}</code>.</p></td></tr>
+</table>
+<p><b>Returns</b> <code>void</code></p>
+<h4 id="browser-status"><code>status(text)</code></h4>
+<p>Update the page's "agent active" indicator text.</p>
+<table><tr><th>Param</th><th>Type</th><th></th></tr>
+<tr><td><code>text</code></td><td><code>string</code></td><td></td></tr>
+</table>
+<p><b>Returns</b> <code>void</code></p>
+<h4 id="browser-confirm"><code>confirm(req)</code></h4>
+<p>Ask the user to approve an action before the page performs it. The page replies with a <code>confirm_result</code> frame (<code>{id, approved}</code>), which the handler reads via {@link browser.message}. Use for destructive / high-stakes actions (submit, purchase, delete).</p>
+<table><tr><th>Param</th><th>Type</th><th></th></tr>
+<tr><td><code>req</code></td><td><code>object</code></td><td><p><code>{id, prompt, action}</code>.</p></td></tr>
+</table>
+<p><b>Returns</b> <code>void</code></p>
+<h4 id="browser-done"><code>done(message?)</code></h4>
+<p>Signal the agent run is finished and optionally show a final message. Leaves the connection open (the user dismisses via the SDK's kill switch).</p>
+<table><tr><th>Param</th><th>Type</th><th></th></tr>
+<tr><td><code>message <em>(optional)</em></code></td><td><code>string</code></td><td></td></tr>
+</table>
+<p><b>Returns</b> <code>void</code></p>
+<h4 id="browser-render"><code>render(snap)</code></h4>
+<p>Render a <code>snapshot</code> frame into compact, LLM-friendly text — one line per element: <code>[ref] role "name" = value (state)</code>. Pixel-free and token-cheap; this is the default perception channel. Accepts either the whole snapshot frame or its <code>elements</code> array.</p>
+<table><tr><th>Param</th><th>Type</th><th></th></tr>
+<tr><td><code>snap</code></td><td><code>object|Array</code></td><td><p>A <code>snapshot</code> frame or its elements.</p></td></tr>
+</table>
+<p><b>Returns</b> <code>string</code></p>
+<h4 id="browser-tools"><code>tools(opts?)</code></h4>
+<p>The vendor-neutral action schema the page can execute. Adapt these to your model's tool-call format (the reference handler shows the Claude adaptation). Returned as plain data so it works with any LLM surface.</p>
+<table><tr><th>Param</th><th>Type</th><th></th></tr>
+<tr><td><code>opts <em>(optional)</em></code></td><td><code>object</code></td><td></td></tr>
+<tr><td><code>opts.screenshots <em>(optional)</em></code></td><td><code>boolean</code></td><td><p>Include the opt-in <code>screenshot</code> op. Only set this when the page SDK was started with <code>screenshots: true</code>; otherwise the model would call a tool the page will refuse. Pixels are a fallback for when structure isn't enough — gate them on a <code>_config</code> flag, not by default.</p></td></tr>
+</table>
+<p><b>Returns</b> <code>Array&lt;{op:string, desc:string, params:object</code> — &gt;}</p>
+<h4 id="browser-getreplay"><code>getReplay(request, opts)</code></h4>
+<p>Pull this session's recent handler activations from the durable replay log — the "why" channel. Issues a read-only fetch through the internal <code>rewind-logs.internal</code> door, which the engine pins to THIS handler's own tenant (it can't reach another tenant's logs). The result wakes <code>opts.to</code>; the handler must <code>return next(...)</code> after this to hold the connection across the round-trip — same shape as <code>after.fetch</code>.</p><p>Defaults to filtering by the engine per-connection session key (<code>request.correlation_id</code>, indexed as the reserved <code>_corr</code> tag), which is stamped on EVERY activation automatically — no per-frame tagging needed. Pass <code>opts.session</code> to filter by a <code>request.tag("session", …)</code> value instead (survives reconnects).</p>
+<table><tr><th>Param</th><th>Type</th><th></th></tr>
+<tr><td><code>request</code></td><td><code>object</code></td><td><p>the handler's <code>request</code>.</p></td></tr>
+<tr><td><code>opts</code></td><td><code>object</code></td><td><p><code>{on, since?, limit?, session?}</code>. <code>on</code> is the callback export name (required); <code>since</code> an <code>after_received_ns</code> cursor; <code>limit</code> max records (default 50).</p></td></tr>
+</table>
+<p><b>Returns</b> <code>boolean</code> — false if it couldn't issue (no tenant/connection).</p>
+<h4 id="browser-replayresult"><code>replayResult(request)</code></h4>
+<p>Decode the replay-fetch result delivered to your <code>getReplay</code> callback. Reads the bound-fetch <code>request.json</code> into <code>{records: [...], next_cursor}</code>. Each record: <code>{request_id, received_ns, duration_ns, status, method, path, host, outcome}</code>. Returns <code>{records: []}</code> on any decode failure.</p>
+<table><tr><th>Param</th><th>Type</th><th></th></tr>
+<tr><td><code>request</code></td><td><code>object</code></td><td><p>the callback's <code>request</code>.</p></td></tr>
+</table>
+<p><b>Returns</b> <code>{records: Array, next_cursor: object|null</code> — }</p>
+<h4 id="browser-renderreplay"><code>renderReplay(result)</code></h4>
+<p>Render a {@link browser.replayResult} into compact, LLM-friendly text — one line per activation, newest first.</p>
+<table><tr><th>Param</th><th>Type</th><th></th></tr>
+<tr><td><code>result</code></td><td><code>object</code></td><td><p>from {@link browser.replayResult}.</p></td></tr>
+</table>
+<p><b>Returns</b> <code>string</code></p>
+<h4 id="browser-image"><code>image(frame)</code></h4>
+<p>Decode an inbound <code>screenshot</code> frame (the page's reply to an <code>op:"screenshot"</code> action). Returns <code>{ok:true, mime, bytes, data}</code> — <code>bytes</code> a Uint8Array to {@link blob.put} for the durable record, <code>data</code> the raw base64 to hand your model as an image block — or <code>{ok:false, error}</code> if the user declined / capture failed, or <code>null</code> if <code>frame</code> isn't a screenshot frame.</p>
+<table><tr><th>Param</th><th>Type</th><th></th></tr>
+<tr><td><code>frame</code></td><td><code>object</code></td><td><p>A decoded frame from {@link browser.message}.</p></td></tr>
+</table>
+<p><b>Returns</b> <code>{ok:boolean, mime?:string, bytes?:Uint8Array, data?:string, error?:string</code> — |null}</p>
+<h2>Utilities</h2>
+<h3 id="crypto"><code>crypto</code></h3>
+<p>Cryptographic primitives. Random sources (<code>getRandomValues</code>, <code>randomUUID</code>, <code>randomBytes</code>) are replay-deterministic — captured to the request tape and re-issued identically on replay. Hash and signature-verify operations are pure functions of their inputs and are not taped.</p>
+<h4 id="crypto-getrandomvalues"><code>getRandomValues(typedArray)</code></h4>
+<p>Fill a typed array with cryptographically random bytes, in place. Web Crypto compatible.</p>
+<table><tr><th>Param</th><th>Type</th><th></th></tr>
+<tr><td><code>typedArray</code></td><td><code>Uint8Array</code></td><td><p>The array to fill.</p></td></tr>
+</table>
+<p><b>Returns</b> <code>Uint8Array</code> — The same array instance, now filled.</p>
+<pre><code>const salt = crypto.getRandomValues(new Uint8Array(16));</code></pre>
+<h4 id="crypto-randomuuid"><code>randomUUID()</code></h4>
+<p>Generate a random RFC 4122 v4 UUID string.</p>
+<p><b>Returns</b> <code>string</code> — e.g. <code>"f47ac10b-58cc-4372-a567-0e02b2c3d479"</code>.</p>
+<pre><code>const id = crypto.randomUUID();</code></pre>
+<h4 id="crypto-randombytes"><code>randomBytes(n)</code></h4>
+<p>Return <code>n</code> cryptographically random bytes.</p>
+<table><tr><th>Param</th><th>Type</th><th></th></tr>
+<tr><td><code>n</code></td><td><code>number</code></td><td><p>Byte count. Non-negative integer ≤ 65536; out of range throws <code>RangeError</code>.</p></td></tr>
+</table>
+<p><b>Returns</b> <code>Uint8Array</code> — <code>n</code> fresh random bytes.</p>
+<pre><code>const token = base64url.encode(crypto.randomBytes(32));</code></pre>
+<h4 id="crypto-sha256"><code>sha256(data)</code></h4>
+<p>SHA-256 digest of <code>data</code>.</p>
+<table><tr><th>Param</th><th>Type</th><th></th></tr>
+<tr><td><code>data</code></td><td><code>string|Uint8Array</code></td><td><p>String (hashed as UTF-8 bytes) or raw bytes.</p></td></tr>
+</table>
+<p><b>Returns</b> <code>string</code> — Lowercase hex, 64 characters.</p>
+<pre><code>const fp = crypto.sha256(JSON.stringify(payload));</code></pre>
+<h4 id="crypto-hmacsha256"><code>hmacSha256(key, data)</code></h4>
+<p>HMAC-SHA256 of <code>data</code> under <code>key</code>. The vendor-neutral primitive for Stripe-Signature / X-Slack-Signature / AWS SigV4 style derivations (compose the provider's exact scheme in handler JS).</p>
+<table><tr><th>Param</th><th>Type</th><th></th></tr>
+<tr><td><code>key</code></td><td><code>string|Uint8Array</code></td><td><p>Secret key (UTF-8 if string).</p></td></tr>
+<tr><td><code>data</code></td><td><code>string|Uint8Array</code></td><td><p>Message bytes (UTF-8 if string).</p></td></tr>
+</table>
+<p><b>Returns</b> <code>string</code> — Lowercase hex, 64 characters.</p>
+<pre><code>const sig = crypto.hmacSha256(webhookSecret, request.bytes);
+if (sig !== request.headers["x-signature"]) return unauthorized();</code></pre>
+<h4 id="crypto-verifyrsa"><code>verifyRsa(alg, data, sig)</code></h4>
+<p>Verify an RSA-PKCS#1 v1.5 (RS256/RS384/RS512) signature. Used to validate OIDC id_tokens. Does NOT validate JWT claims (iss/aud/ exp/iat/nbf) — verify the signature here, then check claims.</p>
+<table><tr><th>Param</th><th>Type</th><th></th></tr>
+<tr><td><code>{{kty:string,n:string,e:string}} jwk - Public key from
+the provider JWKS (`n`/`e` base64url). Other fields ignored.</code></td><td><code></code></td><td></td></tr>
+<tr><td><code>alg</code></td><td><code>string</code></td><td><p><code>"sha256"</code> | <code>"sha384"</code> | <code>"sha512"</code> (case-insensitive).</p></td></tr>
+<tr><td><code>data</code></td><td><code>Uint8Array</code></td><td><p>JWS signing input bytes (<code>header_b64 + "." + payload_b64</code>, UTF-8).</p></td></tr>
+<tr><td><code>sig</code></td><td><code>Uint8Array</code></td><td><p>Raw signature bytes (the base64url- decoded third JWS segment).</p></td></tr>
+</table>
+<p><b>Returns</b> <code>boolean</code> — <code>true</code> if valid, <code>false</code> if it does not match. Throws on malformed input.</p>
+<pre><code>const ok = crypto.verifyRsa(jwks.keys[0], "sha256", signingInput, sigBytes);</code></pre>
+<h4 id="crypto-verifyecdsa"><code>verifyEcdsa(alg, data, sig)</code></h4>
+<p>Verify a JWS ECDSA (ES256/ES384/ES512) signature — Sign in with Apple, AWS Cognito on EC keys, etc. Does NOT validate JWT claims. The signature is raw <code>R||S</code> per JWS (not DER); the binding converts internally.</p>
+<table><tr><th>Param</th><th>Type</th><th></th></tr>
+<tr><td><code>{{kty:string,crv:string,x:string,y:string}} jwk - EC
+public key; `crv` is `"P-256"` | `"P-384"` | `"P-521"`.</code></td><td><code></code></td><td></td></tr>
+<tr><td><code>alg</code></td><td><code>string</code></td><td><p><code>"sha256"</code> | <code>"sha384"</code> | <code>"sha512"</code> (case-insensitive; match it to the curve).</p></td></tr>
+<tr><td><code>data</code></td><td><code>Uint8Array</code></td><td><p>JWS signing input bytes.</p></td></tr>
+<tr><td><code>sig</code></td><td><code>Uint8Array</code></td><td><p>Raw <code>R||S</code> (64 B for P-256, 96 for P-384, 132 for P-521).</p></td></tr>
+</table>
+<p><b>Returns</b> <code>boolean</code> — <code>true</code> if valid, <code>false</code> otherwise. Throws on malformed input.</p>
+<pre><code>const ok = crypto.verifyEcdsa(appleKey, "sha256", signingInput, sigBytes);</code></pre>
+<h4 id="crypto-oidcgeneratekey"><code>oidcGenerateKey()</code></h4>
+<p>Generate an RSA-2048 keypair for an OIDC identity provider. The private key is returned as an opaque PEM the IdP stores and never parses (key custody stays in Zig/OpenSSL).</p>
+<p><b>Returns</b> <code>{priv:string, jwk:{kty:string,n:string,e:string,alg:string,use:string,kid:string</code> — , kid:string}} <code>priv</code> is an opaque PKCS#8 PEM; <code>jwk</code> is publishable at the JWKS endpoint; <code>kid</code> is the key id.</p>
+<pre><code>const { priv, jwk, kid } = crypto.oidcGenerateKey();
+kv.set("oidc/privkey", priv);
+kv.set("oidc/jwks", JSON.stringify({ keys: [jwk] }));</code></pre>
+<h4 id="crypto-oidcsign"><code>oidcSign(privPem, signingInput)</code></h4>
+<p>RS256-sign an OIDC JWS signing input with a private key minted by {@link crypto.oidcGenerateKey}.</p>
+<table><tr><th>Param</th><th>Type</th><th></th></tr>
+<tr><td><code>privPem</code></td><td><code>string</code></td><td><p>The opaque PEM from <code>oidcGenerateKey</code>.</p></td></tr>
+<tr><td><code>signingInput</code></td><td><code>string</code></td><td><p><code>header_b64 + "." + payload_b64</code>.</p></td></tr>
+</table>
+<p><b>Returns</b> <code>string</code> — base64url-encoded RS256 signature (the third JWS segment).</p>
+<pre><code>const jwt = signingInput + "." + crypto.oidcSign(priv, signingInput);</code></pre>
+<h4 id="crypto-ecdsageneratekey"><code>ecdsaGenerateKey(curve)</code></h4>
+<p>Generate a raw ECDSA keypair over <code>secp256k1</code> or <code>P-256</code> — the two signing curves the AT Protocol (Bluesky) uses for repo signing keys and <code>did:plc</code> rotation keys.</p><p>Distinct from {@link crypto.oidcGenerateKey} (RSA, JOSE) and the JWK {@link crypto.verifyEcdsa} path (JOSE, DER-tolerant): this surface is raw bytes, SHA-256, compact <code>R‖S</code> signatures, with **low-S enforced** — the malleability rule the atproto data model requires. Multibase/multicodec <code>did:key</code> encoding of the public key is pure JS (done in the <code>atproto</code> library).</p>
+<table><tr><th>Param</th><th>Type</th><th></th></tr>
+<tr><td><code>curve</code></td><td><code>string</code></td><td><p><code>"secp256k1"</code> | <code>"P-256"</code>.</p></td></tr>
+</table>
+<p><b>Returns</b> <code>{privateKey:Uint8Array, publicKey:Uint8Array</code> — } <code>privateKey</code> is the 32-byte scalar; <code>publicKey</code> is the 33-byte compressed SEC1 point (<code>0x02</code>/<code>0x03 ‖ X</code>).</p>
+<pre><code>const { privateKey, publicKey } = crypto.ecdsaGenerateKey("secp256k1");
+kv.set("repo/signing-key", base64url.encode(privateKey));</code></pre>
+<h4 id="crypto-ecdsasign"><code>ecdsaSign(curve, privateKey, data)</code></h4>
+<p>ECDSA-sign <code>data</code> (SHA-256 digest) with a raw private scalar from {@link crypto.ecdsaGenerateKey}. The signature is the 64-byte compact <code>R‖S</code> form atproto stores in signed commits, always low-S normalized.</p>
+<table><tr><th>Param</th><th>Type</th><th></th></tr>
+<tr><td><code>curve</code></td><td><code>string</code></td><td><p><code>"secp256k1"</code> | <code>"P-256"</code>.</p></td></tr>
+<tr><td><code>privateKey</code></td><td><code>Uint8Array</code></td><td><p>32-byte scalar.</p></td></tr>
+<tr><td><code>data</code></td><td><code>Uint8Array</code></td><td><p>Message bytes (e.g. the dag-cbor encoding of an unsigned commit).</p></td></tr>
+</table>
+<p><b>Returns</b> <code>Uint8Array</code> — 64-byte raw <code>R‖S</code> signature.</p>
+<pre><code>const sig = crypto.ecdsaSign("secp256k1", priv, dagCborBytes);</code></pre>
+<h4 id="crypto-ecdsaverify"><code>ecdsaVerify(curve, publicKey, data, sig)</code></h4>
+<p>Verify a 64-byte compact ECDSA signature (SHA-256). A high-S signature returns <code>false</code> even if it is mathematically valid — atproto rejects malleable signatures, so this primitive enforces the rule rather than leaving it to callers.</p>
+<table><tr><th>Param</th><th>Type</th><th></th></tr>
+<tr><td><code>curve</code></td><td><code>string</code></td><td><p><code>"secp256k1"</code> | <code>"P-256"</code>.</p></td></tr>
+<tr><td><code>publicKey</code></td><td><code>Uint8Array</code></td><td><p>SEC1 point: 33-byte compressed or 65-byte uncompressed.</p></td></tr>
+<tr><td><code>data</code></td><td><code>Uint8Array</code></td><td><p>Message bytes that were signed.</p></td></tr>
+<tr><td><code>sig</code></td><td><code>Uint8Array</code></td><td><p>64-byte raw <code>R‖S</code> signature.</p></td></tr>
+</table>
+<p><b>Returns</b> <code>boolean</code> — <code>true</code> iff valid and low-S.</p>
+<pre><code>const ok = crypto.ecdsaVerify("secp256k1", pub, commitBytes, sig);</code></pre>
+<h3 id="jwt"><code>jwt</code></h3>
+<p>JWS/JWT decode + verification, layered on {@link crypto.verifyRsa}/{@link crypto.verifyEcdsa} + {@link base64url}. Supports RS256/384/512 and ES256/384/512. PS\* (RSA-PSS) and HS\* (HMAC) are intentionally excluded — HMAC tokens enable alg-confusion attacks.</p>
+<pre><code>const { valid, payload } = jwt.verify(token, jwksSet);
+if (!valid) return reject();
+if (jwt.validateClaims(payload, { iss, aud })) return reject();</code></pre>
+<h4 id="jwt-decode"><code>decode(token)</code></h4>
+<p>Split a JWT into its parts. Does NOT verify the signature.</p>
+<table><tr><th>Param</th><th>Type</th><th></th></tr>
+<tr><td><code>token</code></td><td><code>string</code></td><td><p>Compact JWS (<code>header.payload.sig</code>).</p></td></tr>
+</table>
+<p><b>Returns</b> <code>{header:object, payload:object, signature_b64:string,
+signing_input:string</code> — |null} <code>null</code> on malformed input (wrong dot count, bad base64url, non-JSON header/payload).</p>
+<pre><code>const kid = jwt.decode(token)?.header.kid;</code></pre>
+<h4 id="jwt-verify"><code>verify(token, jwks_or_jwk)</code></h4>
+<p>Verify a JWT signature. Does NOT validate claims — call {@link jwt.validateClaims} on the returned <code>payload</code> next.</p><p>Key selection: a bare JWK is used directly; from a JWKS the key matching the header <code>kid</code> is chosen, or the sole key when there is exactly one. Algorithm comes from the header <code>alg</code>.</p>
+<table><tr><th>Param</th><th>Type</th><th></th></tr>
+<tr><td><code>token</code></td><td><code>object</code></td><td><p>Compact JWS string.</p></td></tr>
+<tr><td><code>jwks_or_jwk</code></td><td><code>object|object[]</code></td><td><p>A bare JWK, a JWKS (<code>{keys:[…]}</code>), or a bare array of JWKs.</p></td></tr>
+</table>
+<p><b>Returns</b> <code>{valid:boolean, header:object, payload:object</code> — } <code>valid:false</code> means the signature did not match.</p>
+<pre><code>const { valid, payload } = jwt.verify(idToken, jwks);</code></pre>
+<h4 id="jwt-validateclaims"><code>validateClaims(payload, opts?)</code></h4>
+<p>Validate standard JWT claims. Call AFTER a successful {@link jwt.verify}.</p>
+<table><tr><th>Param</th><th>Type</th><th></th></tr>
+<tr><td><code>payload</code></td><td><code>object</code></td><td><p>The verified token payload.</p></td></tr>
+<tr><td><code>opts <em>(optional)</em></code></td><td><code>object</code></td><td></td></tr>
+<tr><td><code>opts.iss <em>(optional)</em></code></td><td><code>string</code></td><td><p>Expected issuer.</p></td></tr>
+<tr><td><code>opts.aud <em>(optional)</em></code></td><td><code>string</code></td><td><p>Expected audience; passes if it appears in <code>payload.aud</code> (string or array).</p></td></tr>
+<tr><td><code>opts.now <em>(optional)</em></code></td><td><code>number</code></td><td><p>Now, ms since epoch (default <code>Date.now()</code>).</p></td></tr>
+<tr><td><code>opts.leeway_s <em>(optional)</em></code></td><td><code>number</code></td><td><p>Clock-skew tolerance for <code>exp</code>/<code>nbf</code>.</p></td></tr>
+</table>
+<p><b>Returns</b> <code>string|null</code> — <code>null</code> if all checks pass, else the first failure: <code>"no-payload"</code> | <code>"expired"</code> | <code>"not-yet-valid"</code> | <code>"issuer-mismatch"</code> | <code>"audience-mismatch"</code>.</p>
+<pre><code>const err = jwt.validateClaims(payload, { iss, aud: clientId });
+if (err) return new Response(err, { status: 401 });</code></pre>
+<h3 id="base64"><code>base64</code></h3>
+
+<h4 id="base64-btoa"><code>btoa(s)</code></h4>
+<p>Encode a binary string to padded standard base64 (browser <code>btoa</code>).</p>
+<table><tr><th>Param</th><th>Type</th><th></th></tr>
+<tr><td><code>s</code></td><td><code>string</code></td><td><p>Binary string; each char is one byte (0–255). Non-Latin-1 chars throw.</p></td></tr>
+</table>
+<p><b>Returns</b> <code>string</code> — Standard-alphabet base64 with <code>=</code> padding.</p>
+<pre><code>btoa("hello"); // "aGVsbG8="</code></pre>
+<h4 id="base64-atob"><code>atob(s)</code></h4>
+<p>Decode standard base64 to a binary string (browser <code>atob</code>). Tolerates padding and whitespace.</p>
+<table><tr><th>Param</th><th>Type</th><th></th></tr>
+<tr><td><code>s</code></td><td><code>string</code></td><td><p>Standard-alphabet base64.</p></td></tr>
+</table>
+<p><b>Returns</b> <code>string</code> — Binary string (one char per byte). Use <code>TextDecoder</code> for UTF-8 interpretation. Invalid input throws.</p>
+<pre><code>atob("aGVsbG8="); // "hello"</code></pre>
+<h3 id="base64url"><code>base64url</code></h3>
+<p>URL-safe base64 (no padding) over bytes — the shape PKCE / JWT verification needs.</p>
+<h4 id="base64url-encode"><code>encode(input)</code></h4>
+<p>Encode bytes as URL-safe base64, no padding.</p>
+<table><tr><th>Param</th><th>Type</th><th></th></tr>
+<tr><td><code>input</code></td><td><code>Uint8Array|string|number[]</code></td><td><p>Bytes; a string is first UTF-8 encoded.</p></td></tr>
+</table>
+<p><b>Returns</b> <code>string</code> — URL-safe base64 (<code>-</code>/<code>_</code>, no <code>=</code>).</p>
+<pre><code>base64url.encode(crypto.randomBytes(32)); // PKCE verifier</code></pre>
+<h4 id="base64url-decode"><code>decode(s)</code></h4>
+<p>Decode URL-safe base64 to bytes. Tolerates padding and the standard (<code>+</code>/<code>/</code>) alphabet too (liberal in what it accepts).</p>
+<table><tr><th>Param</th><th>Type</th><th></th></tr>
+<tr><td><code>s</code></td><td><code>string</code></td><td><p>base64url (or standard) text.</p></td></tr>
+</table>
+<p><b>Returns</b> <code>Uint8Array</code> — Decoded bytes. Invalid input throws.</p>
+<pre><code>const token = "aGVhZA.cGF5bG9hZA.c2ln";
+const sig = base64url.decode(token.split(".")[2]);</code></pre>
+<h3 id="hex"><code>hex</code></h3>
+<p>Hex string ⇄ bytes. Bridges the platform's hex-returning crypto APIs to the byte-oriented base64url surface — e.g. <code>base64url.encode(hex.decode(crypto.sha256(x)))</code> is a PKCE code_challenge in two calls.</p>
+<h4 id="hex-encode"><code>encode(bytes)</code></h4>
+<p>Encode bytes as a lowercase hex string.</p>
+<table><tr><th>Param</th><th>Type</th><th></th></tr>
+<tr><td><code>bytes</code></td><td><code>Uint8Array|number[]</code></td><td><p>Bytes to encode.</p></td></tr>
+</table>
+<p><b>Returns</b> <code>string</code> — Lowercase hex, 2 chars per byte.</p>
+<pre><code>hex.encode(new Uint8Array([255, 0])); // "ff00"</code></pre>
+<h4 id="hex-decode"><code>decode(s)</code></h4>
+<p>Decode a hex string to bytes. Accepts upper or lower case.</p>
+<table><tr><th>Param</th><th>Type</th><th></th></tr>
+<tr><td><code>s</code></td><td><code>string</code></td><td><p>Even-length hex string.</p></td></tr>
+</table>
+<p><b>Returns</b> <code>Uint8Array</code> — Decoded bytes. Odd length or non-hex chars throw.</p>
+<pre><code>hex.decode("ff00"); // Uint8Array([255, 0])</code></pre>
+<h3 id="textencoder-textdecoder"><code>TextEncoder / TextDecoder</code></h3>
+<p>UTF-8 bytes ↔ string.</p>
+<h4 id="textencoder-textdecoder-encode"><code>encode(input)</code></h4>
+<p>get encoding() { return "utf-8"; } /** Encode a string as UTF-8.</p>
+<table><tr><th>Param</th><th>Type</th><th></th></tr>
+<tr><td><code>input</code></td><td><code>string</code></td><td><p>Coerced to a string; nullish → <code>""</code>.</p></td></tr>
+</table>
+<p><b>Returns</b> <code>Uint8Array</code> — The UTF-8 bytes. Lone surrogates encode as U+FFFD (WHATWG replacement behavior).</p>
+<pre><code>const bytes = new TextEncoder().encode("héllo"); // 6 bytes</code></pre>
+<h4 id="textencoder-textdecoder-constructor"><code>constructor(label?)</code></h4>
+
+<table><tr><th>Param</th><th>Type</th><th></th></tr>
+<tr><td><code>label <em>(optional)</em></code></td><td><code>string</code></td><td><p>Encoding label. Only <code>"utf-8"</code>/<code>"utf8"</code> accepted; anything else throws <code>RangeError</code>.</p></td></tr>
+<tr><td><code>{{fatal?: boolean}} [options] - `fatal: true` throws
+`TypeError` on malformed UTF-8 instead of substituting U+FFFD.</code></td><td><code></code></td><td></td></tr>
+</table>
+<h4 id="textencoder-textdecoder-decode"><code>decode(buffer?)</code></h4>
+<p>get encoding() { return "utf-8"; } /** Decode UTF-8 bytes to a string.</p>
+<table><tr><th>Param</th><th>Type</th><th></th></tr>
+<tr><td><code>buffer <em>(optional)</em></code></td><td><code>Uint8Array|ArrayBuffer|ArrayBufferView</code></td><td><p>Bytes to decode; nullish → <code>""</code>. Non-BufferSource → <code>TypeError</code>.</p></td></tr>
+</table>
+<p><b>Returns</b> <code>string</code> — The decoded string. Malformed sequences become U+FFFD unless <code>fatal</code> was set.</p>
+<pre><code>const s = new TextDecoder().decode(new Uint8Array([104, 105]));
+// "hi"</code></pre>
+<h3 id="urlsearchparams"><code>URLSearchParams</code></h3>
+<p>Query/form-body parsing.</p>
+<h4 id="urlsearchparams-constructor"><code>constructor(init?)</code></h4>
+
+<table><tr><th>Param</th><th>Type</th><th></th></tr>
+<tr><td><code>init <em>(optional)</em></code></td><td><code>string|Object&lt;string,*&gt;|Array&lt;[string,string]&gt;|URLSearchParams</code></td><td><p>Query string (leading <code>?</code> optional), plain object, array of <code>[name, value]</code> pairs, or another instance (cloned).</p></td></tr>
+</table>
+<h4 id="urlsearchparams-append"><code>append(name, value)</code></h4>
+<p>get size() { return this._list.length; }</p><p>/** Append a new pair (does not replace existing ones).</p>
+<table><tr><th>Param</th><th>Type</th><th></th></tr>
+<tr><td><code>name</code></td><td><code>string</code></td><td></td></tr>
+<tr><td><code>value</code></td><td><code>string</code></td><td></td></tr>
+</table>
+<p><b>Returns</b> <code>void</code></p>
+<h4 id="urlsearchparams-delete"><code>delete(name)</code></h4>
+<p>Remove all pairs with <code>name</code>.</p>
+<table><tr><th>Param</th><th>Type</th><th></th></tr>
+<tr><td><code>name</code></td><td><code>string</code></td><td></td></tr>
+</table>
+<p><b>Returns</b> <code>void</code></p>
+<h4 id="urlsearchparams-get"><code>get(name)</code></h4>
+
+<table><tr><th>Param</th><th>Type</th><th></th></tr>
+<tr><td><code>name</code></td><td><code>string</code></td><td></td></tr>
+</table>
+<p><b>Returns</b> <code>string|null</code> — The first value for <code>name</code>, or <code>null</code>.</p>
+<h4 id="urlsearchparams-getall"><code>getAll(name)</code></h4>
+
+<table><tr><th>Param</th><th>Type</th><th></th></tr>
+<tr><td><code>name</code></td><td><code>string</code></td><td></td></tr>
+</table>
+<p><b>Returns</b> <code>string[]</code> — All values for <code>name</code>, in insertion order.</p>
+<h4 id="urlsearchparams-has"><code>has(name)</code></h4>
+
+<table><tr><th>Param</th><th>Type</th><th></th></tr>
+<tr><td><code>name</code></td><td><code>string</code></td><td></td></tr>
+</table>
+<p><b>Returns</b> <code>boolean</code> — Whether any pair has <code>name</code>.</p>
+<h4 id="urlsearchparams-set"><code>set(name, value)</code></h4>
+<p>Set <code>name</code> to a single <code>value</code>, replacing any existing pairs (keeps the first slot's position).</p>
+<table><tr><th>Param</th><th>Type</th><th></th></tr>
+<tr><td><code>name</code></td><td><code>string</code></td><td></td></tr>
+<tr><td><code>value</code></td><td><code>string</code></td><td></td></tr>
+</table>
+<p><b>Returns</b> <code>void</code></p>
+<h4 id="urlsearchparams-sort"><code>sort()</code></h4>
+<p>Stable-sort pairs by name (UCS-2 code units, per spec).</p>
+<p><b>Returns</b> <code>void</code></p>
+<h4 id="urlsearchparams-tostring"><code>toString()</code></h4>
+
+<p><b>Returns</b> <code>string</code> — <code>application/x-www-form-urlencoded</code> string (spaces as <code>+</code>), round-trippable through the platform.</p>
+<h4 id="urlsearchparams-foreach"><code>forEach(callback, thisArg?)</code></h4>
+<p>Invoke <code>callback(value, name, this)</code> for each pair.</p>
+<table><tr><th>Param</th><th>Type</th><th></th></tr>
+<tr><td><code>callback</code></td><td><code>function(string, string, URLSearchParams): void</code></td><td></td></tr>
+<tr><td><code>thisArg <em>(optional)</em></code></td><td><code>*</code></td><td><p><code>this</code> inside <code>callback</code>.</p></td></tr>
+</table>
+<p><b>Returns</b> <code>void</code></p>
+<h3 id="console"><code>console</code></h3>
+<p>Handler logging. Output is captured into the per-request log buffer (not stdout) and surfaces in the tenant's request logs and the replay shell — it is part of the recorded, replay-deterministic request trace.</p>
+<h4 id="console-log"><code>log(args)</code></h4>
+<p>Write a line to the request log. Arguments are converted to strings, space-joined, and terminated with a newline — the same shape as a single <code>console.log</code> call in a browser or Node.</p>
+<table><tr><th>Param</th><th>Type</th><th></th></tr>
+<tr><td><code>args</code></td><td><code>...*</code></td><td><p>Values to log. Each is coerced to a string; pass <code>JSON.stringify(obj)</code> to log structured data readably.</p></td></tr>
+</table>
+<p><b>Returns</b> <code>void</code></p>
+<pre><code>console.log("charge ok", chargeId, JSON.stringify({ amount }));
+// → "charge ok 42 {"amount":1999}" in the request log</code></pre>
+<h2>Identity &amp; federation</h2>
+<h3 id="users"><code>users</code></h3>
+<p>Managed user store. B2C, passwordless. The library owns no namespace — all keys are plain kv in the calling tenant (docs/users-lib-plan.md).</p>
+<h4 id="users-create"><code>create(input)</code></h4>
+<p>Create a user. Email is normalized (trim + lowercase) and must be unique — the email index is the link join key (P2b), so a duplicate is a hard error rather than a silent second account.</p>
+<table><tr><th>Param</th><th>Type</th><th></th></tr>
+<tr><td><code>input</code></td><td><code>object</code></td><td><p><code>{email}</code> required; optional <code>email_verified</code> (default <code>false</code>), <code>name</code>, <code>avatar</code>, <code>metadata:{public,private}</code>.</p></td></tr>
+</table>
+<p><b>Returns</b> <code>object</code> — The created record.</p>
+<pre><code>const u = users.create({ email: "ada@example.com", email_verified: true });</code></pre>
+<h4 id="users-get"><code>get(uid)</code></h4>
+<p>Fetch a user by uid.</p>
+<table><tr><th>Param</th><th>Type</th><th></th></tr>
+<tr><td><code>uid</code></td><td><code>string</code></td><td></td></tr>
+</table>
+<p><b>Returns</b> <code>object|null</code> — The record, or <code>null</code> if absent.</p>
+<h4 id="users-byemail"><code>byEmail(email)</code></h4>
+<p>Fetch a user by email (normalized) via the email index.</p>
+<table><tr><th>Param</th><th>Type</th><th></th></tr>
+<tr><td><code>email</code></td><td><code>string</code></td><td></td></tr>
+</table>
+<p><b>Returns</b> <code>object|null</code> — The record, or <code>null</code> if no such user.</p>
+<h4 id="users-update"><code>update(uid, patch)</code></h4>
+<p>Patch a user. Only <code>name</code>, <code>avatar</code>, <code>email_verified</code> and <code>metadata.public</code>/<code>metadata.private</code> are patchable. Changing <code>email</code> is a distinct, index-rewriting operation — deliberately not done here (P2b owns identity moves).</p>
+<table><tr><th>Param</th><th>Type</th><th></th></tr>
+<tr><td><code>uid</code></td><td><code>string</code></td><td></td></tr>
+<tr><td><code>patch</code></td><td><code>object</code></td><td></td></tr>
+</table>
+<p><b>Returns</b> <code>object</code> — The updated record.</p>
+<h4 id="users-list"><code>list(cursor?, limit?)</code></h4>
+<p>List users (records only — session subkeys are filtered out).</p>
+<table><tr><th>Param</th><th>Type</th><th></th></tr>
+<tr><td><code>cursor <em>(optional)</em></code></td><td><code>string</code></td><td><p>Opaque; pass the prior <code>next_cursor</code>.</p></td></tr>
+<tr><td><code>limit <em>(optional)</em></code></td><td><code>number</code></td><td><p>1–1000, default 100.</p></td></tr>
+</table>
+<p><b>Returns</b> <code>object</code> — <code>{users:[record,…], next_cursor?}</code>.</p>
+<h4 id="users-disable"><code>disable(uid)</code></h4>
+<p>Disable a user (status → <code>"disabled"</code>). Guards/sessions treat a disabled user as logged-out (enforced in P2c). Reversible via {@link users.enable}.</p>
+<table><tr><th>Param</th><th>Type</th><th></th></tr>
+<tr><td><code>uid</code></td><td><code>string</code></td><td></td></tr>
+</table>
+<p><b>Returns</b> <code>object</code> — The updated record.</p>
+<h4 id="users-enable"><code>enable(uid)</code></h4>
+<p>Re-enable a disabled user (status → <code>"active"</code>).</p>
+<table><tr><th>Param</th><th>Type</th><th></th></tr>
+<tr><td><code>uid</code></td><td><code>string</code></td><td></td></tr>
+</table>
+<p><b>Returns</b> <code>object</code> — The updated record.</p>
+<h3 id="sessions"><code>sessions</code></h3>
+<p>Cookie-backed session storage on top of {@link kv}. Config lives at <code>_config/sessions/{name}</code> (a JSON file in your tree, mirrored read-only to kv at deploy); state at <code>state/sessions/{name}/{id}</code>.</p>
+<h4 id="sessions-constructor"><code>constructor(config)</code></h4>
+
+<table><tr><th>Param</th><th>Type</th><th></th></tr>
+<tr><td><code>config</code></td><td><code>object</code></td><td><p>Merged over the defaults (cookie_name/max_age_s/same_site/secure/http_only/path). <code>state_path</code> is required (set by {@link sessions.fromConfig}).</p></td></tr>
+</table>
+<h4 id="sessions-create"><code>create(data)</code></h4>
+<p>Create a session: write the row, set the cookie on the response, return the new id. <code>created_at</code> (ms) is stamped in.</p>
+<table><tr><th>Param</th><th>Type</th><th></th></tr>
+<tr><td><code>data</code></td><td><code>object</code></td><td><p>Arbitrary session payload.</p></td></tr>
+</table>
+<p><b>Returns</b> <code>string</code> — The new session id.</p>
+<pre><code>sessions.fromConfig().create({ user_sub: payload.sub });</code></pre>
+<h4 id="sessions-get"><code>get()</code></h4>
+<p>Read the current request's session payload.</p>
+<p><b>Returns</b> <code>object|null</code> — The stored payload (incl. <code>created_at</code>), or <code>null</code> if there is no/unknown session cookie.</p>
+<pre><code>const sess = sessions.fromConfig().get();
+if (!sess) { response.status = 401; return "no session"; }</code></pre>
+<h4 id="sessions-update"><code>update(patch)</code></h4>
+<p>Update the current session row.</p>
+<table><tr><th>Param</th><th>Type</th><th></th></tr>
+<tr><td><code>patch</code></td><td><code>object|function(object): object</code></td><td><p>An object shallow-merged into the current payload, or a <code>(current) =&gt; next</code> function.</p></td></tr>
+</table>
+<p><b>Returns</b> <code>object|null</code> — The updated payload, or <code>null</code> if there is no session.</p>
+<pre><code>sessions.fromConfig().update({ last_seen: Date.now() });</code></pre>
+<h4 id="sessions-destroy"><code>destroy()</code></h4>
+<p>Delete the current session row and clear the cookie (logout). No-op if there is no session.</p>
+<p><b>Returns</b> <code>void</code></p>
+<pre><code>sessions.fromConfig().destroy();</code></pre>
+<h4 id="sessions-rotate"><code>rotate()</code></h4>
+<p>Rotate the session id, keeping the data and refreshing the cookie. Use after a privilege change (login, role grant) to defend against session-fixation.</p>
+<p><b>Returns</b> <code>string|null</code> — The new id, or <code>null</code> if there is no session.</p>
+<pre><code>sessions.fromConfig().rotate(); // call right after login</code></pre>
+<h4 id="sessions-fromconfig"><code>fromConfig(arg?)</code></h4>
+<p>Resolve a config and return a {@link Sessions} instance. <code>state_path</code> defaults to <code>state/sessions/{name}</code>.</p>
+<table><tr><th>Param</th><th>Type</th><th></th></tr>
+<tr><td><code>arg <em>(optional)</em></code></td><td><code>string|object</code></td><td><p>A name (reads <code>_config/sessions/{name}</code>; default <code>"default"</code>) or an inline config object.</p></td></tr>
+</table>
+<p><b>Returns</b> <code>Sessions</code></p>
+<pre><code>const s = sessions.fromConfig();          // "default"
+const a = sessions.fromConfig("admin");</code></pre>
+<h3 id="oauth"><code>oauth</code></h3>
+<p>OAuth 2.0 / OIDC authorization-code helper. The library owns no namespace — every kv path is derived from the config. Config lives at <code>_config/oauth/{name}</code> (a JSON file in your tree, mirrored read-only to kv at deploy); one file per provider.</p>
+<h4 id="oauth-constructor"><code>constructor(config)</code></h4>
+
+<table><tr><th>Param</th><th>Type</th><th></th></tr>
+<tr><td><code>config</code></td><td><code>object</code></td><td><p>Provider config. Required: <code>authorization_url</code>, <code>token_url</code>, <code>client_id</code>, <code>redirect_uri</code>, <code>on_complete_module</code>, and <code>scopes</code> (array). Optional: <code>client_secret</code>, <code>pkce</code>, <code>state_ttl_ms</code>, <code>state_path</code>, <code>cache_path</code>, <code>extra_authorize_params</code>.</p></td></tr>
+</table>
+<h4 id="oauth-startlogin"><code>startLogin(opts?)</code></h4>
+<p>Begin the login flow: store transient state (+ PKCE verifier), set a 302 to the provider's authorization URL. Return its result from your start handler.</p>
+<table><tr><th>Param</th><th>Type</th><th></th></tr>
+<tr><td><code>opts <em>(optional)</em></code></td><td><code>object</code></td><td></td></tr>
+<tr><td><code>opts.return_to <em>(optional)</em></code></td><td><code>string</code></td><td><p>Where to send the user after completion (echoed to the on_complete module).</p></td></tr>
+<tr><td><code>opts.context <em>(optional)</em></code></td><td><code>object</code></td><td><p>Arbitrary data echoed to the on_complete module.</p></td></tr>
+</table>
+<p><b>Returns</b> <code>null</code> — (the redirect is on <code>response</code>).</p>
+<pre><code>export default () =&gt; oauth.fromConfig("google")
+.startLogin({ return_to: "/" });</code></pre>
+<h4 id="oauth-handlecallback"><code>handleCallback()</code></h4>
+<p>Handle the provider redirect: validate <code>state</code> (single-use, TTL'd), exchange <code>code</code> at the token endpoint via {@link webhook.send}, and invoke <code>on_complete_module</code> with the token result (context carries <code>return_to</code>). Returns an interim HTML page; sets 4xx on validation failure.</p>
+<p><b>Returns</b> <code>string</code> — HTML body (200/202 interstitial, or 400 text on error).</p>
+<pre><code>export default () =&gt; oauth.fromConfig("google").handleCallback();</code></pre>
+<h4 id="oauth-refresh"><code>refresh(refresh_token, extra_context?)</code></h4>
+<p>Redeem a refresh token for new tokens. Fires the token request via {@link webhook.send}; the <code>on_complete_module</code> receives the result with <code>context.refresh === true</code>.</p>
+<table><tr><th>Param</th><th>Type</th><th></th></tr>
+<tr><td><code>refresh_token</code></td><td><code>string</code></td><td><p>The stored refresh token.</p></td></tr>
+<tr><td><code>extra_context <em>(optional)</em></code></td><td><code>object</code></td><td><p>Merged into the result context.</p></td></tr>
+</table>
+<p><b>Returns</b> <code>string</code> — The {@link webhook.send} schedule id.</p>
+<pre><code>oauth.fromConfig("google").refresh(tok, { user_sub });</code></pre>
+<h4 id="oauth-fromconfig"><code>fromConfig(arg?)</code></h4>
+<p>Resolve a config and return an {@link OAuthProvider}. <code>state_path</code>/<code>cache_path</code> default to <code>state|cache/oauth/{name}</code> (override via config keys).</p>
+<table><tr><th>Param</th><th>Type</th><th></th></tr>
+<tr><td><code>arg <em>(optional)</em></code></td><td><code>string|object</code></td><td><p>A provider name (reads <code>_config/oauth/{name}</code>; default <code>"default"</code>) or an inline config object.</p></td></tr>
+</table>
+<p><b>Returns</b> <code>OAuthProvider</code></p>
+<pre><code>const g = oauth.fromConfig("google");</code></pre>
+<h4 id="oauth-verifyidtoken"><code>verifyIdToken(id_token, opts)</code></h4>
+<p>Verify a third-party <code>id_token</code> against the cached JWKS only (synchronous — there is no sync HTTP). <code>jwt.*</code> is alg-confusion-safe (RS/ES only). On a cache miss / unknown <code>kid</code> the caller must run the async {@link oauth.fetchJwks} hop and retry; this mirrors <code>oidc.rp</code>'s <code>completeToken → completeJwks → _finish</code> chain (auth-domain-plan §4.8).</p>
+<table><tr><th>Param</th><th>Type</th><th></th></tr>
+<tr><td><code>id_token</code></td><td><code>string</code></td><td><p>The compact JWS from the token endpoint response.</p></td></tr>
+<tr><td><code>opts</code></td><td><code>object</code></td><td><p><code>{issuer, client_id, jwks_uri}</code> required; optional <code>nonce</code> (checked manually — <code>validateClaims</code> doesn't cover it), <code>leeway_s</code> (default 30), <code>algs</code> (extra allow-list on top of jwt.js's RS/ES set), <code>cache_path</code>.</p></td></tr>
+</table>
+<p><b>Returns</b> <code>object</code> — One of <code>{ok:true, claims}</code> / <code>{ok:false, error}</code> (hard reject — do NOT retry) / <code>{ok:false, need_jwks:true, jwks_uri}</code> (caller does the async refetch hop, then retries).</p>
+<pre><code>let r = oauth.verifyIdToken(tok.id_token, {
+issuer: "https://accounts.google.com",
+client_id: cfg.client_id,
+jwks_uri: "https://www.googleapis.com/oauth2/v3/certs",
+nonce: ctx.nonce, cache_path: "cache/oauth/google" });</code></pre>
+<h4 id="oauth-fetchjwks"><code>fetchJwks(opts, on_result_module, context?)</code></h4>
+<p>Kick the async JWKS fetch. <code>on_result</code> lands in a module that re-runs {@link oauth.verifyIdToken} (now a cache hit) after calling {@link oauth.cacheJwksFromEvent}.</p>
+<table><tr><th>Param</th><th>Type</th><th></th></tr>
+<tr><td><code>opts</code></td><td><code>object</code></td><td><p>Must carry <code>jwks_uri</code>.</p></td></tr>
+<tr><td><code>on_result_module</code></td><td><code>string</code></td><td><p>Module to receive the fetch result event.</p></td></tr>
+<tr><td><code>context <em>(optional)</em></code></td><td><code>object</code></td><td><p>Threaded back on the event (carry <code>id_token</code>, <code>sid</code>, <code>return_to</code>, …).</p></td></tr>
+</table>
+<pre><code>oauth.fetchJwks(opts, "users/oauth_jwks",
+{ id_token, sid: ctx.sid, return_to: ctx.return_to });</code></pre>
+<h4 id="oauth-cachejwksfromevent"><code>cacheJwksFromEvent(event, cache_path?)</code></h4>
+<p>Cache a JWKS fetch event's body. Call from the fetch <code>on_result</code> module, then re-run {@link oauth.verifyIdToken}.</p>
+<table><tr><th>Param</th><th>Type</th><th></th></tr>
+<tr><td><code>event</code></td><td><code>object</code></td><td><p>The webhook.send result event (<code>{ok,status,body}</code>).</p></td></tr>
+<tr><td><code>cache_path <em>(optional)</em></code></td><td><code>string</code></td><td><p>Same <code>cache_path</code> passed to {@link oauth.verifyIdToken}.</p></td></tr>
+</table>
+<p><b>Returns</b> <code>boolean</code> — <code>true</code> when a well-formed JWKS was cached.</p>
+<h3 id="oidc"><code>oidc</code></h3>
+<p>OIDC provider (IdP) + relying-party (client) helpers. The same library the platform's own <code>__auth__</code> IdP and admin RP run; customers can run either side. All issuer/endpoint URLs are host-relative — no compiled-in domain.</p>
+<h4 id="oidc-constructor"><code>constructor(config, name)</code></h4>
+
+<table><tr><th>Param</th><th>Type</th><th></th></tr>
+<tr><td><code>config</code></td><td><code>object</code></td><td><p>Client registry. <code>clients</code> is an array of <code>{client_id, redirect_uris}</code>; <code>login_path</code> is the IdP's own login UI route. kv-layout / TTL / key-rotation-window keys are optional and default sensibly.</p></td></tr>
+<tr><td><code>name</code></td><td><code>string</code></td><td><p>Config name; namespaces the kv key paths.</p></td></tr>
+</table>
+<h4 id="oidc-handlerotate"><code>handleRotate()</code></h4>
+<p>Scheduled key-rotation tick (§4.6). Reached only via the in-cluster <code>webhook.send</code> self-fire routed through {@link OIDCProvider#handle}; not a customer entry point. Deadline-gated and last-write-wins, so a double-fire is safe.</p>
+<p><b>Returns</b> <code>string</code> — JSON status body.</p>
+<h4 id="oidc-handle"><code>handle()</code></h4>
+<p>The IdP front controller. Routes the current request to the standard OIDC endpoints — <code>/.well-known/openid-configuration</code>, <code>/.well-known/jwks.json</code>, <code>/authorize</code>, <code>/token</code> — plus the internal key-rotation tick. Wire it as your IdP handler's default export; sets the response and returns its body.</p>
+<p><b>Returns</b> <code>string|null</code> — The response body (or <code>null</code> for a redirect set on <code>response</code>); 404 text for unknown paths.</p>
+<pre><code>// web/auth/index.mjs
+export default () =&gt; oidc.provider().handle();</code></pre>
+<h4 id="oidc-constructor"><code>constructor(config, name)</code></h4>
+
+<table><tr><th>Param</th><th>Type</th><th></th></tr>
+<tr><td><code>config</code></td><td><code>object</code></td><td><p>Required: <code>issuer</code>, <code>client_id</code>, <code>redirect_uri</code>. Optional: <code>post_login</code> (default <code>/</code>), <code>operator_prefix</code> (empty ⇒ <code>is_root</code> always false), kv-path / TTL / <code>leeway_s</code> overrides.</p></td></tr>
+<tr><td><code>name</code></td><td><code>string</code></td><td><p>Config name; namespaces the kv key paths.</p></td></tr>
+</table>
+<h4 id="oidc-beginlogin"><code>beginLogin()</code></h4>
+<p><code>GET /_rp/login</code> handler. Captures the platform sid (must be a real browser request), stashes single-use PKCE state, and 302s to the IdP <code>/authorize</code>. Honors a same-origin <code>?return_to=</code> path (open-redirect safe).</p>
+<p><b>Returns</b> <code>null</code> — (the redirect is set on <code>response</code>); 400 text when there is no session context.</p>
+<pre><code>// _rp/login/index.mjs
+export default () =&gt; oidc.rp("default").beginLogin();</code></pre>
+<h4 id="oidc-handlecallback"><code>handleCallback()</code></h4>
+<p><code>GET /_rp/callback?code&amp;state</code> handler. Validates and single-use-consumes the state, fires the async token exchange (completed by {@link OIDCRelyingParty#completeToken}), and parks the browser on a self-polling "Signing in…" page.</p>
+<p><b>Returns</b> <code>string</code> — The interim HTML page, or 400 error text on bad/expired/used state or a provider error.</p>
+<pre><code>// _rp/callback/index.mjs
+export default () =&gt; oidc.rp("default").handleCallback();</code></pre>
+<h4 id="oidc-completetoken"><code>completeToken()</code></h4>
+<p><code>on_result</code> module for the <code>/token</code> exchange. Verifies the id_token against cached JWKS if the signing <code>kid</code> is known; otherwise refetches JWKS and defers to {@link OIDCRelyingParty#completeJwks}. Runs in a background callback — no browser response.</p>
+<p><b>Returns</b> <code>string</code> — A diagnostic status string (callback responses are dropped but captured in logs/tape).</p>
+<pre><code>// _rp/complete.mjs
+export default () =&gt; oidc.rp("default").completeToken();</code></pre>
+<h4 id="oidc-completejwks"><code>completeJwks()</code></h4>
+<p><code>on_result</code> module for the JWKS refetch. Caches the keys, then verifies the id_token and mints the session. Background callback — no browser response.</p>
+<p><b>Returns</b> <code>string</code> — A diagnostic status string.</p>
+<pre><code>// _rp/jwks.mjs
+export default () =&gt; oidc.rp("default").completeJwks();</code></pre>
+<h4 id="oidc-exchangetoken"><code>exchangeToken(id_token)</code></h4>
+<p>CLI/device gateway (rewind-cli-plan Track 3): exchange an IdP <code>id_token</code> — obtained by the <code>rewind</code> CLI via the RFC 8628 device grant — for an RP session bound to THIS request's sid. No browser redirect: the CLI POSTs <code>{id_token}</code>; we read <code>request.session.id</code> (the platform <code>__Host-rove_sid</code> minted on this request), verify the id_token against the JWKS (async refetch when the signing <code>kid</code> is unknown, finishing in {@link OIDCRelyingParty#completeJwks}), and write <code>_rp/sess/{sid}</code>. The CLI captures the Set-Cookie sid, polls {@link OIDCRelyingParty#pollStatus} until authed, then presents the sid to ownership-gated endpoints (deploy, publishRelease) — the SAME session a browser holds, so no new authority surface.</p><p>Returns 200 <code>{authed:true}</code> when JWKS was cached (verified inline), 202 <code>{status:"verifying"}</code> when JWKS is being refetched (poll), or 4xx on a bad/absent token.</p>
+<table><tr><th>Param</th><th>Type</th><th></th></tr>
+<tr><td><code>id_token</code></td><td><code>string</code></td><td><p>The IdP-signed id_token from <code>/token</code>.</p></td></tr>
+</table>
+<h4 id="oidc-guard"><code>guard()</code></h4>
+<p>Resolve the authenticated subject for this request's sid. Typically called from an auth middleware. Sweeps expired rows.</p>
+<p><b>Returns</b> <code>{sub:string, is_root:boolean</code> — |null} The session payload, or <code>null</code> if unauthenticated/expired.</p>
+<pre><code>// _middlewares/index.mjs
+const auth = oidc.rp("default").guard();
+if (!auth) { response.status = 401; return { error: "unauth" }; }</code></pre>
+<h4 id="oidc-pollstatus"><code>pollStatus()</code></h4>
+<p><code>GET /_rp/poll</code> handler — the "Signing in…" page asks whether the background completion has minted the session yet.</p>
+<p><b>Returns</b> <code>string</code> — JSON <code>{authed: boolean}</code>.</p>
+<pre><code>// _rp/poll/index.mjs
+export default () =&gt; oidc.rp("default").pollStatus();</code></pre>
+<h4 id="oidc-logout"><code>logout()</code></h4>
+<p><code>POST /_rp/logout</code> handler — drop this sid's RP session. The IdP session is the IdP's own concern (v1: no front/back-channel logout).</p>
+<p><b>Returns</b> <code>string</code> — JSON <code>{ok: true}</code>.</p>
+<pre><code>// _rp/logout/index.mjs
+export default () =&gt; oidc.rp("default").logout();</code></pre>
+<h4 id="oidc-logoutredirect"><code>logoutRedirect()</code></h4>
+<p><code>GET /_rp/logout</code> handler — full RP-Initiated Logout (the browser flow). Clears this sid's RP session, then 302s the browser to the IdP <code>end_session_endpoint</code> (<code>${issuer}/logout</code>) so the IdP SSO session is dropped too. Without the IdP hop, the login interstitial's auto-<code>/authorize</code> finds the still-live IdP session and silently re-logs the user in — i.e. <code>logout()</code> alone looks like a no-op. The IdP validates + bounces back to a same-origin <code>?return_to=</code> path on THIS RP (default <code>post_login</code>).</p>
+<p><b>Returns</b> <code>null</code> — (302 set on <code>response</code>).</p>
+<pre><code>// _rp/logout/index.mjs  (browser GET — a full-page navigation, not XHR)
+export default () =&gt; oidc.rp("default").logoutRedirect();</code></pre>
+<h4 id="oidc-provider"><code>provider(arg?)</code></h4>
+<p>Resolve a client registry and return an {@link OIDCProvider}. The registry is *operational* data — operators add/remove RP clients without a redeploy — so it lives at the admin-managed kv key <code>_oidc/config/{name}</code> (which wins), falling back to the per-deploy template <code>_config/oidc/{name}</code>.</p>
+<table><tr><th>Param</th><th>Type</th><th></th></tr>
+<tr><td><code>arg <em>(optional)</em></code></td><td><code>string|object</code></td><td><p>A registry name (default <code>"default"</code>) or an inline config object.</p></td></tr>
+</table>
+<p><b>Returns</b> <code>OIDCProvider</code></p>
+<pre><code>export default () =&gt; oidc.provider().handle();</code></pre>
+<h4 id="oidc-rp"><code>rp(arg?)</code></h4>
+<p>Resolve an RP config and return an {@link OIDCRelyingParty} — the client analog of {@link oidc.provider}. Config lives at the kv key <code>_oidc/rp/{name}</code>.</p>
+<table><tr><th>Param</th><th>Type</th><th></th></tr>
+<tr><td><code>arg <em>(optional)</em></code></td><td><code>string|object</code></td><td><p>An RP config name (default <code>"default"</code>) or an inline config object.</p></td></tr>
+</table>
+<p><b>Returns</b> <code>OIDCRelyingParty</code></p>
+<pre><code>const auth = oidc.rp("default").guard();</code></pre>
+<h3 id="activitypub"><code>activitypub</code></h3>
+<p>Minimal ActivityPub (server-to-server) helper. Makes a rewind.js app a followable fediverse actor. The library owns no namespace — config lives at <code>_config/activitypub.json</code> (a file in your tree, mirrored read-only to kv at deploy).</p>
+<h4 id="activitypub-constructor"><code>constructor(cfg)</code></h4>
+
+<table><tr><th>Param</th><th>Type</th><th></th></tr>
+<tr><td><code>cfg</code></td><td><code>object</code></td><td><p>Config. Required: <code>domain</code>, <code>username</code>, <code>verified_module</code> (the module that finishes inbox processing after the async key fetch). Optional: <code>name</code>, <code>summary</code>, <code>type</code> (<code>"Service"</code> default, or <code>"Person"</code>), <code>icon_url</code>, <code>key_path</code> (default <code>ap/key</code>), <code>followers_path</code> (default <code>ap/followers</code>), <code>outbox_path</code> (default <code>ap/outbox</code>), <code>keycache_path</code> (default <code>cache/ap/keys</code>).</p></td></tr>
+</table>
+<h4 id="activitypub-ensurekeypair"><code>ensureKeypair()</code></h4>
+<p>Idempotently create and store this actor's RSA-2048 keypair. Safe to call on every request; generates only on first call. The private key is stored in kv (page-encrypted at rest by the platform — no extra ceremony). Call once before serving the actor document, e.g. from your setup route or lazily.</p>
+<p><b>Returns</b> <code>void</code></p>
+<pre><code>export default function () {
+activitypub.fromConfig().ensureKeypair();
+return "ok";
+}</code></pre>
+<h4 id="activitypub-webfinger"><code>webfinger()</code></h4>
+<p>Handle <code>GET /.well-known/webfinger?resource=acct:user@domain</code>. Resolves the <code>acct:</code> URI to this actor. Return its result from your webfinger route.</p>
+<p><b>Returns</b> <code>string</code> — JRD JSON body (200), or a 404 body if the resource does not match this actor.</p>
+<pre><code>export default () =&gt; activitypub.fromConfig().webfinger();</code></pre>
+<h4 id="activitypub-actordocument"><code>actorDocument()</code></h4>
+<p>The actor object (JSON-LD). Use {@link ActivityPubActor#actor} to serve it directly; this returns the plain object if you need to embed or extend it.</p>
+<p><b>Returns</b> <code>object</code> — The ActivityStreams actor document.</p>
+<h4 id="activitypub-actor"><code>actor()</code></h4>
+<p>Handle <code>GET /actor</code>. Return its result from your actor route.</p>
+<p><b>Returns</b> <code>string</code> — The actor document as <code>application/activity+json</code>.</p>
+<pre><code>export default () =&gt; activitypub.fromConfig().actor();</code></pre>
+<h4 id="activitypub-outbox"><code>outbox(limit?)</code></h4>
+<p>Handle <code>GET /actor/outbox</code>. An <code>OrderedCollection</code> of the <code>Create</code> activities published via {@link ActivityPubActor#publishNote}, newest first. Return its result from your outbox route.</p>
+<table><tr><th>Param</th><th>Type</th><th></th></tr>
+<tr><td><code>limit <em>(optional)</em></code></td><td><code>number</code></td><td><p>Max items to include.</p></td></tr>
+</table>
+<p><b>Returns</b> <code>string</code> — The collection as <code>application/activity+json</code>.</p>
+<pre><code>export default () =&gt; activitypub.fromConfig().outbox();</code></pre>
+<h4 id="activitypub-inbox"><code>inbox()</code></h4>
+<p>Handle <code>POST /actor/inbox</code>. Cannot verify inline — verifying the HTTP Signature needs the *sender's* public key, an outbound fetch. So this responds **202 Accepted immediately** (which ActivityPub mandates: delivery is fire-and-forget), kicks an {@link webhook.send} fetch of the signer's actor, and carries a frozen request snapshot + the activity through <code>context</code>. The <code>verified_module</code> then calls {@link ActivityPubActor#completeInbox} to finish.</p>
+<p><b>Returns</b> <code>string</code> — An empty 202 body. Sets 400 on a malformed request (no Signature header / unparseable body).</p>
+<pre><code>// ap/inbox/index.mjs
+export default () =&gt; activitypub.fromConfig().inbox();</code></pre>
+<h4 id="activitypub-completeinbox"><code>completeInbox(event)</code></h4>
+<p>Finish inbox processing. Call from your <code>verified_module</code> with the {@link webhook.send} result event. Caches the signer's key, verifies the HTTP Signature + <code>Digest</code>, then dispatches the activity: <code>Follow</code> → record follower and auto-send <code>Accept</code>; <code>Undo Follow</code> → drop follower; everything else → acknowledged no-op. Mirrors <code>oauth.cacheJwksFromEvent</code> + re-verify.</p>
+<table><tr><th>Param</th><th>Type</th><th></th></tr>
+<tr><td><code>event</code></td><td><code>object</code></td><td><p>The webhook.send result event (<code>{ok,status,body,context}</code>).</p></td></tr>
+</table>
+<p><b>Returns</b> <code>{ok:boolean, action?:string, error?:string</code> — } Outcome (for logging / your own bookkeeping). Side effects — follower writes, the <code>Accept</code> send — are already applied/queued.</p>
+<pre><code>// ap/inbox_verified/index.mjs
+export default (event) =&gt;
+activitypub.fromConfig().completeInbox(event);</code></pre>
+<h4 id="activitypub-publishnote"><code>publishNote(content, opts?)</code></h4>
+<p>Publish a <code>Note</code>, wrapped in a <code>Create</code>, and fan it out to every follower's inbox via signed, durable {@link webhook.send} (retried by the platform; down followers don't block the others). The <code>Create</code> is also appended to the outbox.</p>
+<table><tr><th>Param</th><th>Type</th><th></th></tr>
+<tr><td><code>content</code></td><td><code>string</code></td><td><p>The note's HTML content.</p></td></tr>
+<tr><td><code>opts <em>(optional)</em></code></td><td><code>object</code></td><td></td></tr>
+<tr><td><code>opts.in_reply_to <em>(optional)</em></code></td><td><code>string</code></td><td><p>A note URI this replies to.</p></td></tr>
+</table>
+<p><b>Returns</b> <code>{id:string, delivered:number</code> — } The note id and the number of follower inboxes the delivery was queued to.</p>
+<pre><code>// POST /post  (authenticate this yourself)
+export default function () {
+const { content } = request.json;
+return JSON.stringify(activitypub.fromConfig().publishNote(content));
+}</code></pre>
+<h4 id="activitypub-fromconfig"><code>fromConfig(arg?)</code></h4>
+<p>Resolve config and return an {@link ActivityPubActor}.</p>
+<table><tr><th>Param</th><th>Type</th><th></th></tr>
+<tr><td><code>arg <em>(optional)</em></code></td><td><code>string|object</code></td><td><p>A config name (reads <code>_config/activitypub[/{name}].json</code>; default file is <code>_config/activitypub.json</code>) or an inline config object.</p></td></tr>
+</table>
+<p><b>Returns</b> <code>ActivityPubActor</code></p>
+<pre><code>const ap = activitypub.fromConfig();</code></pre>
+<h2>Admin (the __admin__ tenant only)</h2>
+<h3 id="platform"><code>platform</code></h3>
+<p>Admin control plane: cross-tenant kv access, the platform root store, instance lifecycle, releases, and root-token auth. Only usable from the <code>__admin__</code> handler.</p>
+<h4 id="platform-scope"><code>scope(id)</code></h4>
+<p>Get accessors scoped to another instance — the explicit cross-tenant grant (replaces the old X-Rove-Scope global-kv rebind).</p>
+<table><tr><th>Param</th><th>Type</th><th></th></tr>
+<tr><td><code>id</code></td><td><code>string</code></td><td><p>Target instance id (non-empty).</p></td></tr>
+</table>
+<p><b>Returns</b> <code>{kv:object, blob:object, deploy:object</code> — } - <code>kv</code> — <code>{get, set, delete, prefix}</code>, the same as the global {@link kv}, bound to instance <code>id</code>. - <code>blob</code> — <code>{get(hash, {on}), receive({on, ctx})}</code>: cross-tenant blob READ (resumes <code>on</code> with the bytes) + STREAMED write (pipe the inbound body straight into <code>id</code>'s file-blobs, no JS buffering). There is no sync <code>put</code> — cross-tenant writes stream via <code>receive</code>. - <code>deploy</code> — <code>{stampManifest(entries), readManifest(dep)}</code>: write/read a deployment manifest in <code>id</code>'s deployments/ from composed <code>entries</code> (<code>[{path, kind, source_hex, bytecode_hex?, content_type?}]</code>); stampManifest returns the dep_id (16-hex). Compose deploys with {@link platform.compile} (handlers) + <code>blob.receive</code> (statics) + <code>stampManifest</code>, then activate with {@link platform.releases.publish}. Unknown id throws <code>Error{code:"InstanceNotFound"}</code>.</p>
+<pre><code>const { kv: tenantKv } = platform.scope(req.instanceId);
+const profile = tenantKv.get("profile");</code></pre>
+<h4 id="platform-compile"><code>compile(opts)</code></h4>
+<p>Compile handler sources to bytecode + content-address them into <code>scope</code>'s blobs, off the hot path (<code>rewind-cli-plan.md</code> §4.1). Admin-only (the issuing tenant is checked natively). Source → bytecode is the one irreducibly-native deploy step; it's async (compile is slow) but its result is deterministic + idempotent, so it needs no replay tape.</p><p>**Bound, like {@link on.fetch}:** the call binds to the held chain, so you must <code>return next()</code> after it; the result resumes your handler at the <code>on</code> export (default <code>onFetchResult</code>) with <code>request.ctx = {ok, results:[{path, source_hex, bytecode_hex}]}</code> (or <code>{ok:false, status, error}</code>). Compose the manifest from those hashes + your statics and stamp it there. Stage/activate is still a separate <code>platform.releases.publish</code>.</p>
+<table><tr><th>Param</th><th>Type</th><th></th></tr>
+<tr><td><code>{Array&lt;{path:string, source:string}&gt;} files - Handler sources.</code></td><td><code></code></td><td></td></tr>
+<tr><td><code>opts</code></td><td><code>object</code></td><td></td></tr>
+<tr><td><code>opts.scope</code></td><td><code>string</code></td><td><p>Target instance id (where blobs stage).</p></td></tr>
+<tr><td><code>opts.on <em>(optional)</em></code></td><td><code>string</code></td><td><p>Resume export.</p></td></tr>
+</table>
+<p><b>Returns</b> <code>string</code> — The bound fetch id (<code>ftch_…</code>).</p>
+<pre><code>platform.compile(handlers, { scope: tenant, on: "onCompiled" });
+return next();
+// export function onCompiled(request) {
+//   const { results } = request.ctx; ...stamp manifest...
+// }</code></pre>
+<h3 id="platform-root"><code>platform.root</code></h3>
+<p>The platform root store (<code>__root__.db</code>) — instance / domain / user / account metadata.</p>
+<h4 id="platform-root-get"><code>get(key)</code></h4>
+
+<table><tr><th>Param</th><th>Type</th><th></th></tr>
+<tr><td><code>key</code></td><td><code>string</code></td><td></td></tr>
+</table>
+<p><b>Returns</b> <code>string|null</code> — The value, or <code>null</code> if absent.</p>
+<pre><code>const acct = JSON.parse(platform.root.get(`account/${id}`));</code></pre>
+<h4 id="platform-root-set"><code>set(key, value)</code></h4>
+<p>Write to the root store. Replicates via the root writeset.</p>
+<table><tr><th>Param</th><th>Type</th><th></th></tr>
+<tr><td><code>key</code></td><td><code>string</code></td><td></td></tr>
+<tr><td><code>value</code></td><td><code>string</code></td><td></td></tr>
+</table>
+<p><b>Returns</b> <code>void</code></p>
+<pre><code>platform.root.set(`domain/${host}`, JSON.stringify(rec));</code></pre>
+<h4 id="platform-root-delete"><code>delete(key)</code></h4>
+
+<table><tr><th>Param</th><th>Type</th><th></th></tr>
+<tr><td><code>key</code></td><td><code>string</code></td><td></td></tr>
+</table>
+<p><b>Returns</b> <code>void</code></p>
+<pre><code>platform.root.delete(`domain/${host}`);</code></pre>
+<h4 id="platform-root-prefix"><code>prefix(prefix, cursor?, limit?)</code></h4>
+<p>Prefix scan of the root store. Same pagination contract as {@link kv.prefix} (limit default 100, max 1000).</p>
+<table><tr><th>Param</th><th>Type</th><th></th></tr>
+<tr><td><code>prefix</code></td><td><code>string</code></td><td></td></tr>
+<tr><td><code>cursor <em>(optional)</em></code></td><td><code>string</code></td><td></td></tr>
+<tr><td><code>limit <em>(optional)</em></code></td><td><code>number</code></td><td></td></tr>
+</table>
+<p><b>Returns</b> <code>Array&lt;{key:string,value:string</code> — &gt;}</p>
+<pre><code>const all = platform.root.prefix("instance/", null, 1000);</code></pre>
+<h3 id="platform-instances"><code>platform.instances</code></h3>
+<p>Instance lifecycle.</p>
+<h4 id="platform-instances-create"><code>create(name)</code></h4>
+<p>Create an instance: its directory + <code>app.db</code>, the local <code>instance/{name}</code> marker, and the replicated root marker. Idempotent. Throws <code>Error{code:"InvalidName"}</code> on a bad name.</p>
+<table><tr><th>Param</th><th>Type</th><th></th></tr>
+<tr><td><code>name</code></td><td><code>string</code></td><td><p>Instance id.</p></td></tr>
+</table>
+<p><b>Returns</b> <code>void</code></p>
+<pre><code>platform.instances.create("acme-prod");</code></pre>
+<h4 id="platform-instances-deploystarter"><code>deployStarter(name)</code></h4>
+<p>Deploy the platform-baked starter app (<code>index.mjs</code> + <code>_static/index.html</code>) into <code>name</code> and flip <code>_deploy/current</code> via raft. Sealed primitive in v1 (starter content is not customer-supplied). Throws <code>Error{code:"InstanceNotFound"}</code> if <code>name</code> doesn't resolve.</p>
+<table><tr><th>Param</th><th>Type</th><th></th></tr>
+<tr><td><code>name</code></td><td><code>string</code></td><td><p>Target instance id.</p></td></tr>
+</table>
+<p><b>Returns</b> <code>void</code></p>
+<pre><code>platform.instances.deployStarter("acme-prod");</code></pre>
+<h3 id="platform-releases"><code>platform.releases</code></h3>
+<p>Releases.</p>
+<h4 id="platform-releases-publish"><code>publish(tenantId, depId)</code></h4>
+<p>Activate deployment <code>depId</code> on <code>tenantId</code>: stamp <code>_deploy/current</code>, propose envelope-0 through raft (no blocking on consensus), and enqueue the deployment loader. Returns sub-millisecond; consensus + bytecode load run async. Throws <code>Error{code:"InstanceNotFound"}</code> if <code>tenantId</code> doesn't resolve.</p>
+<table><tr><th>Param</th><th>Type</th><th></th></tr>
+<tr><td><code>tenantId</code></td><td><code>string</code></td><td><p>Target instance id.</p></td></tr>
+<tr><td><code>depId</code></td><td><code>string</code></td><td><p>Deployment id to activate.</p></td></tr>
+</table>
+<p><b>Returns</b> <code>void</code></p>
+<pre><code>platform.releases.publish("acme-prod", depId);</code></pre>
+<h3 id="platform-auth"><code>platform.auth</code></h3>
+<p>Root-token auth.</p>
+<h4 id="platform-auth-checkroottoken"><code>checkRootToken(token)</code></h4>
+<p>Validate a platform root token.</p>
+<table><tr><th>Param</th><th>Type</th><th></th></tr>
+<tr><td><code>token</code></td><td><code>string</code></td><td><p>The bearer token to check.</p></td></tr>
+</table>
+<p><b>Returns</b> <code>boolean</code> — <code>true</code> if the token authenticates.</p>
+<pre><code>if (!platform.auth.checkRootToken(bearer))
+return new Response("forbidden", { status: 403 });</code></pre>
+
+  <footer>© 2026 Loop46, Inc. · rewind.js · generated by scripts/ops/gen_docs_reference.py — do not edit by hand</footer>
+</article>
+</main>
+</div>
+</body>
+</html>

@@ -42,7 +42,8 @@
       "dir": "docs",
       "hosts": ["docs.rewindjs.com"],
       "kind": "operator",
-      "provision": true
+      "provision": true,
+      "generate": ["python3", "$ROVE_REPO/scripts/ops/gen_docs_reference.py", "--apps-dir", "."]
     },
     {
       "tenant": "replay",
