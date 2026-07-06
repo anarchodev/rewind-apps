@@ -250,10 +250,8 @@ export function onLLM() {
     browser.status("LLM error " + (request.status || "?"));
     return next({ sid });
   }
-  let raw = request.body;
-  if (raw && typeof raw !== "string") raw = new TextDecoder().decode(raw);
   let body;
-  try { body = JSON.parse(raw || "{}"); } catch (_) { body = {}; }
+  try { body = JSON.parse(request.text || "{}"); } catch (_) { body = {}; }
   const msgs = load(sid);
   if (ctx.user_turn) msgs.push(ctx.user_turn); // persist now (think() was read-only)
   // think() attached the screenshot as the tool_result; store the pixels

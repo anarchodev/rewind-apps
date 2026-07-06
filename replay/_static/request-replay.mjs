@@ -151,18 +151,35 @@ export function buildRequestEpilogue({ record = {}, requestReads = null, bodyByt
         "    get() { if (!(n in D.values)) miss(\"header '\" + n + \"'\"); return D.values[n]; },\n" +
         "  });\n" +
         "  const request = { method: D.method, path: D.path, host: D.host, query: D.query, headers };\n" +
-        "  Object.defineProperty(request, \"body\", { enumerable: true, configurable: true,\n" +
+        // The uniform payload surface (handler-shape §7): bytes/text/json
+        // derive from the ONE recorded payload. `request.body` stays on
+        // the DRIVER (only) so records from pre-retirement deployments
+        // still replay their pinned code.
+        "  const __b2s = (c) => { if (typeof c === \"string\") return c; let s = \"\"; for (let i = 0; i < c.length; i++) s += String.fromCharCode(c[i]); return s; };\n" +
+        "  const __rawPayload = () => {\n" +
+        "    if (!D.bodyRead) miss(\"request payload (bytes/text/json/body)\");\n" +
+        "    if (D.bodyB64 != null) {\n" +
+        "      const bin = atob(D.bodyB64);\n" +
+        "      const u = new Uint8Array(bin.length);\n" +
+        "      for (let i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i);\n" +
+        "      return u;\n" +
+        "    }\n" +
+        "    const st = D.body ?? \"\";\n" +
+        "    const u = new Uint8Array(st.length);\n" +
+        "    for (let i = 0; i < st.length; i++) u[i] = st.charCodeAt(i) & 0xff;\n" +
+        "    return u;\n" +
+        "  };\n" +
+        "  const __defPayload = (name, compute) => Object.defineProperty(request, name, {\n" +
+        "    enumerable: true, configurable: true,\n" +
         "    get() {\n" +
-        "      if (!D.bodyRead) miss(\"request.body\");\n" +
-        "      let v;\n" +
-        "      if (D.bodyB64 != null) {\n" +  // chunk activations: byte-exact Uint8Array
-        "        const bin = atob(D.bodyB64);\n" +
-        "        v = new Uint8Array(bin.length);\n" +
-        "        for (let i = 0; i < bin.length; i++) v[i] = bin.charCodeAt(i);\n" +
-        "      } else { v = D.body ?? \"\"; }\n" +
-        "      Object.defineProperty(request, \"body\", { enumerable: true, configurable: true, writable: true, value: v });\n" +
+        "      const v = compute();\n" +
+        "      Object.defineProperty(request, name, { enumerable: true, configurable: true, writable: true, value: v });\n" +
         "      return v;\n" +
         "    } });\n" +
+        "  __defPayload(\"bytes\", () => __rawPayload());\n" +
+        "  __defPayload(\"text\", () => { const u = __rawPayload(); try { return decodeURIComponent(escape(__b2s(u))); } catch (_) { return __b2s(u); } });\n" +
+        "  __defPayload(\"json\", () => JSON.parse(request.text));\n" +
+        "  __defPayload(\"body\", () => (D.bodyB64 != null) ? __rawPayload() : (D.body ?? \"\"));\n" +
         "  Object.defineProperty(request, \"cookies\", { enumerable: true, configurable: true,\n" +
         "    get() {\n" +
         "      const out = {};\n" +

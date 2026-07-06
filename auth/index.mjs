@@ -52,7 +52,7 @@ function loginForm(return_to, msg) {
 // so a dev/test relying party can follow it — same dev seam admin's
 // signup uses).
 function startLogin() {
-  const f = new URLSearchParams(request.body || "");
+  const f = new URLSearchParams(request.text || "");
   // NB: name this `addr`, NOT `email` — a local `email` would shadow the
   // global `email` API object, turning `email.send(...)` below into
   // `String.prototype.send` (undefined) → "TypeError: not a function".

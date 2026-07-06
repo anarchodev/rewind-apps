@@ -667,7 +667,7 @@ export function onFetchResult() {
     response.headers = { "content-type": "application/json" };
     if (request.ok) {
         response.status = request.status;
-        return new TextDecoder().decode(request.body || new Uint8Array());
+        return (request.text || "");
     }
     // Relay the real upstream status when the door returned one — a CP 409
     // (provision: already placed, idempotent) or 421/503 (leader transient)
@@ -678,7 +678,7 @@ export function onFetchResult() {
     // informative for both callers.
     if (request.status && request.status >= 400) {
         response.status = request.status;
-        return new TextDecoder().decode(request.body || new Uint8Array());
+        return (request.text || "");
     }
     response.status = 502;
     return JSON.stringify({ error: "internal door fetch failed",
@@ -826,7 +826,7 @@ export function onManifest() {
         return JSON.stringify({ error: "manifest read failed", status: request.status || 0 });
     }
     let manifest;
-    try { manifest = JSON.parse(new TextDecoder().decode(request.body || new Uint8Array())); }
+    try { manifest = JSON.parse((request.text || "")); }
     catch (e) { response.status = 502; return JSON.stringify({ error: "manifest parse failed" }); }
     // manifest_json stores the source/content hash under "hash".
     const entries = (manifest.entries || []).map((e) => ({
@@ -847,7 +847,7 @@ export function onModuleSource() {
     const ctx = request.ctx || {};
     const handlers = (ctx.entries || []).filter((e) => e.kind === "handler");
     const src = request.ok
-        ? new TextDecoder().decode(request.body || new Uint8Array()) : null;
+        ? (request.text || "") : null;
     const acc = ctx.acc.concat([{
         path: handlers[ctx.idx].path, source: src, missing: !request.ok,
     }]);
@@ -998,7 +998,7 @@ function parseQuery(qs) {
 }
 
 function parseBody() {
-    try { return JSON.parse(request.body || "{}") || {}; } catch (_) { return {}; }
+    try { return JSON.parse(request.text || "{}") || {}; } catch (_) { return {}; }
 }
 
 // Match METHOD+path against ROUTES → {authz, thunk, params} or null. `:x`
@@ -1081,6 +1081,6 @@ export default function() {
     if (denied) return denied;
     return m.thunk({
         params: m.params, query: parseQuery(qs), qs: qs,
-        body: parseBody(), rawBody: request.body || "", path: path,
+        body: parseBody(), rawBody: request.text || "", path: path,
     });
 }
