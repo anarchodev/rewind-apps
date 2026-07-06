@@ -34,10 +34,16 @@
   <h1>Globals reference</h1>
   <p class="lede">Every ambient global a handler can reach, generated from the shipped shims' own documentation — the same source whose examples are compiled and executed by the engine's test gate. This page cannot lag the code, because it is the code.</p>
 
-<p>
-<a href="#kv"><code>kv</code></a> · <a href="#after"><code>after</code></a> · <a href="#next"><code>next</code></a> · <a href="#stream"><code>stream</code></a> · <a href="#webhook"><code>webhook</code></a> · <a href="#email"><code>email</code></a> · <a href="#scheduler"><code>scheduler</code></a> · <a href="#schedule-cron"><code>schedule / cron</code></a> · <a href="#cron-helpers"><code>cron helpers</code></a> · <a href="#retry"><code>retry</code></a> · <a href="#blob"><code>blob</code></a> · <a href="#segments"><code>segments</code></a> · <a href="#browser"><code>browser</code></a> · <a href="#crypto"><code>crypto</code></a> · <a href="#jwt"><code>jwt</code></a> · <a href="#base64"><code>base64</code></a> · <a href="#base64url"><code>base64url</code></a> · <a href="#hex"><code>hex</code></a> · <a href="#textencoder-textdecoder"><code>TextEncoder / TextDecoder</code></a> · <a href="#urlsearchparams"><code>URLSearchParams</code></a> · <a href="#console"><code>console</code></a> · <a href="#users"><code>users</code></a> · <a href="#sessions"><code>sessions</code></a> · <a href="#oauth"><code>oauth</code></a> · <a href="#oidc"><code>oidc</code></a> · <a href="#activitypub"><code>activitypub</code></a> · <a href="#platform"><code>platform</code></a> · <a href="#platform-root"><code>platform.root</code></a> · <a href="#platform-instances"><code>platform.instances</code></a> · <a href="#platform-releases"><code>platform.releases</code></a> · <a href="#platform-auth"><code>platform.auth</code></a>
-</p>
-<h2>Effects &amp; state</h2>
+<table>
+<tr><td>Model &amp; state</td><td><a href="#kv"><code>kv</code></a> · <a href="#blob"><code>blob</code></a> · <a href="#segments"><code>segments</code></a></td></tr>
+<tr><td>Connection &amp; wakes</td><td><a href="#after"><code>after</code></a> · <a href="#next"><code>next</code></a> · <a href="#stream"><code>stream</code></a></td></tr>
+<tr><td>Durable effects</td><td><a href="#webhook"><code>webhook</code></a> · <a href="#email"><code>email</code></a> · <a href="#retry"><code>retry</code></a> · <a href="#scheduler"><code>scheduler</code></a> · <a href="#schedule-cron"><code>schedule / cron</code></a> · <a href="#cron-helpers"><code>cron helpers</code></a></td></tr>
+<tr><td>Browser agent</td><td><a href="#browser"><code>browser</code></a></td></tr>
+<tr><td>Utilities</td><td><a href="#crypto"><code>crypto</code></a> · <a href="#jwt"><code>jwt</code></a> · <a href="#base64"><code>base64</code></a> · <a href="#base64url"><code>base64url</code></a> · <a href="#hex"><code>hex</code></a> · <a href="#textencoder-textdecoder"><code>TextEncoder / TextDecoder</code></a> · <a href="#urlsearchparams"><code>URLSearchParams</code></a> · <a href="#console"><code>console</code></a></td></tr>
+<tr><td>Identity &amp; federation</td><td><a href="#users"><code>users</code></a> · <a href="#sessions"><code>sessions</code></a> · <a href="#oauth"><code>oauth</code></a> · <a href="#oidc"><code>oidc</code></a> · <a href="#activitypub"><code>activitypub</code></a></td></tr>
+<tr><td>Admin (the __admin__ tenant only)</td><td><a href="#platform"><code>platform</code></a> · <a href="#platform-root"><code>platform.root</code></a> · <a href="#platform-instances"><code>platform.instances</code></a> · <a href="#platform-releases"><code>platform.releases</code></a> · <a href="#platform-auth"><code>platform.auth</code></a></td></tr>
+</table>
+<h2>Model &amp; state</h2>
 <h3 id="kv"><code>kv</code></h3>
 <p>Tenant-scoped key/value store. Keys and values are strings. Every key lives in this tenant's <code>app.db</code>; reads and writes never cross tenant boundaries. All operations are replay-deterministic — the same handler run against the same recorded tape observes identical results.</p><p>Writes made via <code>kv.set</code> / <code>kv.delete</code> are buffered in the request transaction and commit atomically when the handler returns; they also replicate through Raft to followers.</p>
 <h4 id="kv-get"><code>get(key)</code></h4>
@@ -80,304 +86,6 @@ if (page.length === 0) break;
 all.push(...page);
 cursor = page[page.length - 1].key;
 }</code></pre>
-<h3 id="after"><code>after</code></h3>
-<p>Connection wake triggers — re-invoke a held handler when something happens, while it still holds the socket. Register them in the body before returning <code>next()</code> (or while streaming). The runtime arms every <code>after.*</code> wake before firing any connectionless effect of the same activation, so a wake is never missed even when a callback writes the key it watches.</p>
-<pre><code>// SSE-style: stream rows, then wait for more under a prefix.
-stream.start();
-after.kv(`notif/${user}/`, { on: "onNotify" });
-return next({ user });</code></pre>
-<h4 id="after-ms"><code>ms(ms, opts?)</code></h4>
-<p>Wake the held connection after <code>ms</code> milliseconds. Named for its unit — durations are milliseconds; there is deliberately no <code>after.seconds</code> family (write <code>after.ms(5 * 60_000)</code>). Without <code>on</code>, the wake lands in the <code>onWake</code> export.</p>
-<table><tr><th>Param</th><th>Type</th><th></th></tr>
-<tr><td><code>ms</code></td><td><code>number</code></td><td><p>Delay in milliseconds (must be &gt; 0).</p></td></tr>
-<tr><td><code>opts <em>(optional)</em></code></td><td><code>object</code></td><td></td></tr>
-<tr><td><code>opts.on <em>(optional)</em></code></td><td><code>string</code></td><td><p>Export to resume into (<code>"module.method"</code> or a bare <code>"method"</code>); defaults to <code>onWake</code>.</p></td></tr>
-</table>
-<p><b>Returns</b> <code>void</code></p>
-<pre><code>after.ms(30_000, { on: "onTimeout" }); // deadline for a join</code></pre>
-<h4 id="after-kv"><code>kv(prefix, opts?)</code></h4>
-<p>Wake the held connection after any key under <code>prefix</code> changes — anchored to the version this activation read, so a write between "you read" and "you parked" still fires it. Without <code>on</code>, the wake lands in the <code>onWake</code> export.</p>
-<table><tr><th>Param</th><th>Type</th><th></th></tr>
-<tr><td><code>prefix</code></td><td><code>string</code></td><td><p>Tenant-scoped key prefix to watch.</p></td></tr>
-<tr><td><code>opts <em>(optional)</em></code></td><td><code>object</code></td><td></td></tr>
-<tr><td><code>opts.on <em>(optional)</em></code></td><td><code>string</code></td><td><p>Export to resume into; defaults to <code>onWake</code>.</p></td></tr>
-</table>
-<p><b>Returns</b> <code>void</code></p>
-<pre><code>after.kv(`rooms/${roomId}/`);             // default onWake
-after.kv(`jobs/${id}/`, { on: "onJob" }); // explicit target</code></pre>
-<h4 id="after-fetch"><code>fetch(url, opts?, dst?)</code></h4>
-<p>Perform an outbound HTTP request and wake the held connection on its result. Connection-scoped: the result resumes THIS chain's <code>{on}</code> export (defaults: <code>onFetchResult</code> for a non-streamed whole body, <code>onFetchChunk</code>/<code>onFetchDone</code> for a streamed one) while it still holds the socket; if the activation doesn't hold the socket the fetch is inert (its durable twin is <code>webhook.send</code>). With <code>opts.stream</code> each upstream writeback wakes the handler as it arrives.</p>
-<table><tr><th>Param</th><th>Type</th><th></th></tr>
-<tr><td><code>url</code></td><td><code>string</code></td><td><p>Upstream URL.</p></td></tr>
-<tr><td><code>opts <em>(optional)</em></code></td><td><code>object</code></td><td></td></tr>
-<tr><td><code>opts.method <em>(optional)</em></code></td><td><code>string</code></td><td><p>HTTP method.</p></td></tr>
-<tr><td><code>opts.headers <em>(optional)</em></code></td><td><code>Object&lt;string,string&gt;</code></td><td><p>Request headers.</p></td></tr>
-<tr><td><code>opts.body <em>(optional)</em></code></td><td><code>string|Uint8Array</code></td><td><p>Request body.</p></td></tr>
-<tr><td><code>opts.stream <em>(optional)</em></code></td><td><code>boolean</code></td><td><p>false → one result event; true → one event per upstream chunk as it arrives.</p></td></tr>
-<tr><td><code>opts.timeout_ms <em>(optional)</em></code></td><td><code>number</code></td><td><p>Per-request timeout.</p></td></tr>
-<tr><td><code>dst <em>(optional)</em></code></td><td><code>object</code></td><td></td></tr>
-<tr><td><code>dst.on <em>(optional)</em></code></td><td><code>string</code></td><td><p>Export the result wakes; overrides the per-event-shape defaults for every event of this fetch.</p></td></tr>
-</table>
-<p><b>Returns</b> <code>string</code> — The fetch id (<code>ftch_…</code>, opaque — compare to <code>request.fetchId</code>).</p>
-<pre><code>after.fetch('https://api.example.com/stream', { stream: true },
-{ on: 'onUpstream' });
-return next();</code></pre>
-<h3 id="next"><code>next</code></h3>
-<p>The held-connection disposition.</p>
-<h4 id="next-next"><code>next(ctx?)</code></h4>
-<p>Park the held connection and continue on the next activation. <code>ctx</code> threads small per-connection state forward as <code>request.ctx</code> (a stream cursor, a fan-in accumulator) — it is NOT heap state across activations (the arena resets); durable state lives in <code>kv</code>. The runtime resumes THIS module's conventional export for the activation kind. Close the connection by returning a terminal body instead.</p>
-<table><tr><th>Param</th><th>Type</th><th></th></tr>
-<tr><td><code>ctx <em>(optional)</em></code></td><td><code>*</code></td><td><p>Per-connection state for the next activation.</p></td></tr>
-</table>
-<p><b>Returns</b> <code>object</code> — The opaque park descriptor — return it.</p>
-<pre><code>stream.write(`data: ${row.value}\n\n`);
-after.kv(`feed/${id}/`);
-return next({ since: row.seq });</code></pre>
-<h3 id="stream"><code>stream</code></h3>
-<p>Connection output — produce a streamed response over time. Pair with <code>on.*</code> (to wait for more) and <code>return next()</code> (to keep the socket); close by returning a terminal body. The response head is the ambient <code>response.*</code> global, committed to the wire by the first <code>stream.start()</code> / <code>stream.write()</code> (or a terminal return).</p>
-<pre><code>// SSE: open, emit rows, then wait for more under a prefix.
-const rows = kv.prefix(`feed/${id}/`, request.ctx?.cursor);
-response.headers = { 'content-type': 'text/event-stream' };
-stream.start();
-for (const r of rows) stream.write(`data: ${r.value}\n\n`);
-after.kv(`feed/${id}/`, { on: 'onNotify' });
-return next({ cursor: rows.at(-1)?.key ?? request.ctx?.cursor });</code></pre>
-<h4 id="stream-start"><code>start()</code></h4>
-<p>Open the streamed response: commit the ambient <code>response.*</code> head and begin the stream so the client's <code>onopen</code> fires before any data. Optional — the first <code>stream.write()</code> opens it implicitly.</p>
-<p><b>Returns</b> <code>void</code></p>
-<h4 id="stream-write"><code>write(chunk)</code></h4>
-<p>Emit one chunk to the held socket. **Commit-gated**: the chunk reaches the wire only after this activation's writes commit. Call it as many times per activation as you like; raw bytes (SSE <code>data:</code> framing is yours to write).</p>
-<table><tr><th>Param</th><th>Type</th><th></th></tr>
-<tr><td><code>chunk</code></td><td><code>string|Uint8Array</code></td><td><p>The bytes to emit.</p></td></tr>
-</table>
-<p><b>Returns</b> <code>void</code></p>
-<h3 id="webhook"><code>webhook</code></h3>
-<p>Durable outbound HTTP — at-least-once delivery, replay-deterministic. Customer code that hardcoded the previous <code>http.send</code> surface should migrate to <code>webhook.send</code>; the customer-visible API is the same call shape (<code>url</code>/<code>method</code>/<code>body</code>/<code>headers</code>/<code>on_result</code>/<code>context</code> plus the new <code>handle</code> and <code>fire_at_ns</code>).</p>
-<h4 id="webhook-send"><code>send(url, opts?)</code></h4>
-<p>Send a webhook. Writes a durable <code>_send/owed/{id}</code> marker through raft, then fires the request via {@link http.fetch}. On failure the platform retries with exponential backoff (1s, 2s, 4s, …, capped at 60s, max 5 attempts) — controlled by the baked <code>__system/webhook_onresult</code> shim, not customer code. Deferred fires (scheduled sends, retries, crash recovery) ride the durable {@link scheduler} and survive leader changes.</p><p>The handler's commit gates the marker: if the handler throws or raft faults, no marker is written and no request fires. After commit the platform owns delivery; the customer's <code>on_result</code> module sees one terminal result event (success or give-up after the retry budget).</p>
-<table><tr><th>Param</th><th>Type</th><th></th></tr>
-<tr><td><code>url</code></td><td><code>string</code></td><td><p>Target URL.</p></td></tr>
-<tr><td><code>opts <em>(optional)</em></code></td><td><code>object</code></td><td></td></tr>
-<tr><td><code>opts.method <em>(optional)</em></code></td><td><code>string</code></td><td><p>HTTP method.</p></td></tr>
-<tr><td><code>opts.body <em>(optional)</em></code></td><td><code>string</code></td><td><p>Request body (string only — the durable marker is JSON).</p></td></tr>
-<tr><td><code>opts.headers <em>(optional)</em></code></td><td><code>Object&lt;string,string&gt;</code></td><td><p>Extra headers. <code>X-Rove-Schedule-Id</code> and <code>X-Rove-Schedule-Version</code> are added by the platform on fire — don't set them yourself.</p></td></tr>
-<tr><td><code>opts.handle <em>(optional)</em></code></td><td><code>string</code></td><td><p>Customer-chosen idempotency handle. Same handle → same id → same <code>_send/owed/{id}</code> row (last write wins). Omit for a fresh random id.</p></td></tr>
-<tr><td><code>opts.fire_at_ns <em>(optional)</em></code></td><td><code>bigint|number</code></td><td><p>Epoch nanoseconds. <code>&gt; now</code> defers the fire to a durable scheduled wake (the marker is written but no <code>http.fetch</code> happens until the wake fires). Omit or <code>&lt;= now</code> for fire-as-soon-as-handler-commits.</p></td></tr>
-<tr><td><code>opts.on <em>(optional)</em></code></td><td><code>string</code></td><td><p>Module path of a customer result handler. Receives the terminal event on the unified flattened surface (handler-shape §7): the response on <code>request.bytes</code> / <code>.text</code> / <code>.json</code>, <code>request.status</code> / <code>.ok</code> / <code>.bodyTruncated</code>; the threaded <code>ctx</code> value bare on <code>request.ctx</code>; delivery metadata (<code>attempts</code>, <code>error?</code>, <code>id</code>, <code>headers</code>) on <code>request.activation.*</code>. There is no <code>request.result</code>.</p></td></tr>
-<tr><td><code>opts.ctx <em>(optional)</em></code></td><td><code>*</code></td><td><p>Opaque customer payload echoed back as <code>request.ctx</code> on the result event.</p></td></tr>
-</table>
-<p><b>Returns</b> <code>string</code> — The marker id. Same value as the <code>handle</code> when one was supplied.</p>
-<pre><code>webhook.send("https://hooks.example.com/x", {
-body: JSON.stringify({ event: "order.paid", id }),
-on: "hooks/onDelivered",
-ctx: { order_id: id },
-});</code></pre>
-<pre><code>// Scheduled fire — write the marker now, fire in 5 minutes.
-webhook.send("https://example.test/reminder", {
-body: "ping",
-handle: "reminder/" + user_id,        // idempotent
-fire_at_ns: BigInt(Date.now() + 300_000) * 1_000_000n,
-});</code></pre>
-<h3 id="email"><code>email</code></h3>
-<p>Transactional email through Resend.</p>
-<h4 id="email-send"><code>send(opts)</code></h4>
-<p>Send an email. Builds the Resend API request and dispatches it via {@link webhook.send} (durable; fires after the handler commits).</p>
-<table><tr><th>Param</th><th>Type</th><th></th></tr>
-<tr><td><code>opts</code></td><td><code>object</code></td><td></td></tr>
-<tr><td><code>opts.key</code></td><td><code>string</code></td><td><p>Resend API key (sent as <code>Authorization: Bearer</code>).</p></td></tr>
-<tr><td><code>opts.from</code></td><td><code>string</code></td><td><p>Sender address.</p></td></tr>
-<tr><td><code>opts.to</code></td><td><code>string|string[]</code></td><td><p>Recipient(s).</p></td></tr>
-<tr><td><code>opts.subject</code></td><td><code>string</code></td><td><p>Subject line.</p></td></tr>
-<tr><td><code>opts.text <em>(optional)</em></code></td><td><code>string</code></td><td><p>Plain-text body.</p></td></tr>
-<tr><td><code>opts.html <em>(optional)</em></code></td><td><code>string</code></td><td><p>HTML body.</p></td></tr>
-<tr><td><code>opts.reply_to <em>(optional)</em></code></td><td><code>string</code></td><td><p>Reply-To address.</p></td></tr>
-<tr><td><code>opts.cc <em>(optional)</em></code></td><td><code>string|string[]</code></td><td><p>CC recipient(s).</p></td></tr>
-<tr><td><code>opts.bcc <em>(optional)</em></code></td><td><code>string|string[]</code></td><td><p>BCC recipient(s).</p></td></tr>
-<tr><td><code>opts.on <em>(optional)</em></code></td><td><code>string</code></td><td><p>Result handler module in this tenant (forwarded to <code>webhook.send</code>).</p></td></tr>
-<tr><td><code>opts.ctx <em>(optional)</em></code></td><td><code>*</code></td><td><p>Echoed back as <code>request.ctx</code> on the result event.</p></td></tr>
-<tr><td><code>opts.max_attempts <em>(optional)</em></code></td><td><code>number</code></td><td><p>Override the built-in webhook.send retry budget (default 5).</p></td></tr>
-<tr><td><code>opts.timeout_ms <em>(optional)</em></code></td><td><code>number</code></td><td><p>Per-attempt timeout.</p></td></tr>
-</table>
-<p><b>Returns</b> <code>string</code> — The schedule id from {@link webhook.send}.</p>
-<pre><code>const key = kv.get("secret/resend") ?? "re_dev_placeholder";
-const user = { email: "ada@example.com", name: "Ada" };
-email.send({
-key,
-from: "noreply@acme.dev",
-to: user.email,
-subject: "Welcome",
-html: `&lt;h1&gt;Hi ${user.name}&lt;/h1&gt;`,
-});</code></pre>
-<h3 id="scheduler"><code>scheduler</code></h3>
-<p>Durable, one-shot, absolute-time scheduled wakes. The canonical timer primitive — cron, webhook retry, delayed jobs, lease/TTL expiry all compose on <code>scheduler.at</code>. At-least-once *firing*; the target owns dedup + any retry.</p>
-<pre><code>scheduler.in(30 * 60_000, "jobs/reminder", { userId });
-scheduler.at(cron.dailyAt(3, 0), "jobs/cleanup", null,
-{ key: "cleanup/daily" }); // idempotent, re-armable</code></pre>
-<h4 id="scheduler-at"><code>at(whenNs, target, msg?, opts?)</code></h4>
-<p>Schedule <code>target</code> to run at absolute time <code>whenNs</code>. At-least-once firing — the target sees <code>request.activation = { kind: "durable_wake", id, key, scheduled_at_ns, msg }</code> and owns dedup. <code>whenNs</code> rounds up to the next 1 s tick. Re-arming = call again with the same <code>opts.key</code> (moves <code>when</code>/<code>target</code>/<code>msg</code>, last-write-wins).</p>
-<table><tr><th>Param</th><th>Type</th><th></th></tr>
-<tr><td><code>whenNs</code></td><td><code>bigint</code></td><td><p>Absolute fire time, nanoseconds since epoch (e.g. from <code>cron.dailyAt</code> / <code>cron.fromNow</code>). A past time fires on the next sweep.</p></td></tr>
-<tr><td><code>target</code></td><td><code>string</code></td><td><p>Handler module specifier to invoke (same shape as a subscription module path).</p></td></tr>
-<tr><td><code>msg <em>(optional)</em></code></td><td><code>*</code></td><td><p>JSON-serializable payload, surfaced as <code>request.activation.msg</code>. Capped at 16 KiB serialized.</p></td></tr>
-<tr><td><code>opts <em>(optional)</em></code></td><td><code>object</code></td><td></td></tr>
-<tr><td><code>opts.key <em>(optional)</em></code></td><td><code>string</code></td><td><p>Idempotency key. Same key ⇒ same id ⇒ last-write-wins. Omit for a fresh random id.</p></td></tr>
-</table>
-<p><b>Returns</b> <code>string</code> — The stable schedule id.</p>
-<pre><code>const id = scheduler.at(cron.fromNow("1h"), "jobs/expire", { leaseId });</code></pre>
-<h4 id="scheduler-in"><code>in(delayMs, target, msg?, opts?)</code></h4>
-<p>Convenience: schedule <code>target</code> <code>delayMs</code> milliseconds from now. Rounds up to the next 1 s tick (so a sub-second delay fires at the next tick).</p>
-<table><tr><th>Param</th><th>Type</th><th></th></tr>
-<tr><td><code>delayMs</code></td><td><code>number</code></td><td><p>Delay from now in milliseconds (≤ 0 ⇒ fire on the next sweep).</p></td></tr>
-<tr><td><code>target</code></td><td><code>string</code></td><td><p>Handler module specifier.</p></td></tr>
-<tr><td><code>msg <em>(optional)</em></code></td><td><code>*</code></td><td><p>JSON-serializable payload (see {@link scheduler.at}).</p></td></tr>
-<tr><td><code>opts <em>(optional)</em></code></td><td><code>object</code></td><td></td></tr>
-<tr><td><code>opts.key <em>(optional)</em></code></td><td><code>string</code></td><td><p>Idempotency key (see {@link scheduler.at}).</p></td></tr>
-</table>
-<p><b>Returns</b> <code>string</code> — The stable schedule id.</p>
-<pre><code>scheduler.in(5000, "jobs/poll");</code></pre>
-<h4 id="scheduler-cancel"><code>cancel(id)</code></h4>
-<p>Cancel a scheduled wake by id. Removes both the <code>_sched/by_id</code> and <code>_sched/by_time</code> entries. Idempotent: cancelling an unknown / already-fired id returns <code>false</code>.</p>
-<table><tr><th>Param</th><th>Type</th><th></th></tr>
-<tr><td><code>id</code></td><td><code>string</code></td><td><p>The id returned by <code>at</code> / <code>after</code> (or <code>_idFromKey(opts.key)</code>).</p></td></tr>
-</table>
-<p><b>Returns</b> <code>boolean</code> — <code>true</code> iff an entry was removed.</p>
-<pre><code>scheduler.cancel(id);</code></pre>
-<h4 id="scheduler-get"><code>get(id)</code></h4>
-<p>Look up a scheduled wake by id.</p>
-<table><tr><th>Param</th><th>Type</th><th></th></tr>
-<tr><td><code>id</code></td><td><code>string</code></td><td><p>The id returned by <code>at</code> / <code>after</code>.</p></td></tr>
-</table>
-<p><b>Returns</b> <code>{id: string, whenNs: bigint, target: string,
-key: (string|null)</code> — | null} The schedule, or <code>null</code> if unknown / already fired.</p>
-<pre><code>const s = scheduler.get(id);
-if (s) console.log(s.target, s.whenNs);</code></pre>
-<h3 id="schedule-cron"><code>schedule / cron</code></h3>
-<p>Durable, connectionless timers.</p>
-<h4 id="schedule-cron-schedule"><code>schedule(when, target, ctx?)</code></h4>
-<p>Run <code>target</code> once, at a time. Connectionless + durable.</p>
-<table><tr><th>Param</th><th>Type</th><th></th></tr>
-<tr><td><code>when</code></td><td><code>object</code></td><td><p><code>{ at }</code> (absolute) or <code>{ in }</code> (delay). <code>at</code>: bigint ns | number ms-since-epoch | Date | ISO string. <code>in</code>: number ms | duration string (<code>"24h"</code>, <code>"30m"</code>, …).</p></td></tr>
-<tr><td><code>target</code></td><td><code>string</code></td><td><p>Module specifier to run, e.g. <code>"sendReminder"</code>.</p></td></tr>
-<tr><td><code>ctx <em>(optional)</em></code></td><td><code>*</code></td><td><p>JSON-serializable value delivered as <code>request.activation.msg</code>.</p></td></tr>
-</table>
-<p><b>Returns</b> <code>string</code> — The schedule id (cancel via <code>scheduler.cancel(id)</code>).</p>
-<pre><code>schedule({ in: "24h" }, "sendReminder", { user });
-schedule({ at: cron.dailyAt(3, 0) }, "jobs/cleanup");</code></pre>
-<h3 id="cron-helpers"><code>cron helpers</code></h3>
-<p>Fire-time helpers for durable scheduling.</p>
-<h4 id="cron-helpers-tofireatns"><code>toFireAtNs(input)</code></h4>
-<p>Coerce a time input to BigInt nanoseconds-since-epoch.</p>
-<table><tr><th>Param</th><th>Type</th><th></th></tr>
-<tr><td><code>input</code></td><td><code>bigint|number|Date|string|null</code></td><td><p>BigInt (ns, passed through); number/Date (ms-since-epoch); string (duration suffix like <code>"30s"</code>/<code>"5m"</code>/<code>"2h"</code>/<code>"1d"</code>/<code>"1w"</code> relative to now, or ISO-8601); <code>null</code> → <code>0n</code> (fire ASAP).</p></td></tr>
-</table>
-<p><b>Returns</b> <code>bigint</code> — Nanoseconds since epoch.</p>
-<pre><code>cron.toFireAtNs("2h");                     // 2 hours from now
-cron.toFireAtNs("2026-06-01T03:00:00Z");   // absolute</code></pre>
-<h4 id="cron-helpers-parseduration"><code>parseDuration(s)</code></h4>
-<p>Parse a duration string to milliseconds.</p>
-<table><tr><th>Param</th><th>Type</th><th></th></tr>
-<tr><td><code>s</code></td><td><code>string</code></td><td><p><code>&lt;n&gt;&lt;unit&gt;</code>, unit ∈ <code>s|m|h|d|w</code> (e.g. <code>"5m"</code>, <code>"1w"</code>).</p></td></tr>
-</table>
-<p><b>Returns</b> <code>number|null</code> — Milliseconds, or <code>null</code> if <code>s</code> isn't a duration (callers fall back to ISO parsing).</p>
-<pre><code>cron.parseDuration("2h"); // 7200000</code></pre>
-<h4 id="cron-helpers-fromnow"><code>fromNow(s)</code></h4>
-<p><code>now + parseDuration(s)</code> as a fire time.</p>
-<table><tr><th>Param</th><th>Type</th><th></th></tr>
-<tr><td><code>s</code></td><td><code>string</code></td><td><p>Duration string (see {@link cron.parseDuration}).</p></td></tr>
-</table>
-<p><b>Returns</b> <code>bigint</code> — Nanoseconds since epoch.</p>
-<pre><code>webhook.send("https://hooks.example.com/x", { fire_at_ns: cron.fromNow("30m") });</code></pre>
-<h4 id="cron-helpers-dailyat"><code>dailyAt(hour, minute)</code></h4>
-<p>Next occurrence of <code>hour:minute</code> UTC; tomorrow's slot if today's has passed.</p>
-<table><tr><th>Param</th><th>Type</th><th></th></tr>
-<tr><td><code>hour</code></td><td><code>number</code></td><td><p>0–23.</p></td></tr>
-<tr><td><code>minute</code></td><td><code>number</code></td><td><p>0–59.</p></td></tr>
-</table>
-<p><b>Returns</b> <code>bigint</code> — Nanoseconds since epoch.</p>
-<pre><code>cron.dailyAt(3, 0); // next 03:00 UTC</code></pre>
-<h4 id="cron-helpers-weeklyat"><code>weeklyAt(dayOfWeek, hour, minute)</code></h4>
-<p>Next occurrence of <code>dayOfWeek</code> at <code>hour:minute</code> UTC.</p>
-<table><tr><th>Param</th><th>Type</th><th></th></tr>
-<tr><td><code>dayOfWeek</code></td><td><code>number</code></td><td><p>0=Sunday … 6=Saturday.</p></td></tr>
-<tr><td><code>hour</code></td><td><code>number</code></td><td><p>0–23.</p></td></tr>
-<tr><td><code>minute</code></td><td><code>number</code></td><td><p>0–59.</p></td></tr>
-</table>
-<p><b>Returns</b> <code>bigint</code> — Nanoseconds since epoch.</p>
-<pre><code>cron.weeklyAt(1, 9, 0); // next Monday 09:00 UTC</code></pre>
-<h4 id="cron-helpers-hourly"><code>hourly()</code></h4>
-<p>Top of the next hour (UTC).</p>
-<p><b>Returns</b> <code>bigint</code> — Nanoseconds since epoch.</p>
-<pre><code>webhook.send("https://hooks.example.com/x", { fire_at_ns: cron.hourly() });</code></pre>
-<h4 id="cron-helpers-next"><code>next(expr, now_ms?)</code></h4>
-<p>Next match of a 5-field crontab expression (UTC), at minute granularity. Day-of-month / day-of-week follow Vixie cron: when both are restricted, a match on *either* counts.</p><p>Fields: <code>minute hour day-of-month month day-of-week</code>. Each accepts <code>*</code> (any), <code>N</code>, <code>N,M,...</code> (list), <code>N-M</code> (range), or a trailing <code>/N</code> step on <code>*</code> or a range (e.g. a star then slash-15 in the minute field = every 15 minutes).</p>
-<table><tr><th>Param</th><th>Type</th><th></th></tr>
-<tr><td><code>expr</code></td><td><code>string</code></td><td><p>e.g. <code>"0 3 * * *"</code> (daily 03:00) or <code>"0 9 * * 1-5"</code> (weekdays 09:00).</p></td></tr>
-<tr><td><code>now_ms <em>(optional)</em></code></td><td><code>number</code></td><td><p>Base time (ms since epoch); defaults to <code>Date.now()</code>. Mainly for testing.</p></td></tr>
-</table>
-<p><b>Returns</b> <code>bigint</code> — Nanoseconds since epoch of the next match.</p>
-<pre><code>webhook.send("https://hooks.example.com/x", { fire_at_ns: cron.next("0 3 * * *") });</code></pre>
-<h3 id="retry"><code>retry</code></h3>
-<p>Customer-side retry policy layered on {@link webhook.send}. All retry state lives in this tenant's own context — no platform retry loop, no cross-tenant privileges. The chain only advances when the on_result handler explicitly calls {@link retry.next}.</p>
-<pre><code>// Fire with a policy.
-retry.send({
-url: "https://stripe.com/charge",
-on: "charges/handler",
-max_attempts: 3,
-backoff_ms: [1000, 5000, 30000], // or a number, or omit
-ctx: { charge_id: 42 },
-});
-
-// charges/handler.mjs — the {on} handler. The result arrives
-// on the unified flattened surface (handler-shape §7).
-export default function () {
-const event = {
-ok: request.ok, status: request.status, body: request.text,
-error: request.activation.error, context: request.ctx,
-};
-if (retry.shouldRetry(event)) { retry.next(event); return; }
-const ctx = retry.stripContext(event);
-// ... your terminal handling ...
-}</code></pre>
-<h4 id="retry-send"><code>send(opts)</code></h4>
-<p>Fire a one-shot <code>webhook.send</code> wrapped with a retry policy. The on_result module receives events with <code>event.context._retry</code> populated; drive the chain with the helpers below.</p>
-<table><tr><th>Param</th><th>Type</th><th></th></tr>
-<tr><td><code>opts</code></td><td><code>object</code></td><td></td></tr>
-<tr><td><code>opts.url</code></td><td><code>string</code></td><td><p>Target URL.</p></td></tr>
-<tr><td><code>opts.on</code></td><td><code>string</code></td><td><p>Result handler module path in this tenant (non-empty).</p></td></tr>
-<tr><td><code>opts.max_attempts <em>(optional)</em></code></td><td><code>number</code></td><td><p>Total attempts incl. the first (positive integer).</p></td></tr>
-<tr><td><code>opts.backoff_ms <em>(optional)</em></code></td><td><code>number|number[]</code></td><td><p>Constant delay, a per-attempt schedule, or omit for exponential 1s/4s/16s… capped at 60s.</p></td></tr>
-<tr><td><code>opts.method <em>(optional)</em></code></td><td><code>string</code></td><td><p>HTTP method.</p></td></tr>
-<tr><td><code>opts.headers <em>(optional)</em></code></td><td><code>Object&lt;string,string&gt;</code></td><td><p>Request headers.</p></td></tr>
-<tr><td><code>opts.body <em>(optional)</em></code></td><td><code>string</code></td><td><p>Request body.</p></td></tr>
-<tr><td><code>opts.timeout_ms <em>(optional)</em></code></td><td><code>number</code></td><td><p>Per-request timeout.</p></td></tr>
-<tr><td><code>opts.fire_at_ns <em>(optional)</em></code></td><td><code>bigint</code></td><td><p>Delay the first attempt.</p></td></tr>
-<tr><td><code>opts.ctx <em>(optional)</em></code></td><td><code>*</code></td><td><p>Echoed back (under your own keys; <code>_retry</code> is reserved).</p></td></tr>
-</table>
-<p><b>Returns</b> <code>string</code> — The {@link webhook.send} schedule id.</p>
-<h4 id="retry-shouldretry"><code>shouldRetry(event)</code></h4>
-<p>Whether <code>event</code> should be retried: a failure with attempts remaining. Always <code>false</code> on success or when retry context is absent.</p>
-<table><tr><th>Param</th><th>Type</th><th></th></tr>
-<tr><td><code>event</code></td><td><code>object</code></td><td><p>The (flat) result event with <code>ok</code> + <code>context._retry</code>. See the module comment for how to flatten from <code>request.ctx</code>.</p></td></tr>
-</table>
-<p><b>Returns</b> <code>boolean</code></p>
-<h4 id="retry-next"><code>next(event)</code></h4>
-<p>Schedule the next attempt (applies the backoff). No-op returning <code>null</code> if the event isn't retryable — check {@link retry.shouldRetry} first.</p>
-<table><tr><th>Param</th><th>Type</th><th></th></tr>
-<tr><td><code>event</code></td><td><code>object</code></td><td><p>The result event.</p></td></tr>
-</table>
-<p><b>Returns</b> <code>string|null</code> — New schedule id, or <code>null</code>.</p>
-<h4 id="retry-stripcontext"><code>stripContext(event)</code></h4>
-<p><code>event.context</code> with the reserved <code>_retry</code> meta removed. Returns a fresh object (no mutation); idempotent on events that never went through {@link retry.send}.</p>
-<table><tr><th>Param</th><th>Type</th><th></th></tr>
-<tr><td><code>event</code></td><td><code>object</code></td><td><p>The result event.</p></td></tr>
-</table>
-<p><b>Returns</b> <code>object|null</code> — Your original context, or <code>null</code>.</p>
-<h4 id="retry-attempt"><code>attempt(event)</code></h4>
-<p>Current 1-based attempt number (1 on the first fire, 2 on the first retry, …). <code>null</code> when retry context is missing.</p>
-<table><tr><th>Param</th><th>Type</th><th></th></tr>
-<tr><td><code>event</code></td><td><code>object</code></td><td><p>The result event.</p></td></tr>
-</table>
-<p><b>Returns</b> <code>number|null</code></p>
 <h3 id="blob"><code>blob</code></h3>
 <p>Content-addressed tenant object storage.</p>
 <h4 id="blob-put"><code>put(bytes, opts?)</code></h4>
@@ -513,6 +221,307 @@ export function sealRooms() {
 for (const s of JSON.parse(kv.get("rooms") ?? "[]"))
 segments.seal(`room-${s}`);
 }</code></pre>
+<h2>Connection &amp; wakes</h2>
+<h3 id="after"><code>after</code></h3>
+<p>Connection wake triggers — re-invoke a held handler when something happens, while it still holds the socket. Register them in the body before returning <code>next()</code> (or while streaming). The runtime arms every <code>after.*</code> wake before firing any connectionless effect of the same activation, so a wake is never missed even when a callback writes the key it watches.</p>
+<pre><code>// SSE-style: stream rows, then wait for more under a prefix.
+stream.start();
+after.kv(`notif/${user}/`, { on: "onNotify" });
+return next({ user });</code></pre>
+<h4 id="after-ms"><code>ms(ms, opts?)</code></h4>
+<p>Wake the held connection after <code>ms</code> milliseconds. Named for its unit — durations are milliseconds; there is deliberately no <code>after.seconds</code> family (write <code>after.ms(5 * 60_000)</code>). Without <code>on</code>, the wake lands in the <code>onWake</code> export.</p>
+<table><tr><th>Param</th><th>Type</th><th></th></tr>
+<tr><td><code>ms</code></td><td><code>number</code></td><td><p>Delay in milliseconds (must be &gt; 0).</p></td></tr>
+<tr><td><code>opts <em>(optional)</em></code></td><td><code>object</code></td><td></td></tr>
+<tr><td><code>opts.on <em>(optional)</em></code></td><td><code>string</code></td><td><p>Export to resume into (<code>"module.method"</code> or a bare <code>"method"</code>); defaults to <code>onWake</code>.</p></td></tr>
+</table>
+<p><b>Returns</b> <code>void</code></p>
+<pre><code>after.ms(30_000, { on: "onTimeout" }); // deadline for a join</code></pre>
+<h4 id="after-kv"><code>kv(prefix, opts?)</code></h4>
+<p>Wake the held connection after any key under <code>prefix</code> changes — anchored to the version this activation read, so a write between "you read" and "you parked" still fires it. Without <code>on</code>, the wake lands in the <code>onWake</code> export.</p>
+<table><tr><th>Param</th><th>Type</th><th></th></tr>
+<tr><td><code>prefix</code></td><td><code>string</code></td><td><p>Tenant-scoped key prefix to watch.</p></td></tr>
+<tr><td><code>opts <em>(optional)</em></code></td><td><code>object</code></td><td></td></tr>
+<tr><td><code>opts.on <em>(optional)</em></code></td><td><code>string</code></td><td><p>Export to resume into; defaults to <code>onWake</code>.</p></td></tr>
+</table>
+<p><b>Returns</b> <code>void</code></p>
+<pre><code>after.kv(`rooms/${roomId}/`);             // default onWake
+after.kv(`jobs/${id}/`, { on: "onJob" }); // explicit target</code></pre>
+<h4 id="after-fetch"><code>fetch(url, opts?, dst?)</code></h4>
+<p>Perform an outbound HTTP request and wake the held connection on its result. Connection-scoped: the result resumes THIS chain's <code>{on}</code> export (defaults: <code>onFetchResult</code> for a non-streamed whole body, <code>onFetchChunk</code>/<code>onFetchDone</code> for a streamed one) while it still holds the socket; if the activation doesn't hold the socket the fetch is inert (its durable twin is <code>webhook.send</code>). With <code>opts.stream</code> each upstream writeback wakes the handler as it arrives.</p>
+<table><tr><th>Param</th><th>Type</th><th></th></tr>
+<tr><td><code>url</code></td><td><code>string</code></td><td><p>Upstream URL.</p></td></tr>
+<tr><td><code>opts <em>(optional)</em></code></td><td><code>object</code></td><td></td></tr>
+<tr><td><code>opts.method <em>(optional)</em></code></td><td><code>string</code></td><td><p>HTTP method.</p></td></tr>
+<tr><td><code>opts.headers <em>(optional)</em></code></td><td><code>Object&lt;string,string&gt;</code></td><td><p>Request headers.</p></td></tr>
+<tr><td><code>opts.body <em>(optional)</em></code></td><td><code>string|Uint8Array</code></td><td><p>Request body.</p></td></tr>
+<tr><td><code>opts.stream <em>(optional)</em></code></td><td><code>boolean</code></td><td><p>false → one result event; true → one event per upstream chunk as it arrives.</p></td></tr>
+<tr><td><code>opts.timeout_ms <em>(optional)</em></code></td><td><code>number</code></td><td><p>Per-request timeout.</p></td></tr>
+<tr><td><code>dst <em>(optional)</em></code></td><td><code>object</code></td><td></td></tr>
+<tr><td><code>dst.on <em>(optional)</em></code></td><td><code>string</code></td><td><p>Export the result wakes; overrides the per-event-shape defaults for every event of this fetch.</p></td></tr>
+</table>
+<p><b>Returns</b> <code>string</code> — The fetch id (<code>ftch_…</code>, opaque — compare to <code>request.fetchId</code>).</p>
+<pre><code>after.fetch('https://api.example.com/stream', { stream: true },
+{ on: 'onUpstream' });
+return next();</code></pre>
+<h3 id="next"><code>next</code></h3>
+<p>The held-connection disposition.</p>
+<h4 id="next-next"><code>next(ctx?)</code></h4>
+<p>Park the held connection and continue on the next activation. <code>ctx</code> threads small per-connection state forward as <code>request.ctx</code> (a stream cursor, a fan-in accumulator) — it is NOT heap state across activations (the arena resets); durable state lives in <code>kv</code>. The runtime resumes THIS module's conventional export for the activation kind. Close the connection by returning a terminal body instead.</p>
+<table><tr><th>Param</th><th>Type</th><th></th></tr>
+<tr><td><code>ctx <em>(optional)</em></code></td><td><code>*</code></td><td><p>Per-connection state for the next activation.</p></td></tr>
+</table>
+<p><b>Returns</b> <code>object</code> — The opaque park descriptor — return it.</p>
+<pre><code>stream.write(`data: ${row.value}\n\n`);
+after.kv(`feed/${id}/`);
+return next({ since: row.seq });</code></pre>
+<h3 id="stream"><code>stream</code></h3>
+<p>Connection output — produce a streamed response over time. Pair with <code>on.*</code> (to wait for more) and <code>return next()</code> (to keep the socket); close by returning a terminal body. The response head is the ambient <code>response.*</code> global, committed to the wire by the first <code>stream.start()</code> / <code>stream.write()</code> (or a terminal return).</p>
+<pre><code>// SSE: open, emit rows, then wait for more under a prefix.
+const rows = kv.prefix(`feed/${id}/`, request.ctx?.cursor);
+response.headers = { 'content-type': 'text/event-stream' };
+stream.start();
+for (const r of rows) stream.write(`data: ${r.value}\n\n`);
+after.kv(`feed/${id}/`, { on: 'onNotify' });
+return next({ cursor: rows.at(-1)?.key ?? request.ctx?.cursor });</code></pre>
+<h4 id="stream-start"><code>start()</code></h4>
+<p>Open the streamed response: commit the ambient <code>response.*</code> head and begin the stream so the client's <code>onopen</code> fires before any data. Optional — the first <code>stream.write()</code> opens it implicitly.</p>
+<p><b>Returns</b> <code>void</code></p>
+<h4 id="stream-write"><code>write(chunk)</code></h4>
+<p>Emit one chunk to the held socket. **Commit-gated**: the chunk reaches the wire only after this activation's writes commit. Call it as many times per activation as you like; raw bytes (SSE <code>data:</code> framing is yours to write).</p>
+<table><tr><th>Param</th><th>Type</th><th></th></tr>
+<tr><td><code>chunk</code></td><td><code>string|Uint8Array</code></td><td><p>The bytes to emit.</p></td></tr>
+</table>
+<p><b>Returns</b> <code>void</code></p>
+<h2>Durable effects</h2>
+<h3 id="webhook"><code>webhook</code></h3>
+<p>Durable outbound HTTP — at-least-once delivery, replay-deterministic. Customer code that hardcoded the previous <code>http.send</code> surface should migrate to <code>webhook.send</code>; the customer-visible API is the same call shape (<code>url</code>/<code>method</code>/<code>body</code>/<code>headers</code>/<code>on_result</code>/<code>context</code> plus the new <code>handle</code> and <code>fire_at_ns</code>).</p>
+<h4 id="webhook-send"><code>send(url, opts?)</code></h4>
+<p>Send a webhook. Writes a durable <code>_send/owed/{id}</code> marker through raft, then fires the request via {@link http.fetch}. On failure the platform retries with exponential backoff (1s, 2s, 4s, …, capped at 60s, max 5 attempts) — controlled by the baked <code>__system/webhook_onresult</code> shim, not customer code. Deferred fires (scheduled sends, retries, crash recovery) ride the durable {@link scheduler} and survive leader changes.</p><p>The handler's commit gates the marker: if the handler throws or raft faults, no marker is written and no request fires. After commit the platform owns delivery; the customer's <code>on_result</code> module sees one terminal result event (success or give-up after the retry budget).</p>
+<table><tr><th>Param</th><th>Type</th><th></th></tr>
+<tr><td><code>url</code></td><td><code>string</code></td><td><p>Target URL.</p></td></tr>
+<tr><td><code>opts <em>(optional)</em></code></td><td><code>object</code></td><td></td></tr>
+<tr><td><code>opts.method <em>(optional)</em></code></td><td><code>string</code></td><td><p>HTTP method.</p></td></tr>
+<tr><td><code>opts.body <em>(optional)</em></code></td><td><code>string</code></td><td><p>Request body (string only — the durable marker is JSON).</p></td></tr>
+<tr><td><code>opts.headers <em>(optional)</em></code></td><td><code>Object&lt;string,string&gt;</code></td><td><p>Extra headers. <code>X-Rove-Schedule-Id</code> and <code>X-Rove-Schedule-Version</code> are added by the platform on fire — don't set them yourself.</p></td></tr>
+<tr><td><code>opts.handle <em>(optional)</em></code></td><td><code>string</code></td><td><p>Customer-chosen idempotency handle. Same handle → same id → same <code>_send/owed/{id}</code> row (last write wins). Omit for a fresh random id.</p></td></tr>
+<tr><td><code>opts.fire_at_ns <em>(optional)</em></code></td><td><code>bigint|number</code></td><td><p>Epoch nanoseconds. <code>&gt; now</code> defers the fire to a durable scheduled wake (the marker is written but no <code>http.fetch</code> happens until the wake fires). Omit or <code>&lt;= now</code> for fire-as-soon-as-handler-commits.</p></td></tr>
+<tr><td><code>opts.on <em>(optional)</em></code></td><td><code>string</code></td><td><p>Module path of a customer result handler. Receives the terminal event on the unified flattened surface (handler-shape §7): the response on <code>request.bytes</code> / <code>.text</code> / <code>.json</code>, <code>request.status</code> / <code>.ok</code> / <code>.bodyTruncated</code>; the threaded <code>ctx</code> value bare on <code>request.ctx</code>; delivery metadata (<code>attempts</code>, <code>error?</code>, <code>id</code>, <code>headers</code>) on <code>request.activation.*</code>. There is no <code>request.result</code>.</p></td></tr>
+<tr><td><code>opts.ctx <em>(optional)</em></code></td><td><code>*</code></td><td><p>Opaque customer payload echoed back as <code>request.ctx</code> on the result event.</p></td></tr>
+</table>
+<p><b>Returns</b> <code>string</code> — The marker id. Same value as the <code>handle</code> when one was supplied.</p>
+<pre><code>webhook.send("https://hooks.example.com/x", {
+body: JSON.stringify({ event: "order.paid", id }),
+on: "hooks/onDelivered",
+ctx: { order_id: id },
+});</code></pre>
+<pre><code>// Scheduled fire — write the marker now, fire in 5 minutes.
+webhook.send("https://example.test/reminder", {
+body: "ping",
+handle: "reminder/" + user_id,        // idempotent
+fire_at_ns: BigInt(Date.now() + 300_000) * 1_000_000n,
+});</code></pre>
+<h3 id="email"><code>email</code></h3>
+<p>Transactional email through Resend.</p>
+<h4 id="email-send"><code>send(opts)</code></h4>
+<p>Send an email. Builds the Resend API request and dispatches it via {@link webhook.send} (durable; fires after the handler commits).</p>
+<table><tr><th>Param</th><th>Type</th><th></th></tr>
+<tr><td><code>opts</code></td><td><code>object</code></td><td></td></tr>
+<tr><td><code>opts.key</code></td><td><code>string</code></td><td><p>Resend API key (sent as <code>Authorization: Bearer</code>).</p></td></tr>
+<tr><td><code>opts.from</code></td><td><code>string</code></td><td><p>Sender address.</p></td></tr>
+<tr><td><code>opts.to</code></td><td><code>string|string[]</code></td><td><p>Recipient(s).</p></td></tr>
+<tr><td><code>opts.subject</code></td><td><code>string</code></td><td><p>Subject line.</p></td></tr>
+<tr><td><code>opts.text <em>(optional)</em></code></td><td><code>string</code></td><td><p>Plain-text body.</p></td></tr>
+<tr><td><code>opts.html <em>(optional)</em></code></td><td><code>string</code></td><td><p>HTML body.</p></td></tr>
+<tr><td><code>opts.reply_to <em>(optional)</em></code></td><td><code>string</code></td><td><p>Reply-To address.</p></td></tr>
+<tr><td><code>opts.cc <em>(optional)</em></code></td><td><code>string|string[]</code></td><td><p>CC recipient(s).</p></td></tr>
+<tr><td><code>opts.bcc <em>(optional)</em></code></td><td><code>string|string[]</code></td><td><p>BCC recipient(s).</p></td></tr>
+<tr><td><code>opts.on <em>(optional)</em></code></td><td><code>string</code></td><td><p>Result handler module in this tenant (forwarded to <code>webhook.send</code>).</p></td></tr>
+<tr><td><code>opts.ctx <em>(optional)</em></code></td><td><code>*</code></td><td><p>Echoed back as <code>request.ctx</code> on the result event.</p></td></tr>
+<tr><td><code>opts.max_attempts <em>(optional)</em></code></td><td><code>number</code></td><td><p>Override the built-in webhook.send retry budget (default 5).</p></td></tr>
+<tr><td><code>opts.timeout_ms <em>(optional)</em></code></td><td><code>number</code></td><td><p>Per-attempt timeout.</p></td></tr>
+</table>
+<p><b>Returns</b> <code>string</code> — The schedule id from {@link webhook.send}.</p>
+<pre><code>const key = kv.get("secret/resend") ?? "re_dev_placeholder";
+const user = { email: "ada@example.com", name: "Ada" };
+email.send({
+key,
+from: "noreply@acme.dev",
+to: user.email,
+subject: "Welcome",
+html: `&lt;h1&gt;Hi ${user.name}&lt;/h1&gt;`,
+});</code></pre>
+<h3 id="retry"><code>retry</code></h3>
+<p>Customer-side retry policy layered on {@link webhook.send}. All retry state lives in this tenant's own context — no platform retry loop, no cross-tenant privileges. The chain only advances when the on_result handler explicitly calls {@link retry.next}.</p>
+<pre><code>// Fire with a policy.
+retry.send({
+url: "https://stripe.com/charge",
+on: "charges/handler",
+max_attempts: 3,
+backoff_ms: [1000, 5000, 30000], // or a number, or omit
+ctx: { charge_id: 42 },
+});
+
+// charges/handler.mjs — the {on} handler. The result arrives
+// on the unified flattened surface (handler-shape §7).
+export default function () {
+const event = {
+ok: request.ok, status: request.status, body: request.text,
+error: request.activation.error, context: request.ctx,
+};
+if (retry.shouldRetry(event)) { retry.next(event); return; }
+const ctx = retry.stripContext(event);
+// ... your terminal handling ...
+}</code></pre>
+<h4 id="retry-send"><code>send(opts)</code></h4>
+<p>Fire a one-shot <code>webhook.send</code> wrapped with a retry policy. The on_result module receives events with <code>event.context._retry</code> populated; drive the chain with the helpers below.</p>
+<table><tr><th>Param</th><th>Type</th><th></th></tr>
+<tr><td><code>opts</code></td><td><code>object</code></td><td></td></tr>
+<tr><td><code>opts.url</code></td><td><code>string</code></td><td><p>Target URL.</p></td></tr>
+<tr><td><code>opts.on</code></td><td><code>string</code></td><td><p>Result handler module path in this tenant (non-empty).</p></td></tr>
+<tr><td><code>opts.max_attempts <em>(optional)</em></code></td><td><code>number</code></td><td><p>Total attempts incl. the first (positive integer).</p></td></tr>
+<tr><td><code>opts.backoff_ms <em>(optional)</em></code></td><td><code>number|number[]</code></td><td><p>Constant delay, a per-attempt schedule, or omit for exponential 1s/4s/16s… capped at 60s.</p></td></tr>
+<tr><td><code>opts.method <em>(optional)</em></code></td><td><code>string</code></td><td><p>HTTP method.</p></td></tr>
+<tr><td><code>opts.headers <em>(optional)</em></code></td><td><code>Object&lt;string,string&gt;</code></td><td><p>Request headers.</p></td></tr>
+<tr><td><code>opts.body <em>(optional)</em></code></td><td><code>string</code></td><td><p>Request body.</p></td></tr>
+<tr><td><code>opts.timeout_ms <em>(optional)</em></code></td><td><code>number</code></td><td><p>Per-request timeout.</p></td></tr>
+<tr><td><code>opts.fire_at_ns <em>(optional)</em></code></td><td><code>bigint</code></td><td><p>Delay the first attempt.</p></td></tr>
+<tr><td><code>opts.ctx <em>(optional)</em></code></td><td><code>*</code></td><td><p>Echoed back (under your own keys; <code>_retry</code> is reserved).</p></td></tr>
+</table>
+<p><b>Returns</b> <code>string</code> — The {@link webhook.send} schedule id.</p>
+<h4 id="retry-shouldretry"><code>shouldRetry(event)</code></h4>
+<p>Whether <code>event</code> should be retried: a failure with attempts remaining. Always <code>false</code> on success or when retry context is absent.</p>
+<table><tr><th>Param</th><th>Type</th><th></th></tr>
+<tr><td><code>event</code></td><td><code>object</code></td><td><p>The (flat) result event with <code>ok</code> + <code>context._retry</code>. See the module comment for how to flatten from <code>request.ctx</code>.</p></td></tr>
+</table>
+<p><b>Returns</b> <code>boolean</code></p>
+<h4 id="retry-next"><code>next(event)</code></h4>
+<p>Schedule the next attempt (applies the backoff). No-op returning <code>null</code> if the event isn't retryable — check {@link retry.shouldRetry} first.</p>
+<table><tr><th>Param</th><th>Type</th><th></th></tr>
+<tr><td><code>event</code></td><td><code>object</code></td><td><p>The result event.</p></td></tr>
+</table>
+<p><b>Returns</b> <code>string|null</code> — New schedule id, or <code>null</code>.</p>
+<h4 id="retry-stripcontext"><code>stripContext(event)</code></h4>
+<p><code>event.context</code> with the reserved <code>_retry</code> meta removed. Returns a fresh object (no mutation); idempotent on events that never went through {@link retry.send}.</p>
+<table><tr><th>Param</th><th>Type</th><th></th></tr>
+<tr><td><code>event</code></td><td><code>object</code></td><td><p>The result event.</p></td></tr>
+</table>
+<p><b>Returns</b> <code>object|null</code> — Your original context, or <code>null</code>.</p>
+<h4 id="retry-attempt"><code>attempt(event)</code></h4>
+<p>Current 1-based attempt number (1 on the first fire, 2 on the first retry, …). <code>null</code> when retry context is missing.</p>
+<table><tr><th>Param</th><th>Type</th><th></th></tr>
+<tr><td><code>event</code></td><td><code>object</code></td><td><p>The result event.</p></td></tr>
+</table>
+<p><b>Returns</b> <code>number|null</code></p>
+<h3 id="scheduler"><code>scheduler</code></h3>
+<p>Durable, one-shot, absolute-time scheduled wakes. The canonical timer primitive — cron, webhook retry, delayed jobs, lease/TTL expiry all compose on <code>scheduler.at</code>. At-least-once *firing*; the target owns dedup + any retry.</p>
+<pre><code>scheduler.in(30 * 60_000, "jobs/reminder", { userId });
+scheduler.at(cron.dailyAt(3, 0), "jobs/cleanup", null,
+{ key: "cleanup/daily" }); // idempotent, re-armable</code></pre>
+<h4 id="scheduler-at"><code>at(whenNs, target, msg?, opts?)</code></h4>
+<p>Schedule <code>target</code> to run at absolute time <code>whenNs</code>. At-least-once firing — the target sees <code>request.activation = { kind: "durable_wake", id, key, scheduled_at_ns, msg }</code> and owns dedup. <code>whenNs</code> rounds up to the next 1 s tick. Re-arming = call again with the same <code>opts.key</code> (moves <code>when</code>/<code>target</code>/<code>msg</code>, last-write-wins).</p>
+<table><tr><th>Param</th><th>Type</th><th></th></tr>
+<tr><td><code>whenNs</code></td><td><code>bigint</code></td><td><p>Absolute fire time, nanoseconds since epoch (e.g. from <code>cron.dailyAt</code> / <code>cron.fromNow</code>). A past time fires on the next sweep.</p></td></tr>
+<tr><td><code>target</code></td><td><code>string</code></td><td><p>Handler module specifier to invoke (same shape as a subscription module path).</p></td></tr>
+<tr><td><code>msg <em>(optional)</em></code></td><td><code>*</code></td><td><p>JSON-serializable payload, surfaced as <code>request.activation.msg</code>. Capped at 16 KiB serialized.</p></td></tr>
+<tr><td><code>opts <em>(optional)</em></code></td><td><code>object</code></td><td></td></tr>
+<tr><td><code>opts.key <em>(optional)</em></code></td><td><code>string</code></td><td><p>Idempotency key. Same key ⇒ same id ⇒ last-write-wins. Omit for a fresh random id.</p></td></tr>
+</table>
+<p><b>Returns</b> <code>string</code> — The stable schedule id.</p>
+<pre><code>const id = scheduler.at(cron.fromNow("1h"), "jobs/expire", { leaseId });</code></pre>
+<h4 id="scheduler-in"><code>in(delayMs, target, msg?, opts?)</code></h4>
+<p>Convenience: schedule <code>target</code> <code>delayMs</code> milliseconds from now. Rounds up to the next 1 s tick (so a sub-second delay fires at the next tick).</p>
+<table><tr><th>Param</th><th>Type</th><th></th></tr>
+<tr><td><code>delayMs</code></td><td><code>number</code></td><td><p>Delay from now in milliseconds (≤ 0 ⇒ fire on the next sweep).</p></td></tr>
+<tr><td><code>target</code></td><td><code>string</code></td><td><p>Handler module specifier.</p></td></tr>
+<tr><td><code>msg <em>(optional)</em></code></td><td><code>*</code></td><td><p>JSON-serializable payload (see {@link scheduler.at}).</p></td></tr>
+<tr><td><code>opts <em>(optional)</em></code></td><td><code>object</code></td><td></td></tr>
+<tr><td><code>opts.key <em>(optional)</em></code></td><td><code>string</code></td><td><p>Idempotency key (see {@link scheduler.at}).</p></td></tr>
+</table>
+<p><b>Returns</b> <code>string</code> — The stable schedule id.</p>
+<pre><code>scheduler.in(5000, "jobs/poll");</code></pre>
+<h4 id="scheduler-cancel"><code>cancel(id)</code></h4>
+<p>Cancel a scheduled wake by id. Removes both the <code>_sched/by_id</code> and <code>_sched/by_time</code> entries. Idempotent: cancelling an unknown / already-fired id returns <code>false</code>.</p>
+<table><tr><th>Param</th><th>Type</th><th></th></tr>
+<tr><td><code>id</code></td><td><code>string</code></td><td><p>The id returned by <code>at</code> / <code>after</code> (or <code>_idFromKey(opts.key)</code>).</p></td></tr>
+</table>
+<p><b>Returns</b> <code>boolean</code> — <code>true</code> iff an entry was removed.</p>
+<pre><code>scheduler.cancel(id);</code></pre>
+<h4 id="scheduler-get"><code>get(id)</code></h4>
+<p>Look up a scheduled wake by id.</p>
+<table><tr><th>Param</th><th>Type</th><th></th></tr>
+<tr><td><code>id</code></td><td><code>string</code></td><td><p>The id returned by <code>at</code> / <code>after</code>.</p></td></tr>
+</table>
+<p><b>Returns</b> <code>{id: string, whenNs: bigint, target: string,
+key: (string|null)</code> — | null} The schedule, or <code>null</code> if unknown / already fired.</p>
+<pre><code>const s = scheduler.get(id);
+if (s) console.log(s.target, s.whenNs);</code></pre>
+<h3 id="schedule-cron"><code>schedule / cron</code></h3>
+<p>Durable, connectionless timers.</p>
+<h4 id="schedule-cron-schedule"><code>schedule(when, target, ctx?)</code></h4>
+<p>Run <code>target</code> once, at a time. Connectionless + durable.</p>
+<table><tr><th>Param</th><th>Type</th><th></th></tr>
+<tr><td><code>when</code></td><td><code>object</code></td><td><p><code>{ at }</code> (absolute) or <code>{ in }</code> (delay). <code>at</code>: bigint ns | number ms-since-epoch | Date | ISO string. <code>in</code>: number ms | duration string (<code>"24h"</code>, <code>"30m"</code>, …).</p></td></tr>
+<tr><td><code>target</code></td><td><code>string</code></td><td><p>Module specifier to run, e.g. <code>"sendReminder"</code>.</p></td></tr>
+<tr><td><code>ctx <em>(optional)</em></code></td><td><code>*</code></td><td><p>JSON-serializable value delivered as <code>request.activation.msg</code>.</p></td></tr>
+</table>
+<p><b>Returns</b> <code>string</code> — The schedule id (cancel via <code>scheduler.cancel(id)</code>).</p>
+<pre><code>schedule({ in: "24h" }, "sendReminder", { user });
+schedule({ at: cron.dailyAt(3, 0) }, "jobs/cleanup");</code></pre>
+<h3 id="cron-helpers"><code>cron helpers</code></h3>
+<p>Fire-time helpers for durable scheduling.</p>
+<h4 id="cron-helpers-tofireatns"><code>toFireAtNs(input)</code></h4>
+<p>Coerce a time input to BigInt nanoseconds-since-epoch.</p>
+<table><tr><th>Param</th><th>Type</th><th></th></tr>
+<tr><td><code>input</code></td><td><code>bigint|number|Date|string|null</code></td><td><p>BigInt (ns, passed through); number/Date (ms-since-epoch); string (duration suffix like <code>"30s"</code>/<code>"5m"</code>/<code>"2h"</code>/<code>"1d"</code>/<code>"1w"</code> relative to now, or ISO-8601); <code>null</code> → <code>0n</code> (fire ASAP).</p></td></tr>
+</table>
+<p><b>Returns</b> <code>bigint</code> — Nanoseconds since epoch.</p>
+<pre><code>cron.toFireAtNs("2h");                     // 2 hours from now
+cron.toFireAtNs("2026-06-01T03:00:00Z");   // absolute</code></pre>
+<h4 id="cron-helpers-parseduration"><code>parseDuration(s)</code></h4>
+<p>Parse a duration string to milliseconds.</p>
+<table><tr><th>Param</th><th>Type</th><th></th></tr>
+<tr><td><code>s</code></td><td><code>string</code></td><td><p><code>&lt;n&gt;&lt;unit&gt;</code>, unit ∈ <code>s|m|h|d|w</code> (e.g. <code>"5m"</code>, <code>"1w"</code>).</p></td></tr>
+</table>
+<p><b>Returns</b> <code>number|null</code> — Milliseconds, or <code>null</code> if <code>s</code> isn't a duration (callers fall back to ISO parsing).</p>
+<pre><code>cron.parseDuration("2h"); // 7200000</code></pre>
+<h4 id="cron-helpers-fromnow"><code>fromNow(s)</code></h4>
+<p><code>now + parseDuration(s)</code> as a fire time.</p>
+<table><tr><th>Param</th><th>Type</th><th></th></tr>
+<tr><td><code>s</code></td><td><code>string</code></td><td><p>Duration string (see {@link cron.parseDuration}).</p></td></tr>
+</table>
+<p><b>Returns</b> <code>bigint</code> — Nanoseconds since epoch.</p>
+<pre><code>webhook.send("https://hooks.example.com/x", { fire_at_ns: cron.fromNow("30m") });</code></pre>
+<h4 id="cron-helpers-dailyat"><code>dailyAt(hour, minute)</code></h4>
+<p>Next occurrence of <code>hour:minute</code> UTC; tomorrow's slot if today's has passed.</p>
+<table><tr><th>Param</th><th>Type</th><th></th></tr>
+<tr><td><code>hour</code></td><td><code>number</code></td><td><p>0–23.</p></td></tr>
+<tr><td><code>minute</code></td><td><code>number</code></td><td><p>0–59.</p></td></tr>
+</table>
+<p><b>Returns</b> <code>bigint</code> — Nanoseconds since epoch.</p>
+<pre><code>cron.dailyAt(3, 0); // next 03:00 UTC</code></pre>
+<h4 id="cron-helpers-weeklyat"><code>weeklyAt(dayOfWeek, hour, minute)</code></h4>
+<p>Next occurrence of <code>dayOfWeek</code> at <code>hour:minute</code> UTC.</p>
+<table><tr><th>Param</th><th>Type</th><th></th></tr>
+<tr><td><code>dayOfWeek</code></td><td><code>number</code></td><td><p>0=Sunday … 6=Saturday.</p></td></tr>
+<tr><td><code>hour</code></td><td><code>number</code></td><td><p>0–23.</p></td></tr>
+<tr><td><code>minute</code></td><td><code>number</code></td><td><p>0–59.</p></td></tr>
+</table>
+<p><b>Returns</b> <code>bigint</code> — Nanoseconds since epoch.</p>
+<pre><code>cron.weeklyAt(1, 9, 0); // next Monday 09:00 UTC</code></pre>
+<h4 id="cron-helpers-hourly"><code>hourly()</code></h4>
+<p>Top of the next hour (UTC).</p>
+<p><b>Returns</b> <code>bigint</code> — Nanoseconds since epoch.</p>
+<pre><code>webhook.send("https://hooks.example.com/x", { fire_at_ns: cron.hourly() });</code></pre>
+<h4 id="cron-helpers-next"><code>next(expr, now_ms?)</code></h4>
+<p>Next match of a 5-field crontab expression (UTC), at minute granularity. Day-of-month / day-of-week follow Vixie cron: when both are restricted, a match on *either* counts.</p><p>Fields: <code>minute hour day-of-month month day-of-week</code>. Each accepts <code>*</code> (any), <code>N</code>, <code>N,M,...</code> (list), <code>N-M</code> (range), or a trailing <code>/N</code> step on <code>*</code> or a range (e.g. a star then slash-15 in the minute field = every 15 minutes).</p>
+<table><tr><th>Param</th><th>Type</th><th></th></tr>
+<tr><td><code>expr</code></td><td><code>string</code></td><td><p>e.g. <code>"0 3 * * *"</code> (daily 03:00) or <code>"0 9 * * 1-5"</code> (weekdays 09:00).</p></td></tr>
+<tr><td><code>now_ms <em>(optional)</em></code></td><td><code>number</code></td><td><p>Base time (ms since epoch); defaults to <code>Date.now()</code>. Mainly for testing.</p></td></tr>
+</table>
+<p><b>Returns</b> <code>bigint</code> — Nanoseconds since epoch of the next match.</p>
+<pre><code>webhook.send("https://hooks.example.com/x", { fire_at_ns: cron.next("0 3 * * *") });</code></pre>
+<h2>Browser agent</h2>
 <h3 id="browser"><code>browser</code></h3>
 <p>Server-side helpers for driving the in-page agent SDK.</p>
 <h4 id="browser-message"><code>message(request)</code></h4>
