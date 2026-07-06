@@ -44,6 +44,7 @@
 <tr><td>Admin (the __admin__ tenant only)</td><td><a href="#platform"><code>platform</code></a> · <a href="#platform-root"><code>platform.root</code></a> · <a href="#platform-instances"><code>platform.instances</code></a> · <a href="#platform-releases"><code>platform.releases</code></a> · <a href="#platform-auth"><code>platform.auth</code></a></td></tr>
 </table>
 <h2>Model &amp; state</h2>
+<p>Durable, replicated tenant state. <code>kv</code> is the Model; <code>blob</code> is content-addressed object storage (one-shot <code>put</code>/<code>get</code>, or the <code>receive</code> → <code>write</code> → <code>seal</code> upload session for large inbound bodies); <code>segments</code> is the append-log recipe on top of both — a hot kv tail whose history is sealed into blobs.</p>
 <h3 id="kv"><code>kv</code></h3>
 <p>Tenant-scoped key/value store. Keys and values are strings. Every key lives in this tenant's <code>app.db</code>; reads and writes never cross tenant boundaries. All operations are replay-deterministic — the same handler run against the same recorded tape observes identical results.</p><p>Writes made via <code>kv.set</code> / <code>kv.delete</code> are buffered in the request transaction and commit atomically when the handler returns; they also replicate through Raft to followers.</p>
 <h4 id="kv-get"><code>get(key)</code></h4>
@@ -87,7 +88,7 @@ all.push(...page);
 cursor = page[page.length - 1].key;
 }</code></pre>
 <h3 id="blob"><code>blob</code></h3>
-<p>Content-addressed tenant object storage.</p>
+<p>Content-addressed tenant object storage.</p><p>Two shapes: one-shot (<code>put</code>/<code>get</code>) for values you hold in hand, and the upload session (<code>receive</code> → <code>write</code> → <code>seal</code>) for large inbound bodies that stream in chunk by chunk. "Seal" = freeze the bytes into an immutable blob and get back its hash (<code>segments.seal</code> is the same metaphor applied to a log tail). <code>blob.write</code> appends INTO an upload session — the opposite direction from <code>stream.write</code>, which emits response bytes OUT over the held connection.</p>
 <h4 id="blob-put"><code>put(bytes, opts?)</code></h4>
 <p>Store bytes content-addressed. Returns the sha256 hash (the object's permanent key) synchronously — index it in kv in the same activation; the index write, the durable <code>_blob/owed/{hash}</code> marker, and the rest of your writeset commit atomically, then the PUT fires post-commit (idempotent: same bytes → same key).</p><p>Durability semantics (P1): the owed marker is written before the PUT and cleared by the platform when the PUT succeeds. On terminal PUT failure the marker persists with <code>failed: true</code> as durable evidence, and your <code>on_result</code> module (if given) sees <code>ok: false</code> — re-putting the same bytes is always safe. Automatic re-PUT via source-activation re-execution is the §2.5 recovery model and lands after P1.</p>
 <table><tr><th>Param</th><th>Type</th><th></th></tr>
@@ -172,20 +173,23 @@ kv.set(`media/${request.ctx.hash}`, JSON.stringify({ len: request.ctx.len }));
 return JSON.stringify({ hash: request.ctx.hash });
 }</code></pre>
 <h3 id="segments"><code>segments</code></h3>
-<p>Sealed-segment append log: hot kv tail + content-addressed history.</p><p>The canonical recipe for event-sourced state (timelines, event logs, audit trails): <code>append</code> is a kv write riding your handler's writeset; a cron-driven <code>seal</code> compacts old rows into blob storage so the kv footprint stays bounded by the working set.</p>
-<h4 id="segments-append"><code>append(stream, value)</code></h4>
-<p>Append one record to a stream's hot tail. An ordinary kv write — atomic with the rest of this activation's writeset, read-your- writes within it.</p>
+<p>Sealed-segment append log: hot kv tail + content-addressed history.</p><p>The canonical recipe for event-sourced state (timelines, event logs, audit trails): <code>append</code> is a kv write riding your handler's writeset; a cron-driven <code>seal</code> compacts old rows into blob storage so the kv footprint stays bounded by the working set.</p><p>"Seal" here is the same metaphor as <code>blob.seal</code>: freeze bytes into an immutable, content-addressed blob — there it seals an upload, here it seals a log tail. Not related to <code>stream.*</code> (connection output): a segments log is named state, not a socket.</p><p>A log id is a name YOU choose, exactly like a kv key — there is no allocation step; the log exists once something has been appended to it. Enumerate existing logs with <code>segments.logs()</code>.</p>
+<h4 id="segments-logs"><code>logs(cursor?, limit?)</code></h4>
+<p>List the log ids that currently exist (kv-visible: hot rows, sealed-segment index rows, or a seq counter). Paged: pass the returned <code>cursor</code> back to continue; <code>cursor: null</code> means done. Ids come back in byte order. Cost is one point read per id per page — a seek-scan over the <code>_seg/</code> key space, not a full scan.</p>
 <table><tr><th>Param</th><th>Type</th><th></th></tr>
-<tr><td><code>stream</code></td><td><code>string</code></td><td><p>Stream id (<code>[A-Za-z0-9_-]{1,64}</code>).</p></td></tr>
-<tr><td><code>value</code></td><td><code>string</code></td><td><p>The record. Non-strings are rejected — serialize yourself (<code>JSON.stringify</code>) so reads are symmetric.</p></td></tr>
+<tr><td><code>cursor <em>(optional)</em></code></td><td><code>string</code></td><td><p>Opaque resume cursor from a prior call.</p></td></tr>
+<tr><td><code>limit <em>(optional)</em></code></td><td><code>number</code></td><td><p>Max ids per page (default 20, cap 200).</p></td></tr>
 </table>
-<p><b>Returns</b> <code>number</code> — The record's sequence number (0-based, monotonic per stream).</p>
-<pre><code>const seq = segments.append(`room-${id}`, JSON.stringify(event));
-kv.set(`latest/${id}`, String(seq));</code></pre>
-<h4 id="segments-get"><code>get(stream, seq, opts?)</code></h4>
+<p><b>Returns</b> <code>{logs: string[], cursor: (string|null)</code> — }</p>
+<pre><code>segments.append("inbox", "a");
+segments.append("audit-2026", "b");
+const page = segments.logs();
+// page.logs → ["audit-2026", "inbox"], page.cursor → null
+if (page.logs.indexOf("inbox") &lt; 0) throw new Error("missing log");</code></pre>
+<h4 id="segments-get"><code>get(log, seq, opts?)</code></h4>
 <p>Read one record. Hot records return synchronously; sealed records need a blob fetch, so the result resumes THIS held connection at <code>opts.to</code> — use {@link segments.slice} there to extract the record from the segment.</p>
 <table><tr><th>Param</th><th>Type</th><th></th></tr>
-<tr><td><code>stream</code></td><td><code>string</code></td><td><p>Stream id.</p></td></tr>
+<tr><td><code>log</code></td><td><code>string</code></td><td><p>Log id.</p></td></tr>
 <tr><td><code>seq</code></td><td><code>number</code></td><td><p>Sequence number.</p></td></tr>
 <tr><td><code>opts <em>(optional)</em></code></td><td><code>object</code></td><td></td></tr>
 <tr><td><code>opts.on <em>(optional)</em></code></td><td><code>string</code></td><td><p>Export resumed with the segment for a sealed read. Required when the record may be sealed.</p></td></tr>
@@ -207,10 +211,10 @@ return segments.slice(request);
 <tr><td><code>req</code></td><td><code>object</code></td><td><p>The <code>request</code> global of the resume.</p></td></tr>
 </table>
 <p><b>Returns</b> <code>string</code> — The record value.</p>
-<h4 id="segments-seal"><code>seal(stream, opts?)</code></h4>
-<p>Seal the oldest hot records into one content-addressed segment. Call from a cron target per stream (the cadence IS your kv-cap ↔ object-storage trade-off knob). The call only serializes + fires the durable PUT; the swap — index row written, hot rows deleted, one atomic writeset — runs in <code>__system/segments_onsealed</code> strictly after storage confirmed the bytes, so a crash anywhere leaves the log readable and the next seal retries idempotently.</p>
+<h4 id="segments-seal"><code>seal(log, opts?)</code></h4>
+<p>Seal the oldest hot records into one content-addressed segment. Call from a cron target per log (the cadence IS your kv-cap ↔ object-storage trade-off knob). The call only serializes + fires the durable PUT; the swap — index row written, hot rows deleted, one atomic writeset — runs in <code>__system/segments_onsealed</code> strictly after storage confirmed the bytes, so a crash anywhere leaves the log readable and the next seal retries idempotently.</p>
 <table><tr><th>Param</th><th>Type</th><th></th></tr>
-<tr><td><code>stream</code></td><td><code>string</code></td><td><p>Stream id.</p></td></tr>
+<tr><td><code>log</code></td><td><code>string</code></td><td><p>Log id.</p></td></tr>
 <tr><td><code>opts <em>(optional)</em></code></td><td><code>object</code></td><td></td></tr>
 <tr><td><code>opts.min <em>(optional)</em></code></td><td><code>number</code></td><td><p>Skip the seal entirely when fewer hot rows than this (avoids confetti segments).</p></td></tr>
 <tr><td><code>opts.max <em>(optional)</em></code></td><td><code>number</code></td><td><p>Seal at most this many rows per call (bounds the segment blob and this activation's work).</p></td></tr>
@@ -222,6 +226,7 @@ for (const s of JSON.parse(kv.get("rooms") ?? "[]"))
 segments.seal(`room-${s}`);
 }</code></pre>
 <h2>Connection &amp; wakes</h2>
+<p>The held socket. <code>stream</code> pushes response bytes out over time; <code>after.*</code> arms one-shot wakes; <code>next()</code> keeps the connection held between activations. All ephemeral — they die with the caller.</p>
 <h3 id="after"><code>after</code></h3>
 <p>Connection wake triggers — re-invoke a held handler when something happens, while it still holds the socket. Register them in the body before returning <code>next()</code> (or while streaming). The runtime arms every <code>after.*</code> wake before firing any connectionless effect of the same activation, so a wake is never missed even when a callback writes the key it watches.</p>
 <pre><code>// SSE-style: stream rows, then wait for more under a prefix.
@@ -276,7 +281,7 @@ return next();</code></pre>
 after.kv(`feed/${id}/`);
 return next({ since: row.seq });</code></pre>
 <h3 id="stream"><code>stream</code></h3>
-<p>Connection output — produce a streamed response over time. Pair with <code>on.*</code> (to wait for more) and <code>return next()</code> (to keep the socket); close by returning a terminal body. The response head is the ambient <code>response.*</code> global, committed to the wire by the first <code>stream.start()</code> / <code>stream.write()</code> (or a terminal return).</p>
+<p>Connection output — produce a streamed response over time. Pair with <code>after.*</code> (to wait for more) and <code>return next()</code> (to keep the socket); close by returning a terminal body. The response head is the ambient <code>response.*</code> global, committed to the wire by the first <code>stream.start()</code> / <code>stream.write()</code> (or a terminal return).</p><p>This is the OUTBOUND direction only. Taking a large body IN is <code>blob.receive</code>/<code>blob.write</code> (an upload session); an append log you name and query is <code>segments.*</code> — neither involves this namespace.</p>
 <pre><code>// SSE: open, emit rows, then wait for more under a prefix.
 const rows = kv.prefix(`feed/${id}/`, request.ctx?.cursor);
 response.headers = { 'content-type': 'text/event-stream' };
@@ -294,6 +299,7 @@ return next({ cursor: rows.at(-1)?.key ?? request.ctx?.cursor });</code></pre>
 </table>
 <p><b>Returns</b> <code>void</code></p>
 <h2>Durable effects</h2>
+<p>Connectionless work that survives anything: outbound delivery (<code>webhook</code>, <code>email</code>, <code>retry</code>) and future activations (<code>scheduler</code>, <code>schedule</code>/<code>cron</code>).</p>
 <h3 id="webhook"><code>webhook</code></h3>
 <p>Durable outbound HTTP — at-least-once delivery, replay-deterministic. Customer code that hardcoded the previous <code>http.send</code> surface should migrate to <code>webhook.send</code>; the customer-visible API is the same call shape (<code>url</code>/<code>method</code>/<code>body</code>/<code>headers</code>/<code>on_result</code>/<code>context</code> plus the new <code>handle</code> and <code>fire_at_ns</code>).</p>
 <h4 id="webhook-send"><code>send(url, opts?)</code></h4>
