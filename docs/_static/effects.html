@@ -41,9 +41,11 @@
      back as a new, taped activation.</div>
   <p>So you never <code>await</code> a fetch and read its body inline. You
      <em>start</em> the fetch as an effect and handle its result in a separate
-     export (<code>onResult</code>), where the response arrives as
-     <code>request.result</code> — a recorded message. On replay, that message is
-     served from the tape, not the network.</p>
+     export (<code>onFetchResult</code>, or the one you name with
+     <code>{on}</code>), where the response arrives flattened onto the request
+     surface — <code>request.bytes</code>/<code>.text</code>/<code>.json</code>
+     and <code>request.status</code>/<code>.ok</code> — as a recorded message. On
+     replay, that message is served from the tape, not the network.</p>
 
   <h2>The four primitives</h2>
   <p>The whole engine, minus your handlers, is four primitives — two singletons
@@ -68,10 +70,10 @@
      that primitive plus <code>kv</code>. The runtime doesn't special-case them;
      they're recipes, which means you can read them, and write your own.</p>
 <pre><code><span class="c">// ephemeral: tied to this connection, dies if the caller leaves</span>
-on.<span class="f">fetch</span>(url, opts);            <span class="c">// → resumes onResult with the taped response</span>
+after.<span class="f">fetch</span>(url, opts);         <span class="c">// → resumes onFetchResult with the taped response</span>
 
 <span class="c">// durable: a new request that runs whether or not anyone's connected</span>
-webhook.<span class="f">send</span>({ url, body });    <span class="c">// retried to completion, survives restarts</span></code></pre>
+webhook.<span class="f">send</span>(url, { body });   <span class="c">// retried to completion, survives restarts</span></code></pre>
 
   <h2>Scope is the verb</h2>
   <p>Whether an effect is ephemeral or durable is decided by <em>which verb you
@@ -82,7 +84,7 @@ webhook.<span class="f">send</span>({ url, body });    <span class="c">// retrie
   <table>
     <tr><th></th><th>Ephemeral (connection)</th><th>Durable (tenant)</th></tr>
     <tr><td>Output</td><td><code>stream.write</code></td><td>— (write to <code>kv</code>)</td></tr>
-    <tr><td>Trigger</td><td><code>on.timer</code> / <code>on.fetch</code> / <code>on.kv</code></td><td><code>schedule</code> / <code>cron</code> / <code>webhook.send</code></td></tr>
+    <tr><td>Trigger</td><td><code>after.ms</code> / <code>after.fetch</code> / <code>after.kv</code></td><td><code>schedule</code> / <code>cron</code> / <code>webhook.send</code></td></tr>
   </table>
 
   <h2>Why this is the product</h2>

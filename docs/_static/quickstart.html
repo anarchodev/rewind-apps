@@ -56,7 +56,7 @@
 <pre><code><span class="c">// index.mjs</span>
 <span class="k">export default function</span> () {
   <span class="k">if</span> (request.method === <span class="s">"POST"</span>) {
-    kv.<span class="f">set</span>(<span class="s">"note/"</span> + <span class="f">Date</span>.<span class="f">now</span>(), request.body);
+    kv.<span class="f">set</span>(<span class="s">"note/"</span> + <span class="f">Date</span>.<span class="f">now</span>(), request.text);
     response.status = 201;
     <span class="k">return</span> <span class="s">"saved"</span>;
   }

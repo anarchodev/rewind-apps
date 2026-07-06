@@ -30,8 +30,9 @@
   <h1>Handlers</h1>
   <p class="lede">A handler module is one TEA <code>update</code> function with its
      case-arms hoisted to named exports. The runtime dispatches each activation
-     to the matching export; the body accumulates effects and the return value
-     picks the connection's disposition.</p>
+     to the matching export (or the one you name with the universal
+     <code>{on: "module.method"}</code> option); the body accumulates effects and
+     the return value picks the connection's disposition.</p>
 
   <h2>Activation kinds</h2>
   <p>The runtime has a fixed set of activation kinds (the <code>Msg</code> sum).
@@ -40,10 +41,10 @@
   <table>
     <tr><th>Export</th><th>Fires on</th></tr>
     <tr><td><code>default</code></td><td>inbound HTTP — the 80% case</td></tr>
-    <tr><td><code>onResult</code></td><td>an outbound <code>on.fetch</code> completed (its response, as a recorded message)</td></tr>
-    <tr><td><code>onTimer</code></td><td>an <code>on.timer(ms)</code> elapsed</td></tr>
-    <tr><td><code>onKv</code></td><td>a watched <code>on.kv(prefix)</code> key changed</td></tr>
-    <tr><td><code>onMessage</code> / <code>onClose</code></td><td>inbound connection frames / disconnect</td></tr>
+    <tr><td><code>onFetchResult</code></td><td>an outbound <code>after.fetch</code> completed (streamed fetches: <code>onFetchChunk</code> / <code>onFetchDone</code>)</td></tr>
+    <tr><td><code>onWake</code></td><td>an <code>after.ms(ms)</code> elapsed or a watched <code>after.kv(prefix)</code> key changed — an edge wake: go re-read <code>kv</code></td></tr>
+    <tr><td><code>onChunk</code> / <code>onHeaders</code></td><td>streaming inbound bodies: per-chunk delivery / headers-first dispatch</td></tr>
+    <tr><td><code>onMessage</code> / <code>onDisconnect</code></td><td>inbound WebSocket frames / the held client left</td></tr>
   </table>
   <p>Each export is a separate, deterministic activation with a fresh arena. They
      share nothing but <code>kv</code> (the Model) and any <code>ctx</code> you
@@ -59,8 +60,9 @@
     <tr><td><code>request.path</code></td><td>request path</td></tr>
     <tr><td><code>request.query</code></td><td>raw query string</td></tr>
     <tr><td><code>request.headers</code></td><td>lower-cased header map</td></tr>
-    <tr><td><code>request.body</code></td><td>the buffered body (≤ 1&nbsp;MB; larger bodies stream — see below)</td></tr>
-    <tr><td><code>request.result</code></td><td>on a callback activation: the recorded message that resumed you</td></tr>
+    <tr><td><code>request.bytes</code> / <code>.text</code> / <code>.json</code></td><td>the payload, three views of the same recorded bytes — the inbound body (≤ 1&nbsp;MB buffered; larger bodies stream), a chunk, a fetch response, a WS frame — identical on every activation kind</td></tr>
+    <tr><td><code>request.ctx</code></td><td>whatever you threaded to this activation (<code>next({ctx})</code>, an effect's <code>ctx</code> option)</td></tr>
+    <tr><td><code>request.status</code> / <code>.ok</code> / <code>.done</code></td><td>on an effect-result activation: the outcome, flattened at the top level</td></tr>
   </table>
 
   <h2>The response head</h2>
@@ -82,7 +84,7 @@ response.cookies = [<span class="s">"sid=…; HttpOnly"</span>];</code></pre>
     <tr><th>Role</th><th>Surface</th><th>Scope</th></tr>
     <tr><td>Model</td><td><code>kv.get</code> / <code>kv.set</code> / <code>kv.delete</code> / <code>kv.prefix</code></td><td>read-your-writes</td></tr>
     <tr><td>Connection output</td><td><code>stream.start()</code> / <code>stream.write(chunk)</code></td><td>current connection</td></tr>
-    <tr><td>Connection triggers</td><td><code>on.timer</code> / <code>on.kv</code> / <code>on.fetch</code></td><td>current connection (ephemeral)</td></tr>
+    <tr><td>Connection triggers</td><td><code>after.ms</code> / <code>after.kv</code> / <code>after.fetch</code></td><td>current connection (ephemeral)</td></tr>
     <tr><td>Connectionless triggers</td><td><code>webhook.send</code> / <code>schedule</code> / <code>cron</code></td><td>connectionless (durable)</td></tr>
     <tr><td>Disposition</td><td><code>next({ctx?})</code> · terminal body</td><td>the return value</td></tr>
   </table>
@@ -107,20 +109,20 @@ response.cookies = [<span class="s">"sid=…; HttpOnly"</span>];</code></pre>
   <h3>Buffered, with auth and status</h3>
 <pre><code><span class="k">export default function</span> () {
   <span class="k">if</span> (!<span class="f">authorized</span>(request.headers)) { response.status = 401; <span class="k">return</span> <span class="s">"unauthorized"</span>; }
-  <span class="k">return</span> <span class="f">process</span>(request.body);
+  <span class="k">return</span> <span class="f">process</span>(request.text);
 }</code></pre>
   <h3>Gateway — hold the client, forward upstream, return its status</h3>
 <pre><code><span class="k">export default function</span> () {
-  on.<span class="f">fetch</span>(<span class="s">"https://upstream/api"</span>, { method: <span class="s">"POST"</span>, body: request.body });
+  after.<span class="f">fetch</span>(<span class="s">"https://upstream/api"</span>, { method: <span class="s">"POST"</span>, body: request.bytes });
   <span class="k">return</span> <span class="f">next</span>();                          <span class="c">// hold, uncommitted</span>
 }
-<span class="k">export function</span> <span class="f">onResult</span>() {
-  response.status = request.result.status;     <span class="c">// forward upstream's status</span>
-  <span class="k">return</span> request.result.body;
+<span class="k">export function</span> <span class="f">onFetchResult</span>() {
+  response.status = request.status;            <span class="c">// forward upstream's status</span>
+  <span class="k">return</span> request.bytes;                   <span class="c">// raw response bytes, verbatim</span>
 }</code></pre>
   <h3>Fire durable work, respond now</h3>
 <pre><code><span class="k">export default function</span> () {
-  webhook.<span class="f">send</span>({ url: <span class="s">"https://hook/notify"</span>, body: request.body });
+  webhook.<span class="f">send</span>(<span class="s">"https://hook/notify"</span>, { body: request.text });
   <span class="k">return</span> <span class="s">"accepted"</span>;   <span class="c">// the webhook outlives this request</span>
 }</code></pre>
 
