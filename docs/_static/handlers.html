@@ -21,6 +21,9 @@
     <a href="/handlers" class="active">Handlers</a>
     <a href="/effects">Effects &amp; replay</a>
     <a href="/reference">Globals reference</a>
+    <div class="group">Contracts</div>
+    <a href="/handler-contract">Handler contract</a>
+    <a href="/effect-algebra">Effect algebra</a>
     <div class="group">More</div>
     <a href="https://rewindjs.com">rewindjs.com</a>
   </nav>
@@ -105,6 +108,11 @@ response.cookies = [<span class="s">"sid=…; HttpOnly"</span>];</code></pre>
      returning a terminal body. <code>next()</code> alone commits nothing — the
      head stays open, so a later resume can still set the status and body (the
      await-then-respond / gateway pattern).</p>
+
+  <div class="note">This page is the tour. The normative, exhaustive version —
+     every activation kind, every field, every edge — is the
+     <a href="/handler-contract">handler contract</a>, rendered straight from
+     the engine repo.</div>
 
   <h2>Worked examples</h2>
   <h3>Buffered, with auth and status</h3>

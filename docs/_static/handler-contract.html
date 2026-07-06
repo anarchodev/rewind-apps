@@ -1,0 +1,356 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>rewind.js docs — handler contract</title>
+<meta name="description" content="The full customer-facing contract for handler modules — activation kinds, the request/response surface, effects, dispositions, and what&#x27;s deliberately gone.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' rx='3' fill='%2311111b'/%3E%3Cpath d='M9 4 L4.5 8 L9 12 Z M13 4 L8.5 8 L13 12 Z' fill='%23cba6f7'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="/docs.css">
+</head>
+<body>
+<div class="wrap">
+<aside>
+  <a class="brand" href="/"><span class="glyph">◀◀&hairsp;</span>rewind<b>.js</b></a>
+  <div class="tagline">documentation</div>
+  <nav>
+    <div class="group">Start</div>
+    <a href="/">Overview</a>
+    <a href="/quickstart">Quickstart</a>
+    <div class="group">Reference</div>
+    <a href="/handlers">Handlers</a>
+    <a href="/effects">Effects &amp; replay</a>
+    <a href="/reference">Globals reference</a>
+    <div class="group">Contracts</div>
+    <a href="/handler-contract" class="active">Handler contract</a>
+    <a href="/effect-algebra">Effect algebra</a>
+    <div class="group">More</div>
+    <a href="https://rewindjs.com">rewindjs.com</a>
+  </nav>
+</aside>
+<main>
+<article>
+  <div class="kicker">Contract</div>
+  <h1>Handler contract</h1>
+  <p class="lede">A rewind handler module is one Elm-style <code>update : Msg → Model → (Effects, Cmd)</code> function with <strong>each case-of arm hoisted to its own named export</strong>. The runtime knows the full set of Msg variants (activation kinds); each named export handles one variant.</p>
+  <p><a href="#1-the-frame-tea-at-module-level"><code>1. The frame — TEA at module level</code></a> · <a href="#2-the-verb-surface-the-verb-is-the-scope"><code>2. The verb surface — the verb is the scope</code></a> · <a href="#3-activation-kinds-the-runtime-s-msg-union"><code>3. Activation kinds — the runtime's Msg union</code></a> · <a href="#4-buffered-vs-streaming-inbound-the-1-mb-ceiling"><code>4. Buffered vs streaming inbound — the 1 MB ceiling</code></a> · <a href="#5-worked-examples"><code>5. Worked examples</code></a> · <a href="#6-validation-exhaustiveness-without-a-type-system"><code>6. Validation — exhaustiveness without a type system</code></a> · <a href="#7-the-request-global-per-activation-kind"><code>7. The request global per activation kind</code></a> · <a href="#8-app-manifest-reserved-seam"><code>8. App manifest (reserved seam)</code></a> · <a href="#9-reserved-for-the-platform-names-you-must-not-use"><code>9. Reserved for the platform (names you must not use)</code></a> · <a href="#10-what-s-gone-vs-prior-streaming-revisions"><code>10. What's gone (vs prior streaming revisions)</code></a> · <a href="#11-what-s-unchanged"><code>11. What's unchanged</code></a> · <a href="#12-open-questions"><code>12. Open questions</code></a> · <a href="#13-relation-to-other-plans"><code>13. Relation to other plans</code></a></p>
+<div class="note"><p><strong>Status:</strong> SHIPPED (2026-06-03). All phases of the implementation plan landed (the plan doc is folded-and-deleted; this doc is the contract): <code>on.*</code> connection wakes (Phase 1), the <code>stream.*</code> effect surface with <code>__rove_stream</code> retired (Phase 2), <code>on.fetch</code> (now <code>after.fetch</code>) + <code>detach</code> + the customer <code>http.fetch</code> spelling retired (Phase 3), named-export dispatch by activation kind (Phase 4), and <code>schedule</code>/<code>cron</code> (Phase 5). It supersedes the <code>__rove_stream</code> / <code>request.activation.kind</code>-switch surface and the old multi-shape return values. The engine model (coalesce budget, blob coordinator, one-rule semantics — see <code>architecture/routing-and-ingress.md</code>) is <strong>unchanged</strong>; only the customer-facing handler API changed. Phase 6 (polish) landed the ambient <code>next</code> verb; the §6 export-coverage validation is CLI-side (static analysis over arenajs-WASM), backstopped at runtime by the missing-<code>onWake</code> 404.</p><p><strong>Revised 2026-07-05 (rev 3 — the ergonomics arc, <code>plans/handler-api-ergonomics-plan.md</code>).</strong> The grammar is <code>after.*</code> (was <code>on.*</code>; <code>after.ms</code> was <code>on.timer</code>) with ONE callback-target key — <code>{on: "module.method"}</code> — across every effect; <code>webhook.send(url, opts)</code> takes a positional url; the durable scheduler's delay verb is <code>scheduler.in</code>; the payload is uniform <code>request.bytes</code>/<code>.text</code>/<code>.json</code> on every payload-carrying activation; threaded context is <code>ctx</code> in / <code>request.ctx</code> out everywhere (one-ctx, no exceptions); fetch ids are <code>ftch_…</code> on all three surfaces. The pre-rename spellings (<code>on.*</code>, <code>{to}</code>, <code>{on_result}</code>/<code>{context}</code>, <code>webhook.send({url})</code>, <code>scheduler.after</code>, <code>request.activation.msg</code>, snake_case field aliases) lived for one deploy cycle and are <strong>GONE</strong> (window closed 2026-07-06), and <strong><code>request.body</code> is retired too</strong> (2026-07-06, once the replay driver gained accessor parity) — the payload surface is <code>request.bytes</code>/<code>.text</code>/<code>.json</code>, full stop. The replay driver alone still synthesizes a <code>body</code> so records from pre-retirement deployments replay their pinned code.</p><p><strong>Revised 2026-06-02 (rev 2 — <code>stream.*</code> model).</strong> Organized around one axis — <strong>scope: current-connection vs connectionless</strong> — derived in <a href="effect-algebra.md"><code>effect-algebra.md</code></a> §6. <strong>The verb is the scope; output is a commit-gated effect; the return is pure disposition.</strong> Streamed output is <code>stream.start()</code> / <code>stream.write()</code> (effects), not a <code>stream</code> return verb. The only return shapes are <code>next(...)</code> (park) and a terminal body (close). The head is ambient <code>response.*</code>. <code>detach</code> is retired; <code>subscribe.kv</code> is deferred.</p><p>Motivation: the surface should read like intent — multi-activation chains, no closure smuggling — without exposing implementation details. The scope axis makes the one decision every author faces — *"does this happen for the current caller, or as new work?"* — a property of which verb you reach for, never a flag.</p></div>
+<h2 id="1-the-frame-tea-at-module-level">1. The frame — TEA at module level</h2>
+<table>
+<tr><th>Elm</th><th>Rewind handler</th></tr>
+<tr><td><code>Model</code></td><td>the tenant's <code>kv</code></td></tr>
+<tr><td><code>Msg</code> (sealed sum type)</td><td>the runtime's fixed set of activation kinds</td></tr>
+<tr><td><code>case msg of</code></td><td>the runtime's dispatch on activation kind → named export</td></tr>
+<tr><td>each <code>case</code> arm</td><td>each <code>export function on…</code></td></tr>
+<tr><td><code>Model</code> update</td><td><code>kv.*</code> (read-your-writes within the activation)</td></tr>
+<tr><td>Side-effects (<code>Cmd</code>)</td><td>effects called in the body — connection (<code>stream.*</code>, <code>after.*</code>) + connectionless (<code>webhook.send</code>/<code>schedule</code>/<code>cron</code>), queued during the activation, fired post-commit</td></tr>
+<tr><td><code>Cmd Msg</code> disposition</td><td>the return value: <code>next(...)</code> or a terminal body</td></tr>
+</table>
+<p>A module exports the subset of variants it cares about; the runtime introspects exports at load (§6) and dispatches each activation to its matching export. The default export handles inbound HTTP — the 80%+ case; everything else is opt-in via additional named exports.</p>
+<h2 id="2-the-verb-surface-the-verb-is-the-scope">2. The verb surface — the verb is the scope</h2>
+<p>Every outbound thing a handler does sits on one axis: does it act on the <strong>current connection</strong> (the held socket — ephemeral, dies when the caller disconnects), or does it create a <strong>connectionless request</strong> (a fresh activation with no socket — durable, runs whether or not anyone is connected)?</p>
+<p><strong>The scope is the verb.</strong> No <code>durable:</code> / <code>detach:</code> flag — you choose by which verb you reach for. The litmus test:</p>
+<div class="note"><p><strong>If the caller closed their laptop right now, should this still happen?</strong> No → a current-connection verb. Yes → a connectionless verb.</p></div>
+<p>The whole surface is five roles:</p>
+<table>
+<tr><th>Role</th><th>Surface</th><th>Scope</th></tr>
+<tr><td><strong>Model</strong></td><td><code>kv.get</code> / <code>kv.set</code> / <code>kv.delete</code></td><td>— (read-your-writes; the Model half of <code>(Model, Cmd)</code>)</td></tr>
+<tr><td><strong>Connection output</strong></td><td><code>stream.start()</code> / <code>stream.write(chunk)</code></td><td>current connection (commit-gated effects)</td></tr>
+<tr><td><strong>Connection triggers</strong></td><td><code>after.ms(ms,{on?})</code> / <code>after.kv(prefix,{on?})</code> / <code>after.fetch(url,opts?,{on?})</code></td><td>current connection (ephemeral)</td></tr>
+<tr><td><strong>Connectionless triggers</strong></td><td><code>webhook.send</code> / <code>schedule</code> / <code>cron</code></td><td>connectionless (durable, new request)</td></tr>
+<tr><td><strong>Disposition (return)</strong></td><td><code>next({ctx?})</code> · terminal body / <code>""</code></td><td>the only return shapes</td></tr>
+</table>
+<p>The body <strong>accumulates</strong> the Cmd as you compute — <code>kv.*</code> builds the Model; <code>stream.*</code>, <code>after.*</code>, and the connectionless verbs are effects that fire post-commit — and the <strong>return value</strong> picks the connection's disposition. Together that's the TEA pair <code>(Model', Cmd)</code> (<code>effect-algebra.md</code> §6 is the derivation; §1 the determinism invariant).</p>
+<h3 id="2-1-disposition-the-return-value">2.1 Disposition — the return value</h3>
+<p>The return is only one of two things:</p>
+<table>
+<tr><th>Return</th><th>Means</th><th>Wire effect</th></tr>
+<tr><td><code>string</code> (or any value → JSON)</td><td>terminal response</td><td>commit; ship body + the ambient head; close</td></tr>
+<tr><td><code>next({ctx?})</code></td><td>held — hold the connection; resume when a registered trigger fires</td><td>commit; hold; resume via the trigger's export</td></tr>
+</table>
+<p>There is <strong>no <code>stream</code> return verb</strong>. Streaming is done by calling <code>stream.*</code> output effects (§2.2) and returning <code>next()</code>; you close by returning a terminal body (a final chunk) or <code>""</code>.</p>
+<p>The response <strong>head</strong> — status, headers, cookies — is the ambient <code>response</code> global, not a return argument (matching the engine, <code>dispatcher.zig</code> <code>extractResponseMetadata</code>):</p>
+<pre><code>response.status  = 201;
+response.headers = { 'content-type': 'text/event-stream' };
+response.cookies = ['sid=…; HttpOnly'];</code></pre>
+<p>The head is committed (sent to the wire) by the first <code>stream.start()</code> / <code>stream.write()</code> or a terminal response; <strong><code>next()</code> alone commits nothing</strong> — the head stays open, so a later resume can still set any <code>response.status</code> and return any body (the await-then-respond / gateway pattern, forward an upstream's <code>502</code>). That commit-or-not is the only state distinction; <code>next</code> reduces to <code>{ctx?}</code> and the terminal verb to the body.</p>
+<p><code>ctx</code> threads small per-connection state to the next activation — a stream loop's cursor, a fan-in accumulator (§5.8). It is <strong>not</strong> heap state across activations (the arena resets); state that must survive a disconnect lives in <code>kv</code>.</p>
+<p><code>next</code> is an <strong>ambient global</strong> (like <code>stream</code>, <code>on</code>, <code>kv</code>, <code>response</code>) — no import. <code>next()</code> resumes THIS module's conventional export for the activation kind; you never name the module or export.</p>
+<h3 id="2-2-connection-output-stream-start-stream-write">2.2 Connection output — <code>stream.start</code> / <code>stream.write</code></h3>
+<p><code>stream</code> is an <strong>effect namespace</strong> (ambient, like <code>kv</code>), not a return verb. It produces the streaming response over time:</p>
+<ul><li><code>stream.start()</code> — commit the head (from ambient <code>response.*</code>) and begin the response. Use it to open an SSE stream so the client's <code>onopen</code> fires before any data. Optional — the first <code>stream.write()</code> starts implicitly.</li><li><code>stream.write(chunk)</code> — emit a chunk. <strong>Commit-gated</strong>: the chunk reaches the wire only after this activation's writes commit (the one rule — <code>architecture/routing-and-ingress.md</code>). Call it as many times per activation as you like; raw bytes (SSE <code>data:</code> framing is yours to write).</li></ul>
+<p><strong>In a continuing activation (<code>onWake</code> etc.), call <code>stream.start()</code> unconditionally, before any conditional writes.</strong> The runtime classifies an activation as streaming by whether it touched <code>stream.*</code> (<code>finishResponse</code>, the one classification point): a wake that happens to write zero frames and returns <code>next()</code> without <code>stream.start()</code> is parked as a plain continuation — not a stream re-park — and the stream closes. <code>stream.start()</code> is idempotent on an already-started stream, so the unconditional call is free.</p>
+<p>Pair <code>stream.*</code> with <code>next()</code> to keep producing across activations; close with a terminal return:</p>
+<pre><code>stream.start();
+after.kv(`notif/${user}/`, { on: 'onNotify' });
+return next({ since });</code></pre>
+<p><code>stream</code> is <strong>only</strong> a namespace — <code>stream.start()</code> / <code>stream.write()</code>, never <code>return stream(...)</code>.</p>
+<h3 id="2-3-connection-triggers-after">2.3 Connection triggers — <code>after.*</code></h3>
+<p><code>after.*</code> registers a ONE-SHOT wake <strong>for the current connection</strong> — body builder calls that re-invoke a handler still holding the socket. Ephemeral (drop with the connection); node-local (never touch raft).</p>
+<ul><li><code>after.ms(ms)</code> — wake after <code>ms</code> milliseconds. Named for its unit (durations are always ms; there is deliberately no <code>after.seconds</code> family — write <code>after.ms(5 * 60_000)</code>).</li><li><code>after.kv(prefix, { on? })</code> — wake when any key under <code>prefix</code> changes <strong>since the version this activation read</strong> (anchored to the read view, so a write between "you read" and "you parked" still fires it, and the common "wait on a key, write it from a connectionless callback" pattern is lossless — <code>effect-algebra.md</code> §6.4).</li><li><code>after.fetch(url, opts?, { on? })</code> — perform an outbound request and wake on its result (whole or chunked). Connection-scoped outbound; its durable twin is <code>webhook.send</code> (§2.4).</li></ul>
+<p><code>{ on: "module.method" }</code> routes the wake to a different export (still holding *this* connection) — the UNIVERSAL callback-target key, the same spelling every effect takes. Without <code>on</code>, an <code>after.kv</code>/ <code>after.ms</code> wake defaults to <code>onWake</code>; <code>after.fetch</code> to <code>onFetchResult</code>/<code>onFetchChunk</code>/<code>onFetchDone</code> by event shape (§3).</p>
+<pre><code>const rooms = request.ctx?.rooms ?? [];
+for (const room of rooms) after.kv(`rooms/${room}/`);  // dynamic sets are natural
+return next({ rooms });</code></pre>
+<p>The runtime arms <code>after.*</code> wakes <strong>before</strong> firing any connectionless effects of the same activation, so a wake can't be missed even when a connectionless callback writes the key it watches (<code>effect-algebra.md</code> §6.4).</p>
+<h3 id="2-4-connectionless-triggers-webhook-send-schedule-cron">2.4 Connectionless triggers — <code>webhook.send</code> / <code>schedule</code> / <code>cron</code></h3>
+<p>These create a <strong>connectionless request</strong> — a fresh, durable activation with no held socket. They survive leader changes, route by tenant, and run whether or not anyone is connected. Each names the export it invokes:</p>
+<ul><li><code>webhook.send(url, { on: "module.method", … })</code> — durable outbound; run the target as a new request when it completes.</li><li><code>schedule({ at } | { in }, "module.method", ctx?)</code> — run the target once, at a time.</li><li><code>cron(spec, "module.method")</code> — run the target on a recurring schedule.</li></ul>
+<p>A connectionless request can read/write <code>kv</code>, register more connectionless triggers, and do work — but it has <strong>no connection</strong>, so the disposition verbs and <code>stream.*</code> / <code>after.*</code> are <strong>inert</strong> there. To surface a connectionless result *to* a still-connected client, compose: the callback writes <code>kv</code>, the connection watches that key with <code>after.kv</code> (the SSE example, §5.7; the model, <code>effect-algebra.md</code> §6.5).</p>
+<div class="note"><p><code>subscribe.kv</code> (a runtime durable kv-react) is <strong>deferred</strong> — <code>after.kv</code> covers the connection case; no runtime durable kv-react for now.</p></div>
+<h3 id="2-5-the-model-kv">2.5 The Model — <code>kv</code></h3>
+<p><code>kv.get</code> / <code>kv.set</code> / <code>kv.delete</code> are neither connection nor connectionless — they're the <strong>Model</strong> half of <code>(Model, Cmd)</code>. They stay in the body because they're <strong>read-your-writes</strong>: <code>kv.set('x',1); kv.get('x')</code> returns <code>1</code> in the same activation (the kvexp overlay). That immediate visibility is why a write can't be deferred — it builds the Model the rest of the activation reads. The trigger/output effects (<code>stream.*</code>, <code>after.*</code>, connectionless), by contrast, never return a result into *this* activation — their results arrive as future Msgs — which is why they're Cmd-builders, not Model mutations.</p>
+<h3 id="2-6-the-rule-and-why-there-are-no-scope-flags">2.6 The rule, and why there are no scope flags</h3>
+<div class="note"><p><strong>All wakes registered through <code>after.*</code> are for the current connection. Every other trigger creates a connectionless request.</strong></p></div>
+<p>Scope must be a *verb*, not a flag, because a connectionless trigger is <strong>durable</strong>, and durability isn't a boolean — it's a Model-row + commit-gate + reload-on-leader-change overlay (<code>effect-algebra.md</code> §2.2, §6.1). A <code>{ durable: true }</code> / <code>{ detach: true }</code> flag can't conjure that lifecycle; flipping scope with a flag is the <code>bind</code> mistake the model retired (§6.3). So:</p>
+<ul><li><strong><code>detach</code> is retired.</strong> "A fetch that outlives my connection" is the connectionless verb (<code>webhook.send</code>), not <code>after.fetch({ detach:true })</code>.</li><li>Connectionless work is <strong>durable by default</strong>; a connectionless- ephemeral fire-and-forget fast path is intentionally not offered until a real high-volume case demands it ([[feedback_model_simplicity_safety]]).</li></ul>
+<h2 id="3-activation-kinds-the-runtime-s-msg-union">3. Activation kinds — the runtime's Msg union</h2>
+<table>
+<tr><th>Activation</th><th>Export</th><th>Scope</th><th>When it fires</th></tr>
+<tr><td>inbound HTTP (buffered)</td><td><code>default</code></td><td>connection</td><td>body ≤ 1 MB; &gt; 1 MB → 413 if no <code>onChunk</code></td></tr>
+<tr><td>inbound HTTP, headers-first</td><td><code>onHeaders</code></td><td>connection</td><td>SHIPPED 2026-06-10 (<code>architecture/routing-and-ingress.md</code>): module exports <code>onHeaders</code> → every body-carrying request dispatches it with an EMPTY body before any body byte is accepted (the client is flow-control-held at the door). Decide from headers alone: early 4xx terminal, or <code>blob.receive({on}) + next()</code> to pipe the body socket→storage with zero chunk activations — <code>{on}</code> resumes with <code>request.ctx = {hash, len}</code> when the object is durable. Uniform regardless of body timing or size</td></tr>
+<tr><td>inbound HTTP chunk</td><td><code>onChunk</code></td><td>connection</td><td>per chunk (≤ 1 MB → fires once with the whole body)</td></tr>
+<tr><td><code>after.fetch</code> result</td><td><code>onFetchResult</code> (or <code>to</code>)</td><td>connection</td><td>a connection <code>after.fetch</code> returned its whole body</td></tr>
+<tr><td><code>after.fetch</code> chunk</td><td><code>onFetchChunk</code> (or <code>to</code>)</td><td>connection</td><td>per chunk of a streamed <code>after.fetch</code></td></tr>
+<tr><td><code>after.fetch</code> end</td><td><code>onFetchDone</code> (or <code>to</code>)</td><td>connection</td><td>a streamed <code>after.fetch</code> terminated</td></tr>
+<tr><td><code>after.kv</code> / <code>after.ms</code> wake</td><td><code>onWake</code> (or <code>to</code>)</td><td>connection</td><td>a connection wake fired (held socket)</td></tr>
+<tr><td>inbound WebSocket frame</td><td><code>onMessage</code></td><td>connection</td><td>per complete WS data message; the frame payload reads as <code>request.bytes</code>/<code>.text</code>/<code>.json</code> (§7); <code>request.activation = { opcode, data }</code> keeps the framing detail (opcode 1 = text → <code>data</code> is a string, 2 = binary → Uint8Array); <code>stream.write</code> replies (string → text frame, bytes → binary), <code>next()</code> parks for the next frame, a terminal return closes. Replies are strictly in message order, and a frame behind an in-flight durable write activates only after that write commits — so each frame reads its predecessors' writes (<code>architecture/websockets.md</code>, the input gate)</td></tr>
+<tr><td>held client disconnected</td><td><code>onDisconnect</code></td><td>connection</td><td>the held stream closed early — or the WS client closed / dropped</td></tr>
+<tr><td><code>webhook.send</code> result</td><td>the <code>{on}</code> target</td><td>connectionless</td><td>a <code>webhook.send</code> completed</td></tr>
+<tr><td><code>cron</code> / <code>schedule</code> fire</td><td>the named target</td><td>connectionless</td><td>scheduled time arrived</td></tr>
+<tr><td>subscription fire (generic)</td><td><code>onSubscription</code></td><td>connectionless</td><td>external push (atproto firehose, etc.)</td></tr>
+</table>
+<p>The set of *kinds* is closed (runtime-defined). The <code>to:</code> option on <code>after.*</code> (and the target on the connectionless verbs) chooses <strong>which export</strong> a trigger's activation lands in; it does not invent a kind.</p>
+<div class="note"><p><strong>Shipped (Phase 4 + finer conventions):</strong> the runtime maps <code>activation_source → export</code> when the resume path didn't name one. <code>wake_batch</code> (<code>after.kv</code>/<code>after.ms</code>) → <code>onWake</code>; <code>disconnect</code> → <code>onDisconnect</code> (a missing <code>onDisconnect</code> is a no-op — cleanup is optional).</p><p><strong><code>after.fetch</code> (bound, connection-scoped) now splits by event shape</strong> when no <code>{on}</code> is given: a non-streaming fetch (one <code>final</code> event with the whole body) → <code>onFetchResult</code>; a streaming fetch's intermediate chunks (<code>final == false</code>) → <code>onFetchChunk</code>; its terminal event (<code>final == true</code>) → <code>onFetchDone</code>. An explicit <code>{on}</code> overrides for every event of the fetch (the handler then branches on <code>request.done</code>).</p><p><strong><code>_subscriptions/</code> fires dispatch to <code>onSubscription</code></strong> (kv-react — the one live subscription kind), so a subscription module never branches on <code>request.activation.source.kind</code>. (The manifest <code>kind=cron</code> subscription and its <code>onCron</code> export RETIRED with durable-wake P5(b): recurrence is the <code>cron(spec, target, …)</code> verb — durable, surviving leader change — or a self-re-arming <code>scheduler.in</code> for sub-minute intervals. The <code>kind=boot</code> subscription and its <code>onBoot</code> export RETIRED 2026-07-05, unused: seed registrations from any handler activation — they are idempotent by key and <code>_sched/*</code> entries are durable kv that survive deploys.) <code>webhook.send</code> results route through the shim's named <code>{on}</code> target; an unnamed cross-module <code>next({module})</code> chain legitimately targets that module's <code>default</code>, so there is no forced <code>onSendCallback</code> default.</p><p>A missing conventional export is the fail-loud 404 backstop (<code>runModule</code>). <code>request.activation.kind</code> is no longer a dispatch discriminator (the named export is); it remains on <code>request.activation</code> alongside the wake / source payload (<code>wakes</code> / <code>overflow</code> / <code>write_pressure</code> / <code>source</code>). The inbound-chunk (<code>onChunk</code>) split in the table above is SHIPPED (gap 2.4, 2026-06-10): a chunk activation's payload is arbitrary bytes — read it as <code>request.bytes</code> (or <code>.text</code>/<code>.json</code>, same as every payload surface, §7) — and <code>next({ctx})</code> between chunks surfaces as <code>request.ctx</code> on the following chunk.</p></div>
+<p>The scope column is load-bearing: a <strong>connection</strong> activation runs with the held socket (it can call <code>stream.*</code>/<code>after.*</code> and return <code>next</code>/a terminal); a <strong>connectionless</strong> activation has no socket (those are inert — it does <code>kv</code> + connectionless triggers + returns nothing). The default for <code>after.kv</code>/<code>after.ms</code> is one generic <code>onWake</code> because they're *edge* wakes — "go look"; the handler re-queries state regardless of which fired (the SSE cursor pattern, §5.7). <code>after.fetch</code> keeps per-result exports because it carries a payload.</p>
+<h3 id="3-1-named-function-rpc-is-handler-js-the-rpc-recipe">3.1 Named-function RPC is handler JS (the <code>rpc</code> recipe)</h3>
+<p>The platform invokes <strong>only</strong> the activation's export (the table above). The former platform-level <code>?fn=name&amp;args=…</code> query and <code>{"fn":…,"args":[…]}</code> POST-body dispatch are RETIRED (decisions.md §4.5): <code>request.query</code> and <code>request.body</code> are opaque payload the engine never interprets. Internal resume targeting (<code>{on}</code>, <code>next({fn})</code>) is first-class on the runtime's Request and unaffected.</p>
+<p>A handler that wants named-function routing composes it from primitives — and because the shim reads <code>request.query</code> / <code>request.text</code> in JS, the dispatch inputs land on the replay tape like every other read:</p>
+<pre><code>function rpc(fns) {
+  return function () {
+    let fn = null, args = [];
+    for (const part of (request.query || "").split("&amp;")) {
+      const eq = part.indexOf("=");
+      const k = eq === -1 ? part : part.slice(0, eq);
+      if (k !== "fn" &amp;&amp; k !== "args") continue;
+      const v = eq === -1 ? "" : decodeURIComponent(part.slice(eq + 1).replace(/\+/g, "%20"));
+      if (k === "fn" &amp;&amp; v) fn = v;
+      else if (k === "args" &amp;&amp; v) { try { args = JSON.parse(v); } catch (_) {} }
+    }
+    if (!fn &amp;&amp; request.text) {
+      try {
+        const b = request.json;
+        if (b &amp;&amp; typeof b.fn === "string") { fn = b.fn; args = Array.isArray(b.args) ? b.args : []; }
+      } catch (_) {}
+    }
+    const f = fn ? fns[fn] : null;
+    if (!f) { response.status = 404; return "no such fn: " + fn; }
+    return f(...args);
+  };
+}
+
+function whoami() { return "it me"; }
+function add(a, b) { return a + b; }
+export default rpc({ whoami, add });</code></pre>
+<p>The wire shapes are unchanged — <code>GET /?fn=whoami</code> and <code>POST {"fn":"add","args":[1,2]}</code> work exactly as before; the dispatch just belongs to the app now (the <code>__admin__</code> dashboard handler, <code>web/admin/index.mjs</code>, is the dogfood example).</p>
+<h2 id="4-buffered-vs-streaming-inbound-the-1-mb-ceiling">4. Buffered vs streaming inbound — the 1 MB ceiling</h2>
+<p><strong>Any inbound HTTP request body ≤ 1 MB is delivered in a single <code>default</code> activation</strong> with the full payload readable as <code>request.bytes</code> / <code>.text</code> / <code>.json</code> (§7). The common case never has to think about streaming.</p>
+<ul><li><strong><code>default</code> only:</strong> body ≤ 1 MB → one <code>default</code> activation; body &gt; 1 MB → <code>413</code>, handler never runs.</li><li><strong><code>onChunk</code> only:</strong> any size → per-chunk dispatch. A body ≤ 1 MB fires <code>onChunk</code> once with the whole body and <code>request.done = true</code>; larger bodies fire N times. <code>onChunk</code> returns <code>next()</code> to await the next chunk, a terminal to respond.</li></ul>
+<p><code>onChunk</code> is strictly more general; <code>default</code> is the optimization for handlers that never deal with chunks. The 1 MB ceiling is customer- facing; the 64 KiB internal chunk size is implementation detail.</p>
+<h2 id="5-worked-examples">5. Worked examples</h2>
+<h3 id="5-1-buffered-request-the-80-case">5.1 Buffered request (the 80%+ case)</h3>
+<pre><code>export default function () {
+  return process(request.text);                // read the payload; status defaults to 200
+}</code></pre>
+<h3 id="5-2-buffered-with-auth-status">5.2 Buffered with auth + status</h3>
+<pre><code>export default function () {
+  if (!authorized(request.headers)) { response.status = 401; return 'unauthorized'; }
+  return process(request.text);
+}</code></pre>
+<h3 id="5-3-streaming-inbound-per-chunk-upload-to-storage">5.3 Streaming inbound — per-chunk upload to storage</h3>
+<pre><code>export function onChunk() {
+  after.fetch(`${STORAGE_URL}/${request.headers['x-key']}?seq=${request.chunkSeq}`,
+           { method: 'PUT', body: request.bytes }, { on: 'onPut' });
+  if (request.done) { response.status = 201; return 'uploaded'; }
+  return next();                                 // await the next inbound chunk
+}
+
+export function onPut() {                        // each PUT result resumes here (held)
+  if (request.status &gt;= 400) { response.status = 502; return 'storage failed'; }
+  return next();
+}</code></pre>
+<h3 id="5-4-gateway-hold-the-client-forward-upstream-return-its-status">5.4 Gateway — hold the client, forward upstream, return its status</h3>
+<pre><code>export default function () {
+  after.fetch('https://upstream.example.com', { method: 'POST', body: request.bytes },
+           { on: 'onUpstream' });
+  return next();                                 // held, uncommitted — status still open
+}
+
+export function onUpstream() {
+  response.status = request.status;              // forward upstream's status verbatim
+  return request.bytes;                          // raw response bytes, forwarded verbatim
+}</code></pre>
+<p><code>next()</code> keeps the head uncommitted so <code>onUpstream</code> can return any status (a <code>502</code>). The fetch is connection-scoped — if the client leaves, abandoning it is correct.</p>
+<h3 id="5-5-llm-proxy-streamed-connection-fetch-held-client">5.5 LLM proxy — streamed connection fetch + held client</h3>
+<pre><code>export default function () {
+  after.fetch(LLM_URL, { method: 'POST', body: request.bytes }, { on: 'onUpstream' });
+  return next();                                 // hold the client; wait for the first chunk
+}
+
+export function onUpstream() {
+  if (request.done) return "";                   // close the held response
+  stream.write(transform(request.bytes));        // emit a chunk (commits the head on first write)
+  return next();
+}</code></pre>
+<h3 id="5-6-connectionless-work-fire-durable-respond-now">5.6 Connectionless work — fire durable, respond now</h3>
+<pre><code>export default function () {
+  webhook.send('https://billing.example.com/charge', { body: request.text, on: 'onCharge' });
+  schedule({ in: '24h' }, 'sendReminder', { user: request.user });
+  response.status = 202;
+  return 'queued';                               // respond immediately; the above outlive this request
+}
+
+export function onCharge() {                      // connectionless {on} callback — no socket; does work, returns nothing
+  if (!request.ok) return;                        // delivery failed (request.activation.error says why)
+  const charge = request.json;                    // the response payload, parsed (§7)
+  kv.set(`charges/${charge.id}`, JSON.stringify(charge));
+}</code></pre>
+<h3 id="5-7-sse-notifications-connection-connectionless-composed">5.7 SSE notifications — connection + connectionless composed</h3>
+<p>Notifications are written under zero-padded sequence keys — <code>notif/{user}/{seq:020}</code> — so ascending key order IS delivery order and the last-seen KEY is the cursor. <code>kv.prefix(prefix, cursor)</code> resumes after the cursor key.</p>
+<pre><code>const PAD = (n) =&gt; String(n).padStart(20, '0');
+
+// Connect (or reconnect via Last-Event-ID = the last seq delivered).
+export default function () {
+  response.headers = { 'content-type': 'text/event-stream' };       // ambient head
+  const last = request.headers['last-event-id'];
+  const cursor = last ? `notif/${user}/${PAD(Number(last))}` : null;
+  stream.start();                                                    // open the stream (fires onopen)
+  after.kv(`notif/${user}/`, { on: 'onNotify' });
+  return next({ cursor });
+}
+
+// Connection-held resume: drain everything past the cursor key.
+export function onNotify() {
+  const rows = kv.prefix(`notif/${user}/`, request.ctx.cursor);
+  after.kv(`notif/${user}/`, { on: 'onNotify' });                    // re-arm
+  for (const r of rows) {
+    const seq = Number(r.key.slice(r.key.lastIndexOf('/') + 1));
+    stream.write(`id:${seq}\ndata:${r.value}\n\n`);
+  }
+  return next({ cursor: rows.length ? rows.at(-1).key : request.ctx.cursor });
+}
+
+// Connectionless cleanup — cron('0 3 * * *', 'gcNotifs'); each value
+// carries its write time, so retention is a scan-and-delete.
+export function gcNotifs() {
+  const horizon = Date.now() - 7 * 24 * 3600 * 1000;
+  let cursor = null;
+  for (;;) {
+    const page = kv.prefix('notif/', cursor, 1000);
+    if (page.length === 0) break;
+    for (const r of page) if (JSON.parse(r.value).at &lt; horizon) kv.delete(r.key);
+    cursor = page.at(-1).key;
+  }
+}</code></pre>
+<p><code>after.kv</code> (connection, ephemeral) waits for changes *since the read view*; each wake <strong>drains the prefix past the cursor</strong> (so coalesced wakes never lose notifications) and advances the cursor in <code>ctx</code>. The notifications live in <code>kv</code> (durable) and the client's resume point is its <code>Last-Event-ID</code>, so a dropped connection just reconnects — no durable server-side connection state. (<code>effect-algebra.md</code> §6.5; retention bounds the reconnect-replay window.)</p>
+<h3 id="5-8-fan-in-join-wait-for-all-then-combine">5.8 Fan-in / join — wait for all, then combine</h3>
+<pre><code>export default function () {
+  const a = after.fetch(API_A, {}, { on: 'onResult' });   // returns the fetch id (`ftch_…`)
+  const b = after.fetch(API_B, {}, { on: 'onResult' });
+  after.ms(30_000, { on: 'onTimeout' });                  // deadline
+  return next({ a, b, got: {} });                         // uncommitted: response unknown until both land
+}
+
+export function onResult() {
+  // request.fetchId is the SAME `ftch_…` string after.fetch returned.
+  const got = { ...request.ctx.got,
+                [request.fetchId]: { status: request.status, body: request.text } };
+  if (got[request.ctx.a] &amp;&amp; got[request.ctx.b])
+    return combine(got[request.ctx.a], got[request.ctx.b]);
+  return next({ ...request.ctx, got });                   // still waiting on the other
+}
+
+export function onTimeout() { response.status = 504; return 'upstream timeout'; }</code></pre>
+<p><code>next({ctx})</code> makes <code>ctx</code> the continuation's accumulator. Each fetch result fires its own <code>onResult</code> (value-triggers are delivered individually — <code>effect-algebra.md</code> §6.2), resumes are serialized, and each <code>next(ctx)</code> updates the threaded <code>ctx</code> the next resume reads — so the join is race-free with no lock. <code>next</code> (not committing) the whole time, because the response could be <code>200</code> or, via <code>onTimeout</code>, <code>504</code>. This is <code>Promise.all</code> from primitives — no dedicated combinator.</p>
+<h3 id="5-9-browser-agent-let-an-llm-drive-your-own-ui-browser">5.9 Browser agent — let an LLM drive your own UI (<code>browser.*</code>)</h3>
+<p><code>browser.*</code> is a JS-shim (same pattern as <code>webhook.send</code> — <code>globals/browser.js</code>) for building "a Playwright for LLMs" <strong>scoped to the customer's own app</strong>: the in-page SDK (<code>_static/rove-agent.js</code>) opens a held WebSocket, sends an enriched, pixel-free DOM/accessibility <strong>snapshot</strong> (<code>[ref] role "name" = value (state)</code>), and executes ref-targeted actions the handler sends back. The handler is the *brain wiring*, not the brain — the LLM call is the customer's own <code>after.fetch</code> with their key; durable reasoning state lives in <code>kv</code> (the durable-brain / ephemeral-hands split). Scope is <strong>same-origin only by construction</strong> — an agent acting inside the customer's own page is ~equivalent to JS they could already run there, so there's no new trust boundary (see <code>decisions.md</code> §4.8).</p>
+<pre><code>// Held WS chain: each page snapshot → call the LLM → send one action.
+export function onMessage() {
+  const frame = browser.message(request);                 // decode the ws_message
+  const ctx = request.ctx || {};
+  if (!frame) return next(ctx);
+  if (frame.t === "hello") { kv.set(`goal/${frame.sid}`, frame.goal); return next({ sid: frame.sid }); }
+  if (frame.t !== "snapshot") return next(ctx);           // result/bye/confirm_result
+
+  browser.status("thinking…");
+  after.fetch(LLM_URL, { method: "POST", headers: authHeaders(),
+    body: JSON.stringify({ model, tools: browser.tools(),  // vendor-neutral action schema
+      messages: history(ctx.sid).concat({ role: "user", content: browser.render(frame) }) }) },
+    { on: "onLLM" });                                      // binds to THIS held chain
+  return next(ctx);                                        // read-only turn — a writing frame can't bind after.fetch
+}
+
+export function onLLM() {                                  // flattened result surface (§7): request.json/.status/.done
+  if (!request.done || request.status &gt;= 400) { browser.status("LLM error"); return next(request.ctx); }
+  const reply = request.json;
+  const action = pickAction(reply);                        // adapt the model's tool call → {op, ref, ...}
+  if (!action) { browser.done(reply.text); return next(request.ctx); }
+  if (isDestructive(action)) { browser.confirm({ id: action.id, prompt: "Allow?", action }); }
+  else browser.act(action);                                // page executes, auto-sends a fresh snapshot → onMessage
+  return next(request.ctx);
+}</code></pre>
+<p>Perception is <strong>structural by default</strong> (DOM + geometry + computed visibility + occlusion); pixel screenshots are a separate <strong>opt-in</strong> tier (<code>getDisplayMedia</code> → <code>blob.put</code>). The SDK renders a non-disableable "agent is driving · STOP" indicator + kill switch. The brain is pluggable: the same snapshot/action protocol can be driven by the customer's handler-hosted LLM (above) or, as a fast-follow, the end-user's own local Claude over MCP — no change to the SDK or page protocol.</p>
+<p><strong>Replay context — the "why" channel (<code>browser.getReplay</code>).</strong> The third perception tier (DOM = what, screenshot = how, <strong>replay = why</strong>). <code>getReplay</code> pulls this session's recent *server-side* activations — handler runs, their kv reads/writes and effects, status + timing — from the durable log so the brain can root-cause a wrong UI instead of guessing from the symptom. It's a brain tool (<code>browser.tools({replay:true})</code>): the model emits <code>getReplay</code>, the handler issues it from a <strong>read-only</strong> frame (a writing frame can't bind the fetch — same rule as <code>after.fetch</code>), and feeds the result back as the tool's result.</p>
+<pre><code>browser.getReplay(request, { on: "onReplay" });   // read-only frame; then return next(...)
+export function onReplay() {                        // fetch callback (read-only)
+  const text = browser.renderReplay(browser.replayResult(request));
+  return callLLM(request.ctx.sid, toolResult(text), parkCtx);  // feed it back to the model
+}</code></pre>
+<p>It reads through the internal <code>rewind-logs.internal</code> door, which the engine pins to <strong>this handler's own tenant</strong> — a customer can read only its own logs, never another's (<code>decisions.md</code> §4.8/§4.10). By default it filters by the engine per-connection session key (<code>request.correlation_id</code>, auto-stamped on every activation as the reserved <code>_corr</code> tag), so no per-frame tagging is needed; pass <code>{session}</code> to filter by a <code>request.tag("session", …)</code> value instead (survives reconnects).</p>
+<p><strong>User-defined index tags (<code>request.tag</code>).</strong> Not browser-specific — any handler can attach low-cardinality index tags to its request's log record: <code>request.tag("flow", "checkout")</code>. The log query surface then filters <code>?tag.flow=checkout</code> (and <code>/v1/{tenant}/session/{id}</code> is sugar for <code>tag.session</code>). Bounded + fail-loud: ≤4 tags/record, keys <code>[a-z0-9_]</code> (a leading <code>_</code> is reserved for engine tags like <code>_corr</code>), value ≤64 bytes — a violation throws (it's a handler bug, not a silent drop). Keep values low-cardinality (a plan, a flow, a session — never a per-row unique like a raw user id).</p>
+<h2 id="6-validation-exhaustiveness-without-a-type-system">6. Validation — exhaustiveness without a type system</h2>
+<p>The loader validates <code>module.exports</code> against the activations the module's verbs could trigger (deploy-time warnings/errors, not request-time):</p>
+<ul><li>If a handler calls <code>webhook.send</code> and its <code>{on}</code> target is missing → warn (result discarded).</li><li>If a handler calls <code>after.fetch</code> / <code>after.kv</code> / <code>after.ms</code> whose <code>{on}</code> target (or the conventional export for its kind — <code>onFetchResult</code>, <code>onWake</code>, …) is not exported → warn (wake has nowhere to land).</li><li>If a handler calls <code>schedule</code> / <code>cron</code> whose target is missing → error (a connectionless trigger with no handler is dead on arrival).</li><li><code>onChunk</code> exported but nothing can trigger a receive → warn.</li><li>Unknown <code>on…</code> exports (typos) → "did you mean…?".</li></ul>
+<p><code>stream.*</code> needs no resume export — it's output. Strict mode (errors instead of warnings) is per-tenant.</p>
+<h2 id="7-the-request-global-per-activation-kind">7. The <code>request</code> global per activation kind</h2>
+<p><code>request</code> is a module-level global, populated fresh per activation and <strong>replaced</strong> (not mutated) across a chain — so "no state across activations" is structural (your prior <code>request</code> is gone when the next fires; the arena reset wipes it). Cross-activation connection state rides <code>ctx</code> (§2.1); disconnect-surviving state rides <code>kv</code>.</p>
+<ul><li><strong>The payload, uniformly (<code>bytes</code> / <code>text</code> / <code>json</code>):</strong> every activation that carries a payload — inbound <code>default</code>, an <code>onChunk</code> chunk, a bound <code>after.fetch</code>/<code>blob.get</code> resume, a result callback, a WS <code>onMessage</code> frame — presents it through the SAME three views: <strong><code>request.bytes</code></strong> (Uint8Array, the raw payload), <strong><code>request.text</code></strong> (lenient UTF-8 — invalid sequences decode as U+FFFD), and <strong><code>request.json</code></strong> (<code>JSON.parse(request.text)</code>; throws on non-JSON — a handler asking for JSON that isn't JSON is a real error). All three derive from the same recorded bytes. On a payload-less activation (wakes, <code>cron</code>/<code>schedule</code> targets, <code>onDisconnect</code>) all three read <code>undefined</code>. (<code>request.body</code> — whose type varied by activation kind — is RETIRED; the accessors are the only payload surface.)</li><li><strong><code>default</code>:</strong> the payload views above, plus <code>.headers</code>, <code>.method</code>, <code>.path</code>, <code>.query</code>, <code>.cookies</code>, <code>.ip</code>, <code>.unmaskedIp()</code>.</li><li><strong><code>onChunk</code>:</strong> <code>request.bytes</code> = THIS chunk; <code>request.done</code>; <code>request.chunkSeq</code> (from 0).</li><li><strong><code>next()</code> continuations — one ctx rule (<code>decisions.md §4.9</code>):</strong> every activation that exists because a prior activation called <code>next({ctx})</code> reads that payload as <strong><code>request.ctx</code></strong> — <code>onMessage</code>, <code>onChunk</code>, <code>onWake</code> (<code>after.kv</code>/<code>after.ms</code>), <code>onDisconnect</code>, a bound <code>after.fetch</code>/ <code>blob.get</code> resume, and a <code>webhook.send</code>-family <code>{on}</code> callback, all the same way. <code>request.ctx</code> is <code>undefined</code> on the <strong>first</strong> activation of a chain (nothing threaded yet). A <code>cron</code>/<code>schedule</code> target reads the payload it was scheduled with as <code>request.ctx</code> too — the one-ctx rule has no exceptions. <code>after.kv</code>/<code>after.ms</code> are edge ("go look") wakes — they carry <strong>no</strong> matched key/value; <code>onWake</code> re-reads authoritative <code>kv</code>, and which keys fired is on <code>request.activation.wakes[]</code> if you need it.</li><li><strong>Fetch / effect results — one flattened surface:</strong> a bound <code>after.fetch</code> / <code>blob.get</code> resume <strong>and</strong> a <code>webhook.send</code> / <code>blob.put</code> / <code>retry</code> <code>{on}</code> callback (and a §6.4 held-sync resume) present the result identically — the response payload on <strong><code>request.bytes</code>/<code>.text</code>/ <code>.json</code></strong> (the whole body for a non-streamed fetch, this chunk for a streamed one), with <code>request.status</code> / <code>request.ok</code> / <code>request.done</code> (+ <code>request.fetchId</code> / <code>request.chunkSeq</code> for fetch chunks) at the <strong>top level</strong>; the threaded <code>ctx</code> on <strong><code>request.ctx</code></strong> (bare); and per-delivery metadata (<code>attempts</code>, <code>error</code>, <code>id</code>, <code>headers</code>, blob <code>hash</code>) on <strong><code>request.activation.*</code></strong>. <code>request.fetchId</code> is the SAME opaque <code>ftch_…</code> string <code>after.fetch()</code> returned, so the two compare equal. <code>request.fetchesPending</code> counts this chain's in-flight bound fetches including this one — branch on <code>request.done &amp;&amp; request.fetchesPending === 1</code> for "last chunk of the last fetch". There is <strong>no <code>request.result</code></strong>. (Exception: <code>blob.seal</code>/<code>blob.receive</code> resume with the threaded <code>{hash, len}</code> on <code>request.ctx</code> — that *is* the ctx you threaded, not delivery metadata.)</li><li><strong>Connectionless fires</strong> (<code>onSubscription</code>, a <code>cron</code>/<code>schedule</code> target): the scheduled payload on <code>request.ctx</code>, origin-specific metadata on <code>request.activation.*</code> (<code>scheduledAtNs</code>, the schedule <code>id</code>/<code>key</code>, a kv-react fire's <code>source</code>), but <strong>no</strong> inbound HTTP <code>headers</code>/payload, and the connection verbs are inert (§2.4).</li></ul>
+<h3 id="7-1-the-request-surface-is-read-recorded">7.1 The request surface is read-recorded</h3>
+<p>Everything on <code>request</code> your handler can branch on is a replay input, so it is <strong>recorded on access</strong> (the <code>request_reads</code> tape channel — the tape stores exactly what your code read, nothing else; that IS the data-minimization story, see <code>decisions.md</code> §4.6):</p>
+<ul><li><code>request.headers</code> is a flat lowercase object of <strong>accessors</strong>, one per wire header. Header *names* are always recorded (so <code>Object.keys</code> replays faithfully); a header's *value* is recorded only when you read it. Pseudo-headers (<code>:method</code> etc.) and the IP transport headers (<code>x-forwarded-for</code>, <code>x-real-ip</code>, <code>cf-connecting-ip</code>, <code>forwarded</code>) are not present — the client IP is reachable only via the two surfaces below. Duplicate names: last value wins. Assigning to <code>request.headers.x</code> throws in module code (accessor without setter); decorate <code>request</code> itself instead (<code>request.auth = …</code> still works).</li><li><code>request.cookies</code> materializes on first access; the access counts as reading the whole <code>cookie</code> header.</li><li>The payload views (<code>request.bytes</code> / <code>.text</code> / <code>.json</code>) are accessors too, and record ONE shared body-read fact — reading any (or several) of them records once. An inbound body your handler never reads is <strong>absent from the replay record entirely</strong> (storage/durability is unaffected — only the log-side reference is elided). Chunk / fetch-result / WS activations are the exception: their payload IS the activation's Msg (§3), so it is always recorded — read or not.</li><li><code>request.ip</code> is the <strong>masked</strong> client IP — IPv4 with the last octet zeroed (<code>203.0.113.0</code>), IPv6 truncated to /48 (<code>2001:db8:85a3::</code>) — derived from <code>cf-connecting-ip</code>, else the rightmost (edge-appended, spoof-resistant) <code>x-forwarded-for</code> entry; <code>null</code> when no edge proxy reported one. Masked covers coarse geo and abuse heuristics without putting a precise IP on the tape.</li><li><code>request.unmaskedIp()</code> returns the raw client IP. It is a *method* deliberately: calling it is your explicit decision, as the data controller, to process precise IPs — and the call puts the raw IP on your replay tape, where your retention window applies.</li></ul>
+<p>On replay, reading anything the original run didn't read raises a loud <code>REPLAY DIVERGENCE</code> error rather than silently returning <code>undefined</code>.</p>
+<h2 id="8-app-manifest-reserved-seam">8. App manifest (reserved seam)</h2>
+<p>A bundle MAY ship a root <strong><code>manifest.json</code></strong> declaring the app's identity and intent:</p>
+<pre><code>{
+  "name": "link-shortener",
+  "version": "1.0.0",
+  "config":   { "schema": { "API_KEY": { "type": "string" } } },
+  "effects":  { "declared": ["kv", "after.fetch"] },
+  "metadata": { "description": "…", "homepage": "…" }
+}</code></pre>
+<p>Required: <code>name</code> + <code>version</code> (non-empty strings). Optional: <code>config</code> (install-time secrets/config schema), <code>effects</code> (declared — later auto-derivable from the replay tape), <code>metadata</code> (listing). Unknown top-level fields are accepted while the schema is still wet.</p>
+<p><strong>Why now, even though nothing consumes it.</strong> This is the deliberate seam for the self-hosters marketplace (a community-installable app = a tenant). Apps written *today* should be born-distributable; retrofitting a manifest later means re-authoring every app. So the seam is reserved pre-launch even though the consumer (install-time capability grants, a registry, runtime config injection) is post-launch.</p>
+<p><strong>Status — reserved + INERT.</strong></p>
+<ul><li><strong>Validated at deploy.</strong> <code>deployManifest</code> (files-server) structurally validates a root <code>manifest.json</code> before mutating the working tree; a malformed one rejects the deploy <code>400 InvalidAppManifest</code> (immediate author feedback). Absent is fine — the file is optional.</li><li><strong>Born-distributable for free.</strong> <code>manifest.json</code> is an ordinary static bundle file, so it ships content-addressed in the deployment and travels with the app — no separate storage.</li><li><strong>Nothing consumes it yet.</strong> No capability enforcement, no registry, and no runtime <code>_deploy/manifest</code> pointer. The <code>_deploy/manifest</code> *kv* key is reserved for whichever consumer first needs the active manifest without resolving the file blob; it deliberately is *not* written today (it would have to be threaded through three distinct release paths — the Zig bootstrap release, the <code>__admin__</code> <code>publishRelease</code> RPC, and the seed — and a one-of-three wiring would be a half-seam).</li></ul>
+<p>The validator lives in <code>rove-files</code> (<code>app_manifest.zig</code>); see the self-hosters marketplace plan for the consuming side.</p>
+<h2 id="9-reserved-for-the-platform-names-you-must-not-use">9. Reserved for the platform (names you must not use)</h2>
+<p>Pre-customer, the platform claims these namespaces so it can grow the surface later without colliding with anything a handler already relies on. Reserving a name now is free; reclaiming one after handlers depend on it is a breaking change (Hyrum's law). See <code>format-versioning-audit.md</code> §7.1/§7.3/§7.6.</p>
+<ul><li><strong>Export names.</strong> Handlers dispatch by export name (§3). The <code>on*</code> prefix is the activation-handler namespace; <code>onError</code> / <code>onPanic</code> are specifically reserved for a future uncaught-exception callback (§12 open question; today a throw → runtime 500). Don't export <code>onError</code>/<code>onPanic</code> for your own use.</li><li><strong>Effect option keys.</strong> Every effect options object (<code>after.fetch</code>, <code>webhook.send</code>, <code>http.subscribe</code>, <code>blob.*</code>, <code>email.send</code>, …) reserves keys beginning with <code>$</code> for future platform directives (e.g. a <code>$rewind</code> hint block). Unknown keys are ignored today — keep your own option keys to plain identifiers so a future platform directive can't collide with them.</li><li><strong><code>request.*</code> fields.</strong> The request object reserves the <code>request.rewind</code> namespace for future platform-provided per-activation metadata. Your own per-chain state lives on <code>request.ctx</code> (your shape, threaded via <code>next({ctx})</code>).</li><li><strong><code>kv</code> keys.</strong> Any leading-<code>_</code> key is platform-reserved (§2.5; <code>format-versioning-audit.md</code> §7.1). Customer keys use the non-<code>_</code> space.</li><li><strong>HTTP headers.</strong> <code>x-rewind-*</code> and <code>x-rove-internal-*</code> are stripped from the inbound <code>request.headers</code> and rejected from responses (<code>format-versioning-audit.md</code> §7.3). <code>x-rove-correlation-id</code> is the one platform-set header you may read.</li><li><strong>Reserved identities.</strong> The <code>__name__</code> tenant form (<code>__admin__</code>, <code>__auth__</code>, <code>__replay__</code>) and <code>__system/*</code> module paths are platform-only.</li><li><strong>Platform identifiers are opaque.</strong> Treat every platform-issued id — <code>request.actor.request_id</code>, a deployment id, a fetch/subscription id, a session id — as an opaque token. Compare it for equality and pass it back verbatim where an API expects it, but do <strong>not</strong> parse, decode, slice, or assume an ordering/structure: the encoding (length, charset, any embedded fields such as the node that minted it) is an internal detail that may change. These now carry Stripe-style type prefixes — <code>request.actor.request_id</code> is <code>req_…</code>, a deployment id is <code>dep_…</code>, <code>request.session.id</code> is <code>sess_…</code>, and <code>activation.fetch_id</code> is <code>ftch_…</code> — precisely so the format stays versionable behind the prefix. Treat everything after the prefix as opaque; a handler that depends on a bare-hex shape (or the prefix's exact contents) will break (<code>format-versioning-audit.md</code> §7.5).</li></ul>
+<h2 id="10-what-s-gone-vs-prior-streaming-revisions">10. What's gone (vs prior streaming revisions)</h2>
+<div class="note"><p>This list has teeth: <code>src/js/doc_examples.zig</code> fails <code>zig build test</code> if any retired spelling below appears in a ``<code>js example in this document or in a </code>globals/*.js<code> </code>@example` — and it compiles + executes the examples besides. Add a retirement here → add its spelling to that lint's list.</p></div>
+<p>Ergonomics arc (2026-07-04/05; the old spellings lived for one deploy cycle — the dual-name window, closed 2026-07-06):</p>
+<ul><li><code>on.*</code> → <code>after.*</code>; <code>on.timer(ms)</code> → <code>after.ms(ms)</code></li><li><code>{to}</code> / <code>{on_result}</code> / positional-only targets → the universal <code>{on: "module.method"}</code> callback key (exception: <code>schedule</code>/<code>cron</code> keep their positional target — the target IS the payload there)</li><li><code>{context}</code> → <code>{ctx}</code>; <code>request.activation.msg</code> → <code>request.ctx</code> (one-ctx, no exceptions)</li><li><code>webhook.send({url, …})</code> → <code>webhook.send(url, opts)</code></li><li><code>scheduler.after</code> → <code>scheduler.in</code> ("after" is exclusively the connection-wake namespace — the verb is the scope)</li><li>bare-hex fetch ids → <code>ftch_…</code> on all three surfaces (the <code>after.fetch()</code> return, <code>request.fetchId</code>, <code>request.activation.fetchId</code>)</li><li>snake_case handler-visible fields → camelCase (<code>bodyTruncated</code>, <code>scheduledAtNs</code>, <code>activation.fetchId</code>)</li><li>per-surface <code>request.body</code> types → uniform <code>request.bytes</code>/<code>.text</code>/ <code>.json</code>; <code>request.body</code> retired outright (2026-07-06)</li><li><code>kind=boot</code> subscriptions + <code>onBoot</code> → retired outright (unused): seed registrations from any handler activation — idempotent by key, <code>_sched/*</code> entries are durable kv that survive deploys</li><li><code>return Uint8Array</code> now ships raw bytes; <code>kv.set</code> takes primitives only; <code>stream.write</code> takes string|Uint8Array only; a provided unserializable <code>next({ctx})</code> throws (the fail-loud sweep, plan §2.1)</li></ul>
+<p>Prior streaming revisions:</p>
+<ul><li><code>request.activation.kind</code> switch → runtime dispatches by export name</li><li><code>__rove_stream({…})</code> / the <code>stream</code> <strong>return verb</strong> → <code>stream.start()</code> / <code>stream.write()</code> <strong>effects</strong> (§2.2); <code>stream</code> is now a namespace</li><li><code>__rove_next()</code> → <code>next()</code></li><li><code>stream({until})</code> → <code>after.*</code> builder calls (§2.3)</li><li><code>return { status, headers, body }</code> → body-only return; the head is ambient <code>response.*</code> (matches the engine <code>extractResponseMetadata</code>)</li><li><code>detach: true</code> → retired; connectionless outbound is <code>webhook.send</code></li><li><code>subscribe.kv</code> → deferred (<code>after.kv</code> covers the connection case)</li><li>the three-way inbound choice → "1 MB ceiling, above → 413 or <code>onChunk</code>"</li><li><code>ctx.state</code> scratchpad → forbidden; durable state in <code>kv</code>, ephemeral connection state in <code>ctx</code></li></ul>
+<h2 id="11-what-s-unchanged">11. What's unchanged</h2>
+<ul><li>The engine model: pure function per activation, arena reset between activations, no closure smuggling</li><li>Effects-accumulate / return-disposition: effects (<code>kv</code>, <code>stream.*</code>, <code>after.*</code>, connectionless) accumulate during the activation and fire post-commit; the return declares the disposition</li><li>The one rule (<code>architecture/routing-and-ingress.md</code>): a chunk reaches the wire only after the activation that produced it has committed — <code>stream.write()</code> is commit-gated</li><li>Replay: <code>foldl(handlers, kv0, activations)</code> over the recorded inputs</li><li>The substrate: blob coordinator, readset replication, content- addressed extents; the 64 KiB internal coalesce budget</li></ul>
+<h2 id="12-open-questions">12. Open questions</h2>
+<ol><li><strong><code>stream.*</code> / <code>after.*</code> as ambient namespaces vs imports.</strong> Current: <code>stream</code>/<code>on</code>/<code>kv</code>/<code>response</code> are ambient (effects/state); only <code>next</code> (the return ctor) is imported. Keep that split?</li><li><strong>Wake re-arm vs persist.</strong> Current model re-declares <code>after.*</code> each activation (self-cleaning; the SSE loop re-calls <code>after.kv</code>). Persistent registration (cancel to stop) is the alternative — re-arm chosen for simplicity; revisit if a use case wants persistence.</li><li><strong><code>onError</code> / module-level state / strict mode.</strong> Thrown exceptions → runtime 500 (Erlang posture; defer <code>onError</code>); module-top-level <code>let</code> does not persist (lint to forbid); validation strictness per-tenant.</li><li><strong><code>default</code> vs <code>onInbound</code>.</strong> Keep <code>default</code> for the familiar simple case; alias to <code>onInbound</code> internally.</li></ol>
+<h2 id="13-relation-to-other-plans">13. Relation to other plans</h2>
+<ul><li><code>effect-algebra.md</code> §6 — the scope model; §6.3 <code>bind</code>/<code>detach</code> retirement; §6.4 watch-before-write; §6.5 "grammar position = scope." The verbs here are the customer names for §2's primitives.</li><li><code>architecture/effects-and-handlers.md</code> — the collection-lifecycle state machine the surface lowers onto.</li><li><code>architecture/routing-and-ingress.md</code> — the engine substrate (the one rule, coalescing, blob coordinator), unchanged.</li><li><code>architecture/effects-and-handlers.md</code> — the <code>detach</code> mechanism, retired here (§2.6).</li><li><code>architecture/effects-and-handlers.md</code> "Durable scheduled wake" — the <code>schedule</code>/<code>cron</code> substrate (gap 2.6; decisions in <code>decisions.md</code> §3.7).</li><li><code>architecture/routing-and-ingress.md</code> — inbound streaming body (<code>onChunk</code>).</li><li><code>architecture/effects-and-handlers.md</code> — chunk capture making <code>onChunk</code> + the stream loop replayable.</li></ul>
+  <footer>© 2026 Loop46, Inc. · rewind.js · rendered from docs/handler-contract.md — the repo contract is the source</footer>
+</article>
+</main>
+</div>
+</body>
+</html>

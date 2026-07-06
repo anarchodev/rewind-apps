@@ -21,6 +21,9 @@
     <a href="/handlers">Handlers</a>
     <a href="/effects" class="active">Effects &amp; replay</a>
     <a href="/reference">Globals reference</a>
+    <div class="group">Contracts</div>
+    <a href="/handler-contract">Handler contract</a>
+    <a href="/effect-algebra">Effect algebra</a>
     <div class="group">More</div>
     <a href="https://rewindjs.com">rewindjs.com</a>
   </nav>
@@ -87,6 +90,11 @@ webhook.<span class="f">send</span>(url, { body });   <span class="c">// retried
     <tr><td>Output</td><td><code>stream.write</code></td><td>— (write to <code>kv</code>)</td></tr>
     <tr><td>Trigger</td><td><code>after.ms</code> / <code>after.fetch</code> / <code>after.kv</code></td><td><code>schedule</code> / <code>cron</code> / <code>webhook.send</code></td></tr>
   </table>
+
+  <div class="note">The full model — the four primitives, the trigger-scope
+     axes, and the durability rule every named effect composes from — is the
+     <a href="/effect-algebra">effect algebra</a>, rendered straight from the
+     engine repo.</div>
 
   <h2>Why this is the product</h2>
   <p>Every other property — replay a production request, step a bug in a
