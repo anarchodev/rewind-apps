@@ -617,7 +617,7 @@ function handleLogQuery(path, qs) {
     if (sub !== "list" && sub !== "count" && !sub.startsWith("show/")) {
         return jsonError(404, "no such log route");
     }
-    on.fetch(LOG_DOOR + tenant + "/" + sub + (qs ? "?" + qs : ""));
+    after.fetch(LOG_DOOR + tenant + "/" + sub + (qs ? "?" + qs : ""));
     return next();
 }
 
@@ -625,7 +625,7 @@ function handleLogQuery(path, qs) {
 //
 // Operators drive CP control ops — provision / move / host / plan —
 // through the dashboard, NOT by holding the move-secret on a shell. The
-// admin issues a buffered `on.fetch` at the privileged `rewind-cp.internal`
+// admin issues a buffered `after.fetch` at the privileged `rewind-cp.internal`
 // door; the worker (only for `__admin__`) attaches the move-secret and
 // rewrites to the CP. So no CP secret enters the browser/operator shell.
 // Operator-only (is_root). The result rides `onFetchResult` (shared with the
@@ -640,7 +640,7 @@ function handleCpOp(cpPath, body) {
     const auth = request.auth || {};
     if (!auth.sub) return jsonError(401, "unauthenticated");
     if (!auth.is_root) return jsonError(403, "operator only");
-    on.fetch(CP_DOOR + cpPath, {
+    after.fetch(CP_DOOR + cpPath, {
         method: "POST",
         body: body,
         headers: { "content-type": "application/json" },
@@ -656,11 +656,11 @@ function handleCpRead(cpSub, qs) {
     const auth = request.auth || {};
     if (!auth.sub) return jsonError(401, "unauthenticated");
     if (!auth.is_root) return jsonError(403, "operator only");
-    on.fetch(CP_READ + cpSub + (qs ? "?" + qs : ""));
+    after.fetch(CP_READ + cpSub + (qs ? "?" + qs : ""));
     return next();
 }
 
-// Buffered on.fetch result for the log + CP chokepoints — relay the upstream
+// Buffered after.fetch result for the log + CP chokepoints — relay the upstream
 // status + body back to the dashboard. A door/upstream failure (e.g. an expired
 // cap, or the CP unreachable) surfaces as 502.
 export function onFetchResult() {
@@ -738,7 +738,7 @@ function handleWsFile(body) {
     if (b.kind !== "handler")
         return jsonError(400, "kind must be 'handler' (statics stream via PUT /v1/upload)");
     platform.compile([{ path: b.path, source: b.source || "" }], {
-        scope: b.tenant, name: "onFileStaged",
+        scope: b.tenant, on: "onFileStaged",
         ctx: { target: b.tenant, path: b.path, content_type: b.content_type || "" },
     });
     return next();
@@ -770,7 +770,7 @@ function handleWsCut(body) {
                  content_type: e.content_type || "",
                  source_hex: e.source_hex, bytecode_hex: e.bytecode_hex || "" };
     });
-    platform.scope(b.tenant).deploy.stampManifest(entries, { name: "onCut" });
+    platform.scope(b.tenant).deploy.stampManifest(entries, { on: "onCut" });
     return next();
 }
 
@@ -811,7 +811,7 @@ function handleReadSources(tenant, depArg) {
     }
     if (!/^[0-9a-fA-F]{1,16}$/.test(dep)) return jsonError(400, "bad dep_id");
     platform.scope(tenant).deploy.readManifest(dep,
-        { name: "onManifest", ctx: { tenant: tenant, dep: dep } });
+        { on: "onManifest", ctx: { tenant: tenant, dep: dep } });
     return next();
 }
 
@@ -835,7 +835,7 @@ export function onManifest() {
     const handlers = entries.filter((e) => e.kind === "handler");
     if (handlers.length === 0) return finishSources(ctx.dep, entries, []);
     platform.scope(ctx.tenant).blob.get(handlers[0].hash, {
-        name: "onModuleSource",
+        on: "onModuleSource",
         ctx: { tenant: ctx.tenant, dep: ctx.dep, entries: entries, idx: 0, acc: [] },
     });
     return next();
@@ -854,7 +854,7 @@ export function onModuleSource() {
     const nextIdx = ctx.idx + 1;
     if (nextIdx < handlers.length) {
         platform.scope(ctx.tenant).blob.get(handlers[nextIdx].hash, {
-            name: "onModuleSource",
+            on: "onModuleSource",
             ctx: { tenant: ctx.tenant, dep: ctx.dep, entries: ctx.entries, idx: nextIdx, acc: acc },
         });
         return next();

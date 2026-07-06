@@ -99,7 +99,7 @@ function think(frame, ctx) {
   // is unused on this turn.
   if (ctx.replay_tool_id) {
     browser.status("reading session replay…");
-    const ok = browser.getReplay(request, { to: "onReplay" });
+    const ok = browser.getReplay(request, { on: "onReplay" });
     if (ok) {
       return next({ sid, replay_tool_id: ctx.replay_tool_id, refs: ctx.refs || {} });
     }
@@ -214,7 +214,7 @@ function callLLM(sid, userTurn, parkCtx) {
 
   // Connection-scoped: binds to THIS held WS chain; the result wakes
   // onLLM while we still hold the socket. The key is the CUSTOMER's.
-  on.fetch(
+  after.fetch(
     endpoint,
     {
       method: "POST",
@@ -234,7 +234,7 @@ function callLLM(sid, userTurn, parkCtx) {
       }),
       timeout_ms: 30_000,
     },
-    { to: "onLLM" },
+    { on: "onLLM" },
   );
   return next(parkCtx);
 }

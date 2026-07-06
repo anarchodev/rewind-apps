@@ -23,12 +23,12 @@ const PRE_AUTH_PATHS = [
     // and does its OWN auth (root token OR session-ownership) in onHeaders —
     // the buffered RP guard here must not run on its headers-first dispatch.
     "/v1/upload",
-    // The async-completion on_result modules. callback_dispatch runs
+    // The async-completion {on} callback modules. callback_dispatch runs
     // dispatcher.run → _middlewares BEFORE the module, and a
     // synthesized callback request has NO request.session — so
     // guard() would 401 and the login chain would never complete.
     // Safe to pre-auth: these are bare `_rp/*.mjs` files, NOT
-    // HTTP-routable (only invokable as on_result modules); the real
+    // HTTP-routable (only invokable as {on} callback modules); the real
     // gate is the cryptographic jwt.verify inside oidc.rp._finish.
     "/_rp/complete", "/_rp/jwks",
 ];
