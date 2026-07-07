@@ -35,6 +35,12 @@ export class CursorEngine {
         // exact draw sequence. Replay tape no longer carries
         // per-draw entries — this scalar IS the entire input.
         this._setSeed  = Module.cwrap("arena_set_random_seed", null,    ["number","number"]);
+        // Allocator regime for the NEXT run (arenajs >= 0.3.2): 0 = GC
+        // (churny-handler captures — the engine word's high bit), 1 =
+        // bump. Binds at arena_run_module's entry reset. Set EVERY
+        // replay: the choice persists on the process-global arena, so
+        // a GC capture must not leak GC mode into the next replay.
+        this._setReqMode = Module.cwrap("arena_set_request_mode", null, ["number"]);
         // §9 fold-in: pin `Date.now()` and `new Date()` (no args)
         // to a single ms scalar derived from the request's
         // `timestamp_ns`. Every clock read inside one replay
@@ -89,6 +95,10 @@ export class CursorEngine {
         const lo = Number(seed & 0xFFFFFFFFn);
         const hi = Number((seed >> 32n) & 0xFFFFFFFFn);
         this._setSeed(lo, hi);
+        // The regime the live request completed under (engine word high
+        // bit) — a GC-completed churny request would OOM under bump.
+        const engineWord = Number(replay.js_engine_version ?? 0);
+        this._setReqMode((engineWord & 0x8000) !== 0 ? 0 : 1);
         // §9 fold-in: pin `Date.now()` to ms-since-epoch derived
         // from the captured `timestamp_ns`. Split across two u32
         // args (WASM ABI). `null` (pre-fold-in captures) pins to 0

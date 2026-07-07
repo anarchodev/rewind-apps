@@ -1280,23 +1280,14 @@ async function main() {
             `is not shipped yet (format-versioning-audit.md §4 Phase 3)`));
         return;
     }
-    if (captureArenaGc) {
-        // The live request ran under the GC allocator (churny-handler
-        // fallback) — replaying it under bump would OOM where the live
-        // run succeeded. This wasm artifact predates the reactor's
-        // arena_set_request_mode export; rebuild it from arenajs >= 0.3.2
-        // and set the mode here (native `rewind replay` already does).
-        renderError(new Error(
-            "this capture ran under the GC arena regime; this replay engine " +
-            "build predates GC-mode support — rebuild qjs_arena_wasm from " +
-            "arenajs >= 0.3.2"));
-        return;
-    }
+    // captureArenaGc (the engine word's high bit) is honored per run by
+    // CursorEngine._installReplay via arena_set_request_mode — the
+    // engine artifact ships the export (arenajs >= 0.3.2).
 
     let mat;
     try {
         mat = await state.engine.materialise(
-            { entry: { name: entryPath, src: entrySrcWithEpilogue }, tapes, module_sources: moduleSources, seed, timestamp_ns },
+            { entry: { name: entryPath, src: entrySrcWithEpilogue }, tapes, module_sources: moduleSources, seed, timestamp_ns, js_engine_version: engineWord },
             { targetSnapshots },
         );
     } catch (err) {
