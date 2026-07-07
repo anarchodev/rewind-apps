@@ -187,14 +187,14 @@ const page = segments.logs();
 // page.logs → ["audit-2026", "inbox"], page.cursor → null
 if (page.logs.indexOf("inbox") &lt; 0) throw new Error("missing log");</code></pre>
 <h4 id="segments-get"><code>get(log, seq, opts?)</code></h4>
-<p>Read one record. Hot records return synchronously; sealed records need a blob fetch, so the result resumes THIS held connection at <code>opts.to</code> — use {@link segments.slice} there to extract the record from the segment.</p>
+<p>Read one record. Hot records return synchronously; sealed records need a blob fetch, so the result resumes THIS held connection at the <code>{on}</code> export — call {@link segments.record} there to unpack your record from the fetched segment.</p>
 <table><tr><th>Param</th><th>Type</th><th></th></tr>
 <tr><td><code>log</code></td><td><code>string</code></td><td><p>Log id.</p></td></tr>
 <tr><td><code>seq</code></td><td><code>number</code></td><td><p>Sequence number.</p></td></tr>
 <tr><td><code>opts <em>(optional)</em></code></td><td><code>object</code></td><td></td></tr>
 <tr><td><code>opts.on <em>(optional)</em></code></td><td><code>string</code></td><td><p>Export resumed with the segment for a sealed read. Required when the record may be sealed.</p></td></tr>
 </table>
-<p><b>Returns</b> <code>string|null|undefined</code> — The value (hot), <code>null</code> (no such record), or <code>undefined</code> (sealed — the fetch is in flight, return <code>next()</code> and finish in <code>opts.to</code>).</p>
+<p><b>Returns</b> <code>string|null|undefined</code> — The value (hot), <code>null</code> (no such record), or <code>undefined</code> (sealed — the fetch is in flight, return <code>next()</code> and finish in the <code>{on}</code> export).</p>
 <pre><code>export default function () {
 const v = segments.get("room-7", 42, { on: "onSeg" });
 if (typeof v === "string") return v;          // hot
@@ -203,13 +203,10 @@ return next();                                 // sealed
 }
 export function onSeg() {
 if (!request.done) return next();
-return segments.slice(request);
+return segments.record();
 }</code></pre>
-<h4 id="segments-slice"><code>slice(req)</code></h4>
-<p>Extract the requested record from a sealed-segment fetch resume. Call from the <code>to</code> export <code>segments.get</code> routed to, after <code>request.done</code>.</p>
-<table><tr><th>Param</th><th>Type</th><th></th></tr>
-<tr><td><code>req</code></td><td><code>object</code></td><td><p>The <code>request</code> global of the resume.</p></td></tr>
-</table>
+<h4 id="segments-record"><code>record()</code></h4>
+<p>Unpack the requested record from a sealed-segment fetch resume — the completion half of {@link segments.get}. Call from the <code>{on}</code> export the get routed to, after <code>request.done</code>; reads the ambient <code>request</code> itself (no arguments).</p>
 <p><b>Returns</b> <code>string</code> — The record value.</p>
 <h4 id="segments-seal"><code>seal(log, opts?)</code></h4>
 <p>Seal the oldest hot records into one content-addressed segment. Call from a cron target per log (the cadence IS your kv-cap ↔ object-storage trade-off knob). The call only serializes + fires the durable PUT; the swap — index row written, hot rows deleted, one atomic writeset — runs in <code>__system/segments_onsealed</code> strictly after storage confirmed the bytes, so a crash anywhere leaves the log readable and the next seal retries idempotently.</p>
