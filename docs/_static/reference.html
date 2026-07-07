@@ -36,8 +36,8 @@
 
 <table>
 <tr><td>Model &amp; state</td><td><a href="#kv"><code>kv</code></a> · <a href="#blob"><code>blob</code></a> · <a href="#segments"><code>segments</code></a></td></tr>
-<tr><td>Connection &amp; wakes</td><td><a href="#after"><code>after</code></a> · <a href="#next"><code>next</code></a> · <a href="#stream"><code>stream</code></a></td></tr>
-<tr><td>Durable effects</td><td><a href="#webhook"><code>webhook</code></a> · <a href="#email"><code>email</code></a> · <a href="#retry"><code>retry</code></a> · <a href="#schedule"><code>schedule</code></a> · <a href="#cron-helpers"><code>cron helpers</code></a></td></tr>
+<tr><td>Connection &amp; wakes</td><td><a href="#after"><code>after</code></a> · <a href="#next"><code>next</code></a> · <a href="#stream"><code>stream</code></a> · <a href="#http"><code>http</code></a></td></tr>
+<tr><td>Durable effects</td><td><a href="#webhook"><code>webhook</code></a> · <a href="#email"><code>email</code></a> · <a href="#retry"><code>retry</code></a> · <a href="#schedule"><code>schedule</code></a> · <a href="#cron"><code>cron</code></a></td></tr>
 <tr><td>Browser agent</td><td><a href="#browser"><code>browser</code></a></td></tr>
 <tr><td>Utilities</td><td><a href="#crypto"><code>crypto</code></a> · <a href="#jwt"><code>jwt</code></a> · <a href="#base64"><code>base64</code></a> · <a href="#base64url"><code>base64url</code></a> · <a href="#hex"><code>hex</code></a> · <a href="#textencoder-textdecoder"><code>TextEncoder / TextDecoder</code></a> · <a href="#urlsearchparams"><code>URLSearchParams</code></a> · <a href="#console"><code>console</code></a></td></tr>
 <tr><td>Identity &amp; federation</td><td><a href="#users"><code>users</code></a> · <a href="#sessions"><code>sessions</code></a> · <a href="#oauth"><code>oauth</code></a> · <a href="#oidc"><code>oidc</code></a> · <a href="#activitypub"><code>activitypub</code></a></td></tr>
@@ -54,7 +54,7 @@
 </table>
 <p><b>Returns</b> <code>string|null</code> — The stored string, or <code>null</code> if the key does not exist.</p>
 <pre><code>const raw = kv.get(`user/${id}`);
-if (raw === null) return new Response("not found", { status: 404 });
+if (raw === null) { response.status = 404; return "not found"; }
 const user = JSON.parse(raw);</code></pre>
 <h4 id="kv-set"><code>kv.set(key, value)</code></h4>
 <p>Write <code>value</code> under <code>key</code>, overwriting any existing value. The write is staged in the request transaction and commits when the handler returns successfully.</p><p>Throws if <code>key</code> falls in a platform-reserved prefix (<code>err.code === "reserved_key"</code>) or if a registered trigger rejects the write (<code>err.code === "trigger_rejected"</code>).</p>
@@ -94,7 +94,7 @@ cursor = page[page.length - 1].key;
 <table><tr><th>Param</th><th>Type</th><th></th></tr>
 <tr><td><code>bytes</code></td><td><code>string|Uint8Array</code></td><td><p>Object content. Strings store their UTF-8 bytes; use Uint8Array for binary. Bounded by the activation arena — multi-MB media wants the streaming verbs (P2/P3, not yet shipped).</p></td></tr>
 <tr><td><code>opts <em>(optional)</em></code></td><td><code>object</code></td><td></td></tr>
-<tr><td><code>opts.content_type <em>(optional)</em></code></td><td><code>string</code></td><td><p>Stored Content-Type, returned on direct GETs of the object.</p></td></tr>
+<tr><td><code>opts.contentType <em>(optional)</em></code></td><td><code>string</code></td><td><p>Stored Content-Type, returned on direct GETs of the object.</p></td></tr>
 <tr><td><code>opts.on <em>(optional)</em></code></td><td><code>string</code></td><td><p>Module path receiving the terminal result on the unified flattened surface (handler-shape §7): <code>request.ok</code> / <code>request.status</code> top-level, the echoed <code>context</code> (the threaded value) IS <code>request.ctx</code>, and the stored <code>hash</code> is on <code>request.activation.hash</code>.</p></td></tr>
 <tr><td><code>opts.ctx <em>(optional)</em></code></td><td><code>*</code></td><td><p>Opaque payload echoed to the <code>on</code> module as <code>request.ctx</code>.</p></td></tr>
 </table>
@@ -108,8 +108,8 @@ kv.set(`timeline/${room}/${seq}`, JSON.stringify({ hash }));</code></pre>
 <tr><td><code>opts <em>(optional)</em></code></td><td><code>object</code></td><td></td></tr>
 <tr><td><code>opts.on <em>(optional)</em></code></td><td><code>string</code></td><td><p>Export name to resume in.</p></td></tr>
 <tr><td><code>opts.ctx <em>(optional)</em></code></td><td><code>*</code></td><td><p>Delivered as <code>request.ctx</code> on the resume (JSON round-trip).</p></td></tr>
-<tr><td><code>opts.stream <em>(optional)</em></code></td><td><code>boolean</code></td><td><p>Per-chunk delivery (default false: one whole-body result, up to <code>max_bytes</code>).</p></td></tr>
-<tr><td><code>opts.max_bytes <em>(optional)</em></code></td><td><code>number</code></td><td><p>Whole-body transport cap (default 8 MB). The per-request arena (100 MiB allocation volume) comfortably covers decoding bodies this size; for serving bytes your handler doesn't execute on, prefer the <code>blob.url</code> redirect — the bytes then never touch the worker.</p></td></tr>
+<tr><td><code>opts.stream <em>(optional)</em></code></td><td><code>boolean</code></td><td><p>Per-chunk delivery (default false: one whole-body result, up to <code>maxBytes</code>).</p></td></tr>
+<tr><td><code>opts.maxBytes <em>(optional)</em></code></td><td><code>number</code></td><td><p>Whole-body transport cap (default 8 MB). The per-request arena (100 MiB allocation volume) comfortably covers decoding bodies this size; for serving bytes your handler doesn't execute on, prefer the <code>blob.url</code> redirect — the bytes then never touch the worker.</p></td></tr>
 </table>
 <p><b>Returns</b> <code>string</code> — The fetch id.</p>
 <pre><code>export default function () {
@@ -124,7 +124,7 @@ export function onBlob() { return request.bytes; } // flattened payload accessor
 <tr><td><code>hash</code></td><td><code>string</code></td><td><p>The object's sha256 hash.</p></td></tr>
 <tr><td><code>opts <em>(optional)</em></code></td><td><code>object</code></td><td></td></tr>
 <tr><td><code>opts.ttl <em>(optional)</em></code></td><td><code>number</code></td><td><p>Validity in seconds (default 300, max 604800 = 7 days).</p></td></tr>
-<tr><td><code>opts.content_type <em>(optional)</em></code></td><td><code>string</code></td><td><p>Signed response Content-Type override (S3 returns exactly this).</p></td></tr>
+<tr><td><code>opts.contentType <em>(optional)</em></code></td><td><code>string</code></td><td><p>Signed response Content-Type override (S3 returns exactly this).</p></td></tr>
 </table>
 <p><b>Returns</b> <code>string</code> — The presigned URL.</p>
 <h4 id="blob-write"><code>blob.write(bytes)</code></h4>
@@ -135,7 +135,7 @@ export function onBlob() { return request.bytes; } // flattened payload accessor
 <p><b>Returns</b> <code>number</code> — Total session bytes after the append.</p>
 <pre><code>export function onMirrorChunk() {
 if (!request.done) { blob.write(request.bytes); return next(); }
-blob.seal({ on: "onStored", content_type: "image/png" });
+blob.seal({ on: "onStored", contentType: "image/png" });
 return next();
 }</code></pre>
 <h4 id="blob-seal"><code>blob.seal(opts)</code></h4>
@@ -143,7 +143,7 @@ return next();
 <table><tr><th>Param</th><th>Type</th><th></th></tr>
 <tr><td><code>opts</code></td><td><code>object</code></td><td></td></tr>
 <tr><td><code>opts.on</code></td><td><code>string</code></td><td><p>Export resumed with the PUT result (required).</p></td></tr>
-<tr><td><code>opts.content_type <em>(optional)</em></code></td><td><code>string</code></td><td><p>Stored Content-Type.</p></td></tr>
+<tr><td><code>opts.contentType <em>(optional)</em></code></td><td><code>string</code></td><td><p>Stored Content-Type.</p></td></tr>
 </table>
 <p><b>Returns</b> <code>string</code> — The object's sha256 hash (64 hex chars).</p>
 <pre><code>export function onHeaders() {
@@ -223,9 +223,9 @@ for (const s of JSON.parse(kv.get("rooms") ?? "[]"))
 segments.seal(`room-${s}`);
 }</code></pre>
 <h2>Connection &amp; wakes</h2>
-<p>The held socket. <code>stream</code> pushes response bytes out over time; <code>after.*</code> arms one-shot wakes; <code>next()</code> keeps the connection held between activations. All ephemeral — they die with the caller.</p>
+<p>The held socket. <code>stream</code> pushes response bytes out over time; <code>after.*</code> arms one-shot wakes; <code>next()</code> keeps the connection held between activations; <code>http.subscribe</code> holds a long-lived OUTBOUND stream (firehoses, SSE consumers). All ephemeral — they die with the caller.</p>
 <h3 id="after"><code>after</code></h3>
-<p>Connection wake triggers — re-invoke a held handler when something happens, while it still holds the socket. Register them in the body before returning <code>next()</code> (or while streaming). The runtime arms every <code>after.*</code> wake before firing any connectionless effect of the same activation, so a wake is never missed even when a callback writes the key it watches.</p>
+<p>Connection wake triggers — re-invoke a held handler when something happens, while it still holds the socket. Register them in the body before returning <code>next()</code> (or while streaming). The runtime arms every <code>after.*</code> wake before firing any connectionless effect of the same activation, so a wake is never missed even when a callback writes the key it watches.</p><p>Wakes are one-shot and cannot be cancelled — they're ephemeral and node-local, so an unwanted wake is simply ignored (or the handler re-arms a different set). The exception is a fetch: cancel an in-flight <code>after.fetch</code> by its returned id.</p>
 <pre><code>// SSE-style: stream rows, then wait for more under a prefix.
 stream.start();
 after.kv(`notif/${user}/`, { on: "onNotify" });
@@ -249,7 +249,7 @@ return next({ user });</code></pre>
 <p><b>Returns</b> <code>void</code></p>
 <pre><code>after.kv(`rooms/${roomId}/`);             // default onWake
 after.kv(`jobs/${id}/`, { on: "onJob" }); // explicit target</code></pre>
-<h4 id="after-fetch"><code>after.fetch(url, opts?, dst?)</code></h4>
+<h4 id="after-fetch"><code>after.fetch(url, opts?)</code></h4>
 <p>Perform an outbound HTTP request and wake the held connection on its result. Connection-scoped: the result resumes THIS chain's <code>{on}</code> export (defaults: <code>onFetchResult</code> for a non-streamed whole body, <code>onFetchChunk</code>/<code>onFetchDone</code> for a streamed one) while it still holds the socket; if the activation doesn't hold the socket the fetch is inert (its durable twin is <code>webhook.send</code>). With <code>opts.stream</code> each upstream writeback wakes the handler as it arrives.</p>
 <table><tr><th>Param</th><th>Type</th><th></th></tr>
 <tr><td><code>url</code></td><td><code>string</code></td><td><p>Upstream URL.</p></td></tr>
@@ -258,14 +258,24 @@ after.kv(`jobs/${id}/`, { on: "onJob" }); // explicit target</code></pre>
 <tr><td><code>opts.headers <em>(optional)</em></code></td><td><code>Object&lt;string,string&gt;</code></td><td><p>Request headers.</p></td></tr>
 <tr><td><code>opts.body <em>(optional)</em></code></td><td><code>string|Uint8Array</code></td><td><p>Request body.</p></td></tr>
 <tr><td><code>opts.stream <em>(optional)</em></code></td><td><code>boolean</code></td><td><p>false → one result event; true → one event per upstream chunk as it arrives.</p></td></tr>
-<tr><td><code>opts.timeout_ms <em>(optional)</em></code></td><td><code>number</code></td><td><p>Per-request timeout.</p></td></tr>
-<tr><td><code>dst <em>(optional)</em></code></td><td><code>object</code></td><td></td></tr>
-<tr><td><code>dst.on <em>(optional)</em></code></td><td><code>string</code></td><td><p>Export the result wakes; overrides the per-event-shape defaults for every event of this fetch.</p></td></tr>
+<tr><td><code>opts.timeoutMs <em>(optional)</em></code></td><td><code>number</code></td><td><p>Per-request timeout.</p></td></tr>
+<tr><td><code>opts.maxChunkBytes <em>(optional)</em></code></td><td><code>number</code></td><td><p>Per-chunk cap (streamed fetches).</p></td></tr>
+<tr><td><code>opts.maxTotalBytes <em>(optional)</em></code></td><td><code>number</code></td><td><p>Cumulative response cap; exceeding sets <code>bodyTruncated</code>.</p></td></tr>
+<tr><td><code>opts.ctx <em>(optional)</em></code></td><td><code>*</code></td><td><p>Threaded to each wake as <code>request.ctx</code>.</p></td></tr>
+<tr><td><code>opts.on <em>(optional)</em></code></td><td><code>string</code></td><td><p>Export the result wakes; overrides the per-event-shape defaults for every event of this fetch.</p></td></tr>
 </table>
 <p><b>Returns</b> <code>string</code> — The fetch id (<code>ftch_…</code>, opaque — compare to <code>request.fetchId</code>).</p>
-<pre><code>after.fetch('https://api.example.com/stream', { stream: true },
-{ on: 'onUpstream' });
+<pre><code>after.fetch('https://api.example.com/stream',
+{ stream: true, on: 'onUpstream' });
 return next();</code></pre>
+<h4 id="after-cancel"><code>after.cancel(id)</code></h4>
+<p>Cancel an in-flight <code>after.fetch</code> by the id it returned (also on <code>request.fetchId</code> in its wake events). No-op if it already completed. Cooperative: a chunk already in flight at the engine may still land after the cancel returns — track "we moved on" in your chain ctx.</p>
+<table><tr><th>Param</th><th>Type</th><th></th></tr>
+<tr><td><code>id</code></td><td><code>string</code></td><td><p>The <code>ftch_…</code> id.</p></td></tr>
+</table>
+<p><b>Returns</b> <code>void</code></p>
+<pre><code>const id = after.fetch("https://api.example.test/slow", { on: "onSlow" });
+after.cancel(id); // changed our mind before it landed</code></pre>
 <h3 id="next"><code>next</code></h3>
 <p>The held-connection disposition.</p>
 <h4 id="next-next"><code>next(ctx?)</code></h4>
@@ -295,24 +305,55 @@ return next({ cursor: rows.at(-1)?.key ?? request.ctx?.cursor });</code></pre>
 <tr><td><code>chunk</code></td><td><code>string|Uint8Array</code></td><td><p>The bytes to emit.</p></td></tr>
 </table>
 <p><b>Returns</b> <code>void</code></p>
+<h3 id="http"><code>http</code></h3>
+<p>Long-lived held outbound subscriptions. The one-shot outbound primitives are {@link after.fetch} (connection-scoped; cancel via {@link after.cancel}) and {@link webhook.send} (durable, connectionless); <code>http.subscribe</code> holds an upstream that pushes to YOU.</p>
+<h4 id="http-subscribe"><code>http.subscribe(opts)</code></h4>
+<p>Open a held outbound subscription — <code>after.fetch</code>'s held symmetric twin for long-lived upstreams (atproto firehose, Pub/Sub long-poll, SSE consumers, any third-party push where the provider holds the connection). Closes <code>docs/primitive-gaps.md</code> §2.5.</p><p>Same options as <code>after.fetch</code> minus <code>timeoutMs</code> (held subscriptions don't time out — they end on cancel or upstream close) and <code>stream</code> (always true — held transfers stream by definition). The <code>on_chunk</code> handler fires per upstream writeback as a <code>fetch_chunk</code> activation; the terminal event has <code>final: true, ok: false</code> to signal "subscription ended" (whether by clean upstream close or transport error). Your handler interprets that as "reconnect if desired."</p><p>Subject to a per-tenant cap on simultaneous held subscriptions. Exceeding the cap fires one <code>on_chunk(final: true, ok: false)</code> event so your handler still runs once and can surface the condition.</p>
+<table><tr><th>Param</th><th>Type</th><th></th></tr>
+<tr><td><code>opts</code></td><td><code>object</code></td><td></td></tr>
+<tr><td><code>opts.url</code></td><td><code>string</code></td><td><p>Upstream URL.</p></td></tr>
+<tr><td><code>opts.method <em>(optional)</em></code></td><td><code>string</code></td><td><p>HTTP method.</p></td></tr>
+<tr><td><code>opts.headers <em>(optional)</em></code></td><td><code>Object&lt;string,string&gt;</code></td><td><p>Request headers.</p></td></tr>
+<tr><td><code>opts.body <em>(optional)</em></code></td><td><code>string</code></td><td><p>Request body.</p></td></tr>
+<tr><td><code>opts.on</code></td><td><code>string</code></td><td><p>Module path each upstream writeback wakes (REQUIRED — the universal callback key). Same activation shape as a streamed <code>after.fetch</code>.</p></td></tr>
+<tr><td><code>opts.maxChunkBytes <em>(optional)</em></code></td><td><code>number</code></td><td><p>Per-chunk cap.</p></td></tr>
+<tr><td><code>opts.maxTotalBytes <em>(optional)</em></code></td><td><code>number</code></td><td><p>Cumulative response cap; exceeding sets <code>bodyTruncated</code> on the terminal event.</p></td></tr>
+<tr><td><code>opts.ctx <em>(optional)</em></code></td><td><code>*</code></td><td><p>Threaded forward to each activation as <code>request.ctx</code>.</p></td></tr>
+</table>
+<p><b>Returns</b> <code>string</code> — The subscription id. Pass to {@link http.cancelSubscription}.</p>
+<pre><code>const id = http.subscribe({
+url: "https://bsky.network/xrpc/com.atproto.sync.subscribeRepos",
+on: "ingest_firehose",
+ctx: { cursor: kv.get("firehose/cursor") },
+});
+kv.set("firehose/subscription_id", id);</code></pre>
+<h4 id="http-cancelsubscription"><code>http.cancelSubscription(id)</code></h4>
+<p>Cancel a held subscription. No-op if the subscription already ended or was never issued. Cooperative: a chunk already in flight may still land in <code>on_chunk</code> after the cancel returns.</p>
+<table><tr><th>Param</th><th>Type</th><th></th></tr>
+<tr><td><code>id</code></td><td><code>string</code></td><td><p>The id <code>http.subscribe</code> returned.</p></td></tr>
+</table>
+<p><b>Returns</b> <code>void</code></p>
 <h2>Durable effects</h2>
 <p>Connectionless work that survives anything: outbound delivery (<code>webhook</code>, <code>email</code>, <code>retry</code>) and future activations (<code>schedule</code>, <code>cron</code>).</p>
 <h3 id="webhook"><code>webhook</code></h3>
-<p>Durable outbound HTTP — at-least-once delivery, replay-deterministic. Customer code that hardcoded the previous <code>http.send</code> surface should migrate to <code>webhook.send</code>; the customer-visible API is the same call shape (<code>url</code>/<code>method</code>/<code>body</code>/<code>headers</code>/<code>on_result</code>/<code>context</code> plus the new <code>handle</code> and <code>fire_at_ns</code>).</p>
+<p>Durable outbound HTTP — at-least-once delivery, replay-deterministic. The connectionless counterpart to <code>after.fetch</code>: the send fires after the handler commits and is owned by the platform until a terminal result, surviving crashes and leader changes.</p>
 <h4 id="webhook-send"><code>webhook.send(url, opts?)</code></h4>
-<p>Send a webhook. Writes a durable <code>_send/owed/{id}</code> marker through raft, then fires the request via {@link http.fetch}. On failure the platform retries with exponential backoff (1s, 2s, 4s, …, capped at 60s, max 5 attempts) — controlled by the baked <code>__system/webhook_onresult</code> shim, not customer code. Deferred fires (scheduled sends, retries, crash recovery) ride the durable {@link schedule} and survive leader changes.</p><p>The handler's commit gates the marker: if the handler throws or raft faults, no marker is written and no request fires. After commit the platform owns delivery; the customer's <code>on_result</code> module sees one terminal result event (success or give-up after the retry budget).</p>
+<p>Send a webhook. Writes a durable <code>_send/owed/{id}</code> marker through raft, then fires the request post-commit. On failure the platform retries with exponential backoff (1s, 2s, 4s, …, capped at 60s, max 5 attempts) — controlled by the baked <code>__system/webhook_onresult</code> shim, not customer code. Deferred fires (scheduled sends, retries, crash recovery) ride the durable {@link schedule} and survive leader changes.</p><p>The handler's commit gates the marker: if the handler throws or raft faults, no marker is written and no request fires. After commit the platform owns delivery; the customer's <code>on_result</code> module sees one terminal result event (success or give-up after the retry budget).</p>
 <table><tr><th>Param</th><th>Type</th><th></th></tr>
 <tr><td><code>url</code></td><td><code>string</code></td><td><p>Target URL.</p></td></tr>
 <tr><td><code>opts <em>(optional)</em></code></td><td><code>object</code></td><td></td></tr>
 <tr><td><code>opts.method <em>(optional)</em></code></td><td><code>string</code></td><td><p>HTTP method.</p></td></tr>
 <tr><td><code>opts.body <em>(optional)</em></code></td><td><code>string</code></td><td><p>Request body (string only — the durable marker is JSON).</p></td></tr>
 <tr><td><code>opts.headers <em>(optional)</em></code></td><td><code>Object&lt;string,string&gt;</code></td><td><p>Extra headers. <code>X-Rove-Schedule-Id</code> and <code>X-Rove-Schedule-Version</code> are added by the platform on fire — don't set them yourself.</p></td></tr>
-<tr><td><code>opts.handle <em>(optional)</em></code></td><td><code>string</code></td><td><p>Customer-chosen idempotency handle. Same handle → same id → same <code>_send/owed/{id}</code> row (last write wins). Omit for a fresh random id.</p></td></tr>
-<tr><td><code>opts.fire_at_ns <em>(optional)</em></code></td><td><code>bigint|number</code></td><td><p>Epoch nanoseconds. <code>&gt; now</code> defers the fire to a durable scheduled wake (the marker is written but no <code>http.fetch</code> happens until the wake fires). Omit or <code>&lt;= now</code> for fire-as-soon-as-handler-commits.</p></td></tr>
+<tr><td><code>opts.key <em>(optional)</em></code></td><td><code>string</code></td><td><p>Idempotency key — the same word it is on <code>schedule</code>: same key → same id → same <code>_send/owed/{id}</code> row (last write wins). Omit for a fresh random id.</p></td></tr>
+<tr><td><code>opts.at <em>(optional)</em></code></td><td><code>bigint|number|Date|string</code></td><td><p>Absolute fire time (bigint ns, number ms-since-epoch, Date, or ISO-8601 — the <code>schedule({at})</code> coercions). A future time defers the fire to a durable scheduled wake; omitted/past = fire on commit.</p></td></tr>
+<tr><td><code>opts.in <em>(optional)</em></code></td><td><code>number|string</code></td><td><p>Delay from now (ms, or a duration string <code>"30s"</code>/<code>"5m"</code> — the <code>schedule({in})</code> shape).</p></td></tr>
+<tr><td><code>opts.maxAttempts <em>(optional)</em></code></td><td><code>number</code></td><td><p>Retry budget (1 first fire + up to 4 backoff retries).</p></td></tr>
+<tr><td><code>opts.timeoutMs <em>(optional)</em></code></td><td><code>number</code></td><td><p>Per-attempt timeout, applied to every fire (first, deferred, retries).</p></td></tr>
 <tr><td><code>opts.on <em>(optional)</em></code></td><td><code>string</code></td><td><p>Module path of a customer result handler. Receives the terminal event on the unified flattened surface (handler-shape §7): the response on <code>request.bytes</code> / <code>.text</code> / <code>.json</code>, <code>request.status</code> / <code>.ok</code> / <code>.bodyTruncated</code>; the threaded <code>ctx</code> value bare on <code>request.ctx</code>; delivery metadata (<code>attempts</code>, <code>error?</code>, <code>id</code>, <code>headers</code>) on <code>request.activation.*</code>. There is no <code>request.result</code>.</p></td></tr>
 <tr><td><code>opts.ctx <em>(optional)</em></code></td><td><code>*</code></td><td><p>Opaque customer payload echoed back as <code>request.ctx</code> on the result event.</p></td></tr>
 </table>
-<p><b>Returns</b> <code>string</code> — The marker id. Same value as the <code>handle</code> when one was supplied.</p>
+<p><b>Returns</b> <code>string</code> — The marker id — random unless <code>handle</code> was supplied, in which case it is base64url(sha256(handle)) (stable: the same handle always yields the same id).</p>
 <pre><code>webhook.send("https://hooks.example.com/x", {
 body: JSON.stringify({ event: "order.paid", id }),
 on: "hooks/onDelivered",
@@ -321,8 +362,8 @@ ctx: { order_id: id },
 <pre><code>// Scheduled fire — write the marker now, fire in 5 minutes.
 webhook.send("https://example.test/reminder", {
 body: "ping",
-handle: "reminder/" + user_id,        // idempotent
-fire_at_ns: BigInt(Date.now() + 300_000) * 1_000_000n,
+key: "reminder/" + userId,        // idempotent
+in: "5m",
 });</code></pre>
 <h3 id="email"><code>email</code></h3>
 <p>Transactional email through Resend.</p>
@@ -330,91 +371,75 @@ fire_at_ns: BigInt(Date.now() + 300_000) * 1_000_000n,
 <p>Send an email. Builds the Resend API request and dispatches it via {@link webhook.send} (durable; fires after the handler commits).</p>
 <table><tr><th>Param</th><th>Type</th><th></th></tr>
 <tr><td><code>opts</code></td><td><code>object</code></td><td></td></tr>
-<tr><td><code>opts.key</code></td><td><code>string</code></td><td><p>Resend API key (sent as <code>Authorization: Bearer</code>).</p></td></tr>
+<tr><td><code>opts.apiKey</code></td><td><code>string</code></td><td><p>Resend API key (sent as <code>Authorization: Bearer</code>). Named apiKey — <code>key</code> means an idempotency key everywhere else on this surface.</p></td></tr>
 <tr><td><code>opts.from</code></td><td><code>string</code></td><td><p>Sender address.</p></td></tr>
 <tr><td><code>opts.to</code></td><td><code>string|string[]</code></td><td><p>Recipient(s).</p></td></tr>
 <tr><td><code>opts.subject</code></td><td><code>string</code></td><td><p>Subject line.</p></td></tr>
 <tr><td><code>opts.text <em>(optional)</em></code></td><td><code>string</code></td><td><p>Plain-text body.</p></td></tr>
 <tr><td><code>opts.html <em>(optional)</em></code></td><td><code>string</code></td><td><p>HTML body.</p></td></tr>
-<tr><td><code>opts.reply_to <em>(optional)</em></code></td><td><code>string</code></td><td><p>Reply-To address.</p></td></tr>
+<tr><td><code>opts.replyTo <em>(optional)</em></code></td><td><code>string</code></td><td><p>Reply-To address.</p></td></tr>
 <tr><td><code>opts.cc <em>(optional)</em></code></td><td><code>string|string[]</code></td><td><p>CC recipient(s).</p></td></tr>
 <tr><td><code>opts.bcc <em>(optional)</em></code></td><td><code>string|string[]</code></td><td><p>BCC recipient(s).</p></td></tr>
 <tr><td><code>opts.on <em>(optional)</em></code></td><td><code>string</code></td><td><p>Result handler module in this tenant (forwarded to <code>webhook.send</code>).</p></td></tr>
 <tr><td><code>opts.ctx <em>(optional)</em></code></td><td><code>*</code></td><td><p>Echoed back as <code>request.ctx</code> on the result event.</p></td></tr>
-<tr><td><code>opts.max_attempts <em>(optional)</em></code></td><td><code>number</code></td><td><p>Override the built-in webhook.send retry budget (default 5).</p></td></tr>
-<tr><td><code>opts.timeout_ms <em>(optional)</em></code></td><td><code>number</code></td><td><p>Per-attempt timeout.</p></td></tr>
+<tr><td><code>opts.maxAttempts <em>(optional)</em></code></td><td><code>number</code></td><td><p>Override the built-in webhook.send retry budget (default 5).</p></td></tr>
+<tr><td><code>opts.timeoutMs <em>(optional)</em></code></td><td><code>number</code></td><td><p>Per-attempt timeout.</p></td></tr>
 </table>
-<p><b>Returns</b> <code>string</code> — The schedule id from {@link webhook.send}.</p>
-<pre><code>const key = kv.get("secret/resend") ?? "re_dev_placeholder";
+<p><b>Returns</b> <code>string</code> — The marker id from {@link webhook.send}.</p>
+<pre><code>const apiKey = kv.get("secret/resend") ?? "re_dev_placeholder";
 const user = { email: "ada@example.com", name: "Ada" };
 email.send({
-key,
+apiKey,
 from: "noreply@acme.dev",
 to: user.email,
 subject: "Welcome",
 html: `&lt;h1&gt;Hi ${user.name}&lt;/h1&gt;`,
 });</code></pre>
 <h3 id="retry"><code>retry</code></h3>
-<p>Customer-side retry policy layered on {@link webhook.send}. All retry state lives in this tenant's own context — no platform retry loop, no cross-tenant privileges. The chain only advances when the on_result handler explicitly calls {@link retry.next}.</p>
+<p>Customer-side retry policy layered on {@link webhook.send}. All retry state lives in this tenant's own ctx — no platform retry loop, no cross-tenant privileges. The chain only advances when the {on} handler explicitly calls {@link retry.again}. Every helper reads the ambient flattened result surface itself — no event assembly, no arguments (<code>retry.next</code> was renamed <code>retry.again</code> to stop colliding with the <code>next()</code> disposition).</p>
 <pre><code>// Fire with a policy.
 retry.send({
 url: "https://stripe.com/charge",
 on: "charges/handler",
-max_attempts: 3,
-backoff_ms: [1000, 5000, 30000], // or a number, or omit
+maxAttempts: 3,
+backoffMs: [1000, 5000, 30000], // or a number, or omit
 ctx: { charge_id: 42 },
 });
 
-// charges/handler.mjs — the {on} handler. The result arrives
-// on the unified flattened surface (handler-shape §7).
+// charges/handler.mjs — the {on} handler.
 export default function () {
-const event = {
-ok: request.ok, status: request.status, body: request.text,
-error: request.activation.error, context: request.ctx,
-};
-if (retry.shouldRetry(event)) { retry.next(event); return; }
-const ctx = retry.stripContext(event);
-// ... your terminal handling ...
+if (retry.shouldRetry()) { retry.again(); return; }
+const ctx = retry.ctx();
+// ... your terminal handling on request.ok/.status/.text ...
 }</code></pre>
 <h4 id="retry-send"><code>retry.send(opts)</code></h4>
-<p>Fire a one-shot <code>webhook.send</code> wrapped with a retry policy. The on_result module receives events with <code>event.context._retry</code> populated; drive the chain with the helpers below.</p>
+<p>Fire a one-shot <code>webhook.send</code> wrapped with a retry policy. The {on} module drives the chain with the no-arg helpers below (the policy rides <code>request.ctx._retry</code>).</p>
 <table><tr><th>Param</th><th>Type</th><th></th></tr>
 <tr><td><code>opts</code></td><td><code>object</code></td><td></td></tr>
 <tr><td><code>opts.url</code></td><td><code>string</code></td><td><p>Target URL.</p></td></tr>
 <tr><td><code>opts.on</code></td><td><code>string</code></td><td><p>Result handler module path in this tenant (non-empty).</p></td></tr>
-<tr><td><code>opts.max_attempts <em>(optional)</em></code></td><td><code>number</code></td><td><p>Total attempts incl. the first (positive integer).</p></td></tr>
-<tr><td><code>opts.backoff_ms <em>(optional)</em></code></td><td><code>number|number[]</code></td><td><p>Constant delay, a per-attempt schedule, or omit for exponential 1s/4s/16s… capped at 60s.</p></td></tr>
+<tr><td><code>opts.maxAttempts <em>(optional)</em></code></td><td><code>number</code></td><td><p>Total attempts incl. the first (positive integer).</p></td></tr>
+<tr><td><code>opts.backoffMs <em>(optional)</em></code></td><td><code>number|number[]</code></td><td><p>Constant delay, a per-attempt schedule, or omit for exponential 1s/4s/16s… capped at 60s.</p></td></tr>
 <tr><td><code>opts.method <em>(optional)</em></code></td><td><code>string</code></td><td><p>HTTP method.</p></td></tr>
 <tr><td><code>opts.headers <em>(optional)</em></code></td><td><code>Object&lt;string,string&gt;</code></td><td><p>Request headers.</p></td></tr>
 <tr><td><code>opts.body <em>(optional)</em></code></td><td><code>string</code></td><td><p>Request body.</p></td></tr>
-<tr><td><code>opts.timeout_ms <em>(optional)</em></code></td><td><code>number</code></td><td><p>Per-request timeout.</p></td></tr>
-<tr><td><code>opts.fire_at_ns <em>(optional)</em></code></td><td><code>bigint</code></td><td><p>Delay the first attempt.</p></td></tr>
+<tr><td><code>opts.timeoutMs <em>(optional)</em></code></td><td><code>number</code></td><td><p>Per-request timeout.</p></td></tr>
+<tr><td><code>opts.at <em>(optional)</em></code></td><td><code>bigint|number|Date|string</code></td><td><p>Fire time for the first attempt (webhook.send's <code>{at}</code>); or use <code>{in}</code>.</p></td></tr>
+<tr><td><code>opts.in <em>(optional)</em></code></td><td><code>number|string</code></td><td><p>Delay the first attempt.</p></td></tr>
 <tr><td><code>opts.ctx <em>(optional)</em></code></td><td><code>*</code></td><td><p>Echoed back (under your own keys; <code>_retry</code> is reserved).</p></td></tr>
 </table>
 <p><b>Returns</b> <code>string</code> — The {@link webhook.send} schedule id.</p>
-<h4 id="retry-shouldretry"><code>retry.shouldRetry(event)</code></h4>
-<p>Whether <code>event</code> should be retried: a failure with attempts remaining. Always <code>false</code> on success or when retry context is absent.</p>
-<table><tr><th>Param</th><th>Type</th><th></th></tr>
-<tr><td><code>event</code></td><td><code>object</code></td><td><p>The (flat) result event with <code>ok</code> + <code>context._retry</code>. See the module comment for how to flatten from <code>request.ctx</code>.</p></td></tr>
-</table>
+<h4 id="retry-shouldretry"><code>retry.shouldRetry()</code></h4>
+<p>Whether this result should be retried: a failure with attempts remaining. Reads the ambient flattened result (<code>request.ok</code>, <code>request.ctx._retry</code>) — no arguments. Always <code>false</code> on success or outside a retry.send result activation.</p>
 <p><b>Returns</b> <code>boolean</code></p>
-<h4 id="retry-next"><code>retry.next(event)</code></h4>
-<p>Schedule the next attempt (applies the backoff). No-op returning <code>null</code> if the event isn't retryable — check {@link retry.shouldRetry} first.</p>
-<table><tr><th>Param</th><th>Type</th><th></th></tr>
-<tr><td><code>event</code></td><td><code>object</code></td><td><p>The result event.</p></td></tr>
-</table>
-<p><b>Returns</b> <code>string|null</code> — New schedule id, or <code>null</code>.</p>
-<h4 id="retry-stripcontext"><code>retry.stripContext(event)</code></h4>
-<p><code>event.context</code> with the reserved <code>_retry</code> meta removed. Returns a fresh object (no mutation); idempotent on events that never went through {@link retry.send}.</p>
-<table><tr><th>Param</th><th>Type</th><th></th></tr>
-<tr><td><code>event</code></td><td><code>object</code></td><td><p>The result event.</p></td></tr>
-</table>
-<p><b>Returns</b> <code>object|null</code> — Your original context, or <code>null</code>.</p>
-<h4 id="retry-attempt"><code>retry.attempt(event)</code></h4>
-<p>Current 1-based attempt number (1 on the first fire, 2 on the first retry, …). <code>null</code> when retry context is missing.</p>
-<table><tr><th>Param</th><th>Type</th><th></th></tr>
-<tr><td><code>event</code></td><td><code>object</code></td><td><p>The result event.</p></td></tr>
-</table>
+<h4 id="retry-again"><code>retry.again()</code></h4>
+<p>Schedule the next attempt (applies the backoff). Reads the ambient result — no arguments. No-op returning <code>null</code> if this result isn't retryable — check {@link retry.shouldRetry} first. (Named <code>again</code>, not <code>next</code>: <code>next()</code> is the hold-the-connection disposition.)</p>
+<p><b>Returns</b> <code>string|null</code> — New marker id, or <code>null</code>.</p>
+<h4 id="retry-ctx"><code>retry.ctx()</code></h4>
+<p>Your original ctx with the reserved <code>_retry</code> meta removed. Reads the ambient result — no arguments. Fresh object (no mutation); works on results that never went through {@link retry.send}.</p>
+<p><b>Returns</b> <code>object|null</code></p>
+<h4 id="retry-attempt"><code>retry.attempt()</code></h4>
+<p>Current 1-based attempt number (1 on the first fire, 2 on the first retry, …). Reads the ambient result — no arguments. <code>null</code> when retry context is missing.</p>
 <p><b>Returns</b> <code>number|null</code></p>
 <h3 id="schedule"><code>schedule</code></h3>
 <p>The durable one-shot timer: run <code>target</code> once, at a time — a fresh connectionless activation that survives crashes and leader changes. At-least-once *firing* (the target owns dedup); the lib does not retry a failed target — compose retry on top. Recurrence is <code>cron(spec, target)</code>; a connection-scoped delay (dies with the caller) is <code>after.ms</code>.</p>
@@ -452,9 +477,9 @@ key: (string|null)</code> — | null} The schedule, or <code>null</code> if unkn
 <pre><code>const id = schedule({ in: "1h" }, "jobs/expire");
 const s = schedule.get(id);
 if (!s || s.target !== "jobs/expire") throw new Error("lookup failed");</code></pre>
-<h3 id="cron-helpers"><code>cron helpers</code></h3>
-<p>Fire-time helpers for durable scheduling.</p>
-<h4 id="cron-helpers-tofireatns"><code>cron.toFireAtNs(input)</code></h4>
+<h3 id="cron"><code>cron</code></h3>
+<p>Recurring durable timer, plus the fire-time helpers it carries as statics.</p>
+<h4 id="cron-tofireatns"><code>cron.toFireAtNs(input)</code></h4>
 <p>Coerce a time input to BigInt nanoseconds-since-epoch.</p>
 <table><tr><th>Param</th><th>Type</th><th></th></tr>
 <tr><td><code>input</code></td><td><code>bigint|number|Date|string|null</code></td><td><p>BigInt (ns, passed through); number/Date (ms-since-epoch); string (duration suffix like <code>"30s"</code>/<code>"5m"</code>/<code>"2h"</code>/<code>"1d"</code>/<code>"1w"</code> relative to now, or ISO-8601); <code>null</code> → <code>0n</code> (fire ASAP).</p></td></tr>
@@ -462,21 +487,21 @@ if (!s || s.target !== "jobs/expire") throw new Error("lookup failed");</code></
 <p><b>Returns</b> <code>bigint</code> — Nanoseconds since epoch.</p>
 <pre><code>cron.toFireAtNs("2h");                     // 2 hours from now
 cron.toFireAtNs("2026-06-01T03:00:00Z");   // absolute</code></pre>
-<h4 id="cron-helpers-parseduration"><code>cron.parseDuration(s)</code></h4>
+<h4 id="cron-parseduration"><code>cron.parseDuration(s)</code></h4>
 <p>Parse a duration string to milliseconds.</p>
 <table><tr><th>Param</th><th>Type</th><th></th></tr>
 <tr><td><code>s</code></td><td><code>string</code></td><td><p><code>&lt;n&gt;&lt;unit&gt;</code>, unit ∈ <code>s|m|h|d|w</code> (e.g. <code>"5m"</code>, <code>"1w"</code>).</p></td></tr>
 </table>
 <p><b>Returns</b> <code>number|null</code> — Milliseconds, or <code>null</code> if <code>s</code> isn't a duration (callers fall back to ISO parsing).</p>
 <pre><code>cron.parseDuration("2h"); // 7200000</code></pre>
-<h4 id="cron-helpers-fromnow"><code>cron.fromNow(s)</code></h4>
+<h4 id="cron-fromnow"><code>cron.fromNow(s)</code></h4>
 <p><code>now + parseDuration(s)</code> as a fire time.</p>
 <table><tr><th>Param</th><th>Type</th><th></th></tr>
 <tr><td><code>s</code></td><td><code>string</code></td><td><p>Duration string (see {@link cron.parseDuration}).</p></td></tr>
 </table>
 <p><b>Returns</b> <code>bigint</code> — Nanoseconds since epoch.</p>
-<pre><code>webhook.send("https://hooks.example.com/x", { fire_at_ns: cron.fromNow("30m") });</code></pre>
-<h4 id="cron-helpers-dailyat"><code>cron.dailyAt(hour, minute)</code></h4>
+<pre><code>webhook.send("https://hooks.example.com/x", { at: cron.fromNow("30m") });</code></pre>
+<h4 id="cron-dailyat"><code>cron.dailyAt(hour, minute)</code></h4>
 <p>Next occurrence of <code>hour:minute</code> UTC; tomorrow's slot if today's has passed.</p>
 <table><tr><th>Param</th><th>Type</th><th></th></tr>
 <tr><td><code>hour</code></td><td><code>number</code></td><td><p>0–23.</p></td></tr>
@@ -484,7 +509,7 @@ cron.toFireAtNs("2026-06-01T03:00:00Z");   // absolute</code></pre>
 </table>
 <p><b>Returns</b> <code>bigint</code> — Nanoseconds since epoch.</p>
 <pre><code>cron.dailyAt(3, 0); // next 03:00 UTC</code></pre>
-<h4 id="cron-helpers-weeklyat"><code>cron.weeklyAt(dayOfWeek, hour, minute)</code></h4>
+<h4 id="cron-weeklyat"><code>cron.weeklyAt(dayOfWeek, hour, minute)</code></h4>
 <p>Next occurrence of <code>dayOfWeek</code> at <code>hour:minute</code> UTC.</p>
 <table><tr><th>Param</th><th>Type</th><th></th></tr>
 <tr><td><code>dayOfWeek</code></td><td><code>number</code></td><td><p>0=Sunday … 6=Saturday.</p></td></tr>
@@ -493,26 +518,33 @@ cron.toFireAtNs("2026-06-01T03:00:00Z");   // absolute</code></pre>
 </table>
 <p><b>Returns</b> <code>bigint</code> — Nanoseconds since epoch.</p>
 <pre><code>cron.weeklyAt(1, 9, 0); // next Monday 09:00 UTC</code></pre>
-<h4 id="cron-helpers-hourly"><code>cron.hourly()</code></h4>
+<h4 id="cron-hourly"><code>cron.hourly()</code></h4>
 <p>Top of the next hour (UTC).</p>
 <p><b>Returns</b> <code>bigint</code> — Nanoseconds since epoch.</p>
-<pre><code>webhook.send("https://hooks.example.com/x", { fire_at_ns: cron.hourly() });</code></pre>
-<h4 id="cron-helpers-next"><code>cron.next(expr, now_ms?)</code></h4>
+<pre><code>webhook.send("https://hooks.example.com/x", { at: cron.hourly() });</code></pre>
+<h4 id="cron-next"><code>cron.next(expr, now_ms?)</code></h4>
 <p>Next match of a 5-field crontab expression (UTC), at minute granularity. Day-of-month / day-of-week follow Vixie cron: when both are restricted, a match on *either* counts.</p><p>Fields: <code>minute hour day-of-month month day-of-week</code>. Each accepts <code>*</code> (any), <code>N</code>, <code>N,M,...</code> (list), <code>N-M</code> (range), or a trailing <code>/N</code> step on <code>*</code> or a range (e.g. a star then slash-15 in the minute field = every 15 minutes).</p>
 <table><tr><th>Param</th><th>Type</th><th></th></tr>
 <tr><td><code>expr</code></td><td><code>string</code></td><td><p>e.g. <code>"0 3 * * *"</code> (daily 03:00) or <code>"0 9 * * 1-5"</code> (weekdays 09:00).</p></td></tr>
 <tr><td><code>now_ms <em>(optional)</em></code></td><td><code>number</code></td><td><p>Base time (ms since epoch); defaults to <code>Date.now()</code>. Mainly for testing.</p></td></tr>
 </table>
 <p><b>Returns</b> <code>bigint</code> — Nanoseconds since epoch of the next match.</p>
-<pre><code>webhook.send("https://hooks.example.com/x", { fire_at_ns: cron.next("0 3 * * *") });</code></pre>
+<pre><code>webhook.send("https://hooks.example.com/x", { at: cron.next("0 3 * * *") });</code></pre>
+<h4 id="cron-cron"><code>cron(spec, target, ctx?)</code></h4>
+<p>Register a **recurring durable** schedule: run <code>target</code> on every occurrence of the crontab <code>spec</code> (docs/handler-shape.md §2.4). A connectionless trigger — the fire is a fresh durable activation with no held socket, surviving leader changes (it rides the gap-2.6 schedule verb). Idempotent: re-calling with the same <code>(spec, target)</code> (e.g. on every request) keeps exactly one cron registration.</p><p>The callable <code>cron</code> also carries the time/expr helpers as statics (<code>cron.next</code>, <code>cron.dailyAt</code>, <code>cron.parseDuration</code>, …).</p>
+<table><tr><th>Param</th><th>Type</th><th></th></tr>
+<tr><td><code>spec</code></td><td><code>string</code></td><td><p>5-field crontab expression (see {@link cron.next}), e.g. <code>"0 3 * * *"</code> (daily 03:00 UTC).</p></td></tr>
+<tr><td><code>target</code></td><td><code>string</code></td><td><p>Module specifier to run each occurrence, e.g. <code>"jobs/cleanup"</code>.</p></td></tr>
+<tr><td><code>ctx <em>(optional)</em></code></td><td><code>*</code></td><td><p>JSON-serializable value delivered to the target as <code>request.ctx</code>.</p></td></tr>
+</table>
+<p><b>Returns</b> <code>string</code> — The stable registration id (cancel via <code>schedule.cancel(id)</code>).</p>
+<pre><code>cron("0 3 * * *", "jobs/cleanup");        // nightly cleanup
+cron("*\/15 * * * *", "jobs/poll", { src }); // every 15 min</code></pre>
 <h2>Browser agent</h2>
 <h3 id="browser"><code>browser</code></h3>
 <p>Server-side helpers for driving the in-page agent SDK.</p>
-<h4 id="browser-message"><code>browser.message(request)</code></h4>
-<p>Decode an inbound agent frame from an <code>onMessage</code> activation. Returns the parsed object (<code>{t, ...}</code>), or <code>null</code> if this activation is not a parseable agent frame.</p>
-<table><tr><th>Param</th><th>Type</th><th></th></tr>
-<tr><td><code>request</code></td><td><code>object</code></td><td><p>The handler's <code>request</code>.</p></td></tr>
-</table>
+<h4 id="browser-message"><code>browser.message()</code></h4>
+<p>Decode an inbound agent frame from an <code>onMessage</code> activation. Reads the ambient <code>request</code> (no arguments). Returns the parsed object (<code>{t, ...}</code>), or <code>null</code> if this activation is not a parseable agent frame.</p>
 <p><b>Returns</b> <code>object|null</code></p>
 <h4 id="browser-act"><code>browser.act(action)</code></h4>
 <p>Tell the page to perform one action. <code>action</code> is <code>{op, ...}</code> where <code>op</code> is one of the ops from {@link browser.tools}: <code>click</code> / <code>type</code> / <code>scroll</code> / <code>navigate</code> / <code>snapshot</code>. Include an <code>id</code> to correlate the page's <code>result</code> frame.</p>
@@ -551,18 +583,14 @@ cron.toFireAtNs("2026-06-01T03:00:00Z");   // absolute</code></pre>
 <tr><td><code>opts.screenshots <em>(optional)</em></code></td><td><code>boolean</code></td><td><p>Include the opt-in <code>screenshot</code> op. Only set this when the page SDK was started with <code>screenshots: true</code>; otherwise the model would call a tool the page will refuse. Pixels are a fallback for when structure isn't enough — gate them on a <code>_config</code> flag, not by default.</p></td></tr>
 </table>
 <p><b>Returns</b> <code>Array&lt;{op:string, desc:string, params:object</code> — &gt;}</p>
-<h4 id="browser-getreplay"><code>browser.getReplay(request, opts)</code></h4>
+<h4 id="browser-getreplay"><code>browser.getReplay(opts)</code></h4>
 <p>Pull this session's recent handler activations from the durable replay log — the "why" channel. Issues a read-only fetch through the internal <code>rewind-logs.internal</code> door, which the engine pins to THIS handler's own tenant (it can't reach another tenant's logs). The result wakes <code>opts.to</code>; the handler must <code>return next(...)</code> after this to hold the connection across the round-trip — same shape as <code>after.fetch</code>.</p><p>Defaults to filtering by the engine per-connection session key (<code>request.correlation_id</code>, indexed as the reserved <code>_corr</code> tag), which is stamped on EVERY activation automatically — no per-frame tagging needed. Pass <code>opts.session</code> to filter by a <code>request.tag("session", …)</code> value instead (survives reconnects).</p>
 <table><tr><th>Param</th><th>Type</th><th></th></tr>
-<tr><td><code>request</code></td><td><code>object</code></td><td><p>the handler's <code>request</code>.</p></td></tr>
 <tr><td><code>opts</code></td><td><code>object</code></td><td><p><code>{on, since?, limit?, session?}</code>. <code>on</code> is the callback export name (required); <code>since</code> an <code>after_received_ns</code> cursor; <code>limit</code> max records (default 50).</p></td></tr>
 </table>
 <p><b>Returns</b> <code>boolean</code> — false if it couldn't issue (no tenant/connection).</p>
-<h4 id="browser-replayresult"><code>browser.replayResult(request)</code></h4>
-<p>Decode the replay-fetch result delivered to your <code>getReplay</code> callback. Reads the bound-fetch <code>request.json</code> into <code>{records: [...], next_cursor}</code>. Each record: <code>{request_id, received_ns, duration_ns, status, method, path, host, outcome}</code>. Returns <code>{records: []}</code> on any decode failure.</p>
-<table><tr><th>Param</th><th>Type</th><th></th></tr>
-<tr><td><code>request</code></td><td><code>object</code></td><td><p>the callback's <code>request</code>.</p></td></tr>
-</table>
+<h4 id="browser-replayresult"><code>browser.replayResult()</code></h4>
+<p>Decode the replay-fetch result delivered to your <code>getReplay</code> callback. Reads the bound-fetch <code>request.json</code> into <code>{records: [...], next_cursor}</code>. Each record: <code>{request_id, received_ns, duration_ns, status, method, path, host, outcome}</code>. Returns <code>{records: []}</code> on any decode failure.</p><p>Reads the ambient <code>request</code> (no arguments).</p>
 <p><b>Returns</b> <code>{records: Array, next_cursor: object|null</code> — }</p>
 <h4 id="browser-renderreplay"><code>browser.renderReplay(result)</code></h4>
 <p>Render a {@link browser.replayResult} into compact, LLM-friendly text — one line per activation, newest first.</p>
@@ -705,7 +733,7 @@ signing_input:string</code> — |null} <code>null</code> on malformed input (wro
 <tr><td><code>opts.iss <em>(optional)</em></code></td><td><code>string</code></td><td><p>Expected issuer.</p></td></tr>
 <tr><td><code>opts.aud <em>(optional)</em></code></td><td><code>string</code></td><td><p>Expected audience; passes if it appears in <code>payload.aud</code> (string or array).</p></td></tr>
 <tr><td><code>opts.now <em>(optional)</em></code></td><td><code>number</code></td><td><p>Now, ms since epoch (default <code>Date.now()</code>).</p></td></tr>
-<tr><td><code>opts.leeway_s <em>(optional)</em></code></td><td><code>number</code></td><td><p>Clock-skew tolerance for <code>exp</code>/<code>nbf</code>.</p></td></tr>
+<tr><td><code>opts.leewaySeconds <em>(optional)</em></code></td><td><code>number</code></td><td><p>Clock-skew tolerance for <code>exp</code>/<code>nbf</code>.</p></td></tr>
 </table>
 <p><b>Returns</b> <code>string|null</code> — <code>null</code> if all checks pass, else the first failure: <code>"no-payload"</code> | <code>"expired"</code> | <code>"not-yet-valid"</code> | <code>"issuer-mismatch"</code> | <code>"audience-mismatch"</code>.</p>
 <pre><code>const err = jwt.validateClaims(payload, { iss, aud: clientId });
@@ -978,10 +1006,10 @@ const a = sessions.fromConfig("admin");</code></pre>
 <p><b>Returns</b> <code>OAuthProvider</code></p>
 <pre><code>const g = oauth.fromConfig("google");</code></pre>
 <h4 id="oauth-verifyidtoken"><code>oauth.verifyIdToken(id_token, opts)</code></h4>
-<p>Verify a third-party <code>id_token</code> against the cached JWKS only (synchronous — there is no sync HTTP). <code>jwt.*</code> is alg-confusion-safe (RS/ES only). On a cache miss / unknown <code>kid</code> the caller must run the async {@link oauth.fetchJwks} hop and retry; this mirrors <code>oidc.rp</code>'s <code>completeToken → completeJwks → _finish</code> chain (auth-domain-plan §4.8).</p>
+<p>Verify a third-party <code>id_token</code> against the cached JWKS only (synchronous — there is no sync HTTP). <code>jwt.*</code> is alg-confusion-safe (RS/ES only). On a cache miss / unknown <code>kid</code> the caller must run the async {@link oauth.fetchJwks} hop and, retry; this mirrors <code>oidc.rp</code>'s <code>completeToken → completeJwks → _finish</code> chain (auth-domain-plan §4.8).</p>
 <table><tr><th>Param</th><th>Type</th><th></th></tr>
 <tr><td><code>id_token</code></td><td><code>string</code></td><td><p>The compact JWS from the token endpoint response.</p></td></tr>
-<tr><td><code>opts</code></td><td><code>object</code></td><td><p><code>{issuer, client_id, jwks_uri}</code> required; optional <code>nonce</code> (checked manually — <code>validateClaims</code> doesn't cover it), <code>leeway_s</code> (default 30), <code>algs</code> (extra allow-list on top of jwt.js's RS/ES set), <code>cache_path</code>.</p></td></tr>
+<tr><td><code>opts</code></td><td><code>object</code></td><td><p><code>{issuer, client_id, jwks_uri}</code> required; optional <code>nonce</code> (checked manually — <code>validateClaims</code> doesn't cover it), <code>leewaySeconds</code> (default 30), <code>algs</code> (extra allow-list on top of jwt.js's RS/ES set), <code>cache_path</code>.</p></td></tr>
 </table>
 <p><b>Returns</b> <code>object</code> — One of <code>{ok:true, claims}</code> / <code>{ok:false, error}</code> (hard reject — do NOT retry) / <code>{ok:false, need_jwks:true, jwks_uri}</code> (caller does the async refetch hop, then retries).</p>
 <pre><code>let r = oauth.verifyIdToken(tok.id_token, {
@@ -989,19 +1017,18 @@ issuer: "https://accounts.google.com",
 client_id: cfg.client_id,
 jwks_uri: "https://www.googleapis.com/oauth2/v3/certs",
 nonce: ctx.nonce, cache_path: "cache/oauth/google" });</code></pre>
-<h4 id="oauth-fetchjwks"><code>oauth.fetchJwks(opts, on_result_module, context?)</code></h4>
-<p>Kick the async JWKS fetch. <code>on_result</code> lands in a module that re-runs {@link oauth.verifyIdToken} (now a cache hit) after calling {@link oauth.cacheJwksFromEvent}.</p>
+<h4 id="oauth-fetchjwks"><code>oauth.fetchJwks(opts, on, ctx?)</code></h4>
+<p>Kick the async JWKS fetch. The result lands in the <code>{on}</code> module, which calls {@link oauth.cacheJwks} then re-runs {@link oauth.verifyIdToken} (now a cache hit).</p>
 <table><tr><th>Param</th><th>Type</th><th></th></tr>
 <tr><td><code>opts</code></td><td><code>object</code></td><td><p>Must carry <code>jwks_uri</code>.</p></td></tr>
-<tr><td><code>on_result_module</code></td><td><code>string</code></td><td><p>Module to receive the fetch result event.</p></td></tr>
-<tr><td><code>context <em>(optional)</em></code></td><td><code>object</code></td><td><p>Threaded back on the event (carry <code>id_token</code>, <code>sid</code>, <code>return_to</code>, …).</p></td></tr>
+<tr><td><code>on</code></td><td><code>string</code></td><td><p>Module to receive the fetch result.</p></td></tr>
+<tr><td><code>ctx <em>(optional)</em></code></td><td><code>object</code></td><td><p>Threaded back as <code>request.ctx</code> (carry <code>id_token</code>, <code>sid</code>, <code>return_to</code>, …).</p></td></tr>
 </table>
 <pre><code>oauth.fetchJwks(opts, "users/oauth_jwks",
 { id_token, sid: ctx.sid, return_to: ctx.return_to });</code></pre>
-<h4 id="oauth-cachejwksfromevent"><code>oauth.cacheJwksFromEvent(event, cache_path?)</code></h4>
-<p>Cache a JWKS fetch event's body. Call from the fetch <code>on_result</code> module, then re-run {@link oauth.verifyIdToken}.</p>
+<h4 id="oauth-cachejwks"><code>oauth.cacheJwks(cache_path?)</code></h4>
+<p>Cache the JWKS delivered to the {@link oauth.fetchJwks} <code>{on}</code> module. Reads the ambient result (<code>request.ok</code> / <code>request.text</code>) — call it, then re-run {@link oauth.verifyIdToken}.</p>
 <table><tr><th>Param</th><th>Type</th><th></th></tr>
-<tr><td><code>event</code></td><td><code>object</code></td><td><p>The webhook.send result event (<code>{ok,status,body}</code>).</p></td></tr>
 <tr><td><code>cache_path <em>(optional)</em></code></td><td><code>string</code></td><td><p>Same <code>cache_path</code> passed to {@link oauth.verifyIdToken}.</p></td></tr>
 </table>
 <p><b>Returns</b> <code>boolean</code> — <code>true</code> when a well-formed JWKS was cached.</p>
@@ -1024,7 +1051,7 @@ export default () =&gt; oidc.provider().handle();</code></pre>
 <h4 id="oidc-constructor"><code>oidc.constructor(config, name)</code></h4>
 
 <table><tr><th>Param</th><th>Type</th><th></th></tr>
-<tr><td><code>config</code></td><td><code>object</code></td><td><p>Required: <code>issuer</code>, <code>client_id</code>, <code>redirect_uri</code>. Optional: <code>post_login</code> (default <code>/</code>), <code>operator_prefix</code> (empty ⇒ <code>is_root</code> always false), kv-path / TTL / <code>leeway_s</code> overrides.</p></td></tr>
+<tr><td><code>config</code></td><td><code>object</code></td><td><p>Required: <code>issuer</code>, <code>client_id</code>, <code>redirect_uri</code>. Optional: <code>post_login</code> (default <code>/</code>), <code>operator_prefix</code> (empty ⇒ <code>is_root</code> always false), kv-path / TTL / <code>leewaySeconds</code> overrides.</p></td></tr>
 <tr><td><code>name</code></td><td><code>string</code></td><td><p>Config name; namespaces the kv key paths.</p></td></tr>
 </table>
 <h4 id="oidc-beginlogin"><code>oidc.beginLogin()</code></h4>

@@ -35,7 +35,7 @@ const MAX_TRANSCRIPT = 24; // bound kv growth (see trim())
 
 // ── Activation: one inbound WS frame from the page ──────────────────
 export function onMessage() {
-  const frame = browser.message(request);
+  const frame = browser.message();
   const ctx = request.ctx || {};
   if (!frame) return next(ctx);
 
@@ -99,7 +99,7 @@ function think(frame, ctx) {
   // is unused on this turn.
   if (ctx.replay_tool_id) {
     browser.status("reading session replay…");
-    const ok = browser.getReplay(request, { on: "onReplay" });
+    const ok = browser.getReplay({ on: "onReplay" });
     if (ok) {
       return next({ sid, replay_tool_id: ctx.replay_tool_id, refs: ctx.refs || {} });
     }
@@ -191,7 +191,7 @@ export function onReplay() {
   if (!request.done || (request.status || 0) >= 400) {
     view = "Replay unavailable (status " + (request.status || "?") + ").";
   } else {
-    view = browser.renderReplay(browser.replayResult(request));
+    view = browser.renderReplay(browser.replayResult());
   }
   const userTurn = {
     role: "user",
@@ -232,7 +232,7 @@ function callLLM(sid, userTurn, parkCtx) {
         tools: claudeTools(screenshots, replay),
         messages: msgs.concat([userTurn]),
       }),
-      timeout_ms: 30_000,
+      timeoutMs: 30_000,
     },
     { on: "onLLM" },
   );
@@ -340,7 +340,7 @@ function save(sid, msgs) {
 // model still gets the inline pixels; this is the record, not perception.
 function recordShot(sid, shot) {
   try {
-    const hash = blob.put(base64url.decode(shot.data), { content_type: shot.mime });
+    const hash = blob.put(base64url.decode(shot.data), { contentType: shot.mime });
     kv.set(`agent/${sid}/shots/${hash}`, JSON.stringify({ hash, mime: shot.mime }));
   } catch (_) {}
 }
