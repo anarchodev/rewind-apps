@@ -124,7 +124,7 @@ return next({ rooms });</code></pre>
 <div class="note"><p><strong>Shipped (Phase 4 + finer conventions):</strong> the runtime maps <code>activation_source → export</code> when the resume path didn't name one. <code>wake_batch</code> (<code>after.kv</code>/<code>after.ms</code>) → <code>onWake</code>; <code>disconnect</code> → <code>onDisconnect</code> (a missing <code>onDisconnect</code> is a no-op — cleanup is optional).</p><p><strong><code>after.fetch</code> (bound, connection-scoped) now splits by event shape</strong> when no <code>{on}</code> is given: a non-streaming fetch (one <code>final</code> event with the whole body) → <code>onFetchResult</code>; a streaming fetch's intermediate chunks (<code>final == false</code>) → <code>onFetchChunk</code>; its terminal event (<code>final == true</code>) → <code>onFetchDone</code>. An explicit <code>{on}</code> overrides for every event of the fetch (the handler then branches on <code>request.done</code>).</p><p><strong><code>_subscriptions/</code> fires dispatch to <code>onSubscription</code></strong> (kv-react — the one live subscription kind), so a subscription module never branches on <code>request.activation.source.kind</code>. (The manifest <code>kind=cron</code> subscription and its <code>onCron</code> export RETIRED with durable-wake P5(b): recurrence is the <code>cron(spec, target, …)</code> verb — durable, surviving leader change — or a self-re-arming <code>schedule({in}, …, {key})</code> re-arming for sub-minute intervals. The <code>kind=boot</code> subscription and its <code>onBoot</code> export RETIRED 2026-07-05, unused: seed registrations from any handler activation — they are idempotent by key and <code>_sched/*</code> entries are durable kv that survive deploys.) <code>webhook.send</code> results route through the shim's named <code>{on}</code> target; an unnamed cross-module <code>next({module})</code> chain legitimately targets that module's <code>default</code>, so there is no forced <code>onSendCallback</code> default.</p><p>A missing conventional export is the fail-loud 404 backstop (<code>runModule</code>). <code>request.activation.kind</code> is no longer a dispatch discriminator (the named export is); it remains on <code>request.activation</code> alongside the wake / source payload (<code>wakes</code> / <code>overflow</code> / <code>write_pressure</code> / <code>source</code>). The inbound-chunk (<code>onChunk</code>) split in the table above is SHIPPED (gap 2.4, 2026-06-10): a chunk activation's payload is arbitrary bytes — read it as <code>request.bytes</code> (or <code>.text</code>/<code>.json</code>, same as every payload surface, §7) — and <code>next({ctx})</code> between chunks surfaces as <code>request.ctx</code> on the following chunk.</p></div>
 <p>The scope column is load-bearing: a <strong>connection</strong> activation runs with the held socket (it can call <code>stream.*</code>/<code>after.*</code> and return <code>next</code>/a terminal); a <strong>connectionless</strong> activation has no socket (those are inert — it does <code>kv</code> + connectionless triggers + returns nothing). The default for <code>after.kv</code>/<code>after.ms</code> is one generic <code>onWake</code> because they're *edge* wakes — "go look"; the handler re-queries state regardless of which fired (the SSE cursor pattern, §5.7). <code>after.fetch</code> keeps per-result exports because it carries a payload.</p>
 <h3 id="3-1-named-function-rpc-is-handler-js-the-rpc-recipe">3.1 Named-function RPC is handler JS (the <code>rpc</code> recipe)</h3>
-<p>The platform invokes <strong>only</strong> the activation's export (the table above). The former platform-level <code>?fn=name&amp;args=…</code> query and <code>{"fn":…,"args":[…]}</code> POST-body dispatch are RETIRED (decisions.md §4.5): <code>request.query</code> and <code>request.body</code> are opaque payload the engine never interprets. Internal resume targeting (<code>{on}</code>, <code>next({fn})</code>) is first-class on the runtime's Request and unaffected.</p>
+<p>The platform invokes <strong>only</strong> the activation's export (the table above). The former platform-level <code>?fn=name&amp;args=…</code> query and <code>{"fn":…,"args":[…]}</code> POST-body dispatch are RETIRED (decisions.md §4.5): <code>request.query</code> and the request payload are opaque bytes the engine never interprets. Internal resume targeting (<code>{on}</code>, <code>next({fn})</code>) is first-class on the runtime's Request and unaffected.</p>
 <p>A handler that wants named-function routing composes it from primitives — and because the shim reads <code>request.query</code> / <code>request.text</code> in JS, the dispatch inputs land on the replay tape like every other read:</p>
 <pre><code>function rpc(fns) {
   return function () {
@@ -170,7 +170,7 @@ export default rpc({ whoami, add });</code></pre>
 <h3 id="5-3-streaming-inbound-per-chunk-upload-to-storage">5.3 Streaming inbound — per-chunk upload to storage</h3>
 <pre><code>export function onChunk() {
   after.fetch(`${STORAGE_URL}/${request.headers['x-key']}?seq=${request.chunkSeq}`,
-           { method: 'PUT', body: request.bytes }, { on: 'onPut' });
+           { method: 'PUT', body: request.bytes, on: 'onPut' });
   if (request.done) { response.status = 201; return 'uploaded'; }
   return next();                                 // await the next inbound chunk
 }
@@ -181,8 +181,8 @@ export function onPut() {                        // each PUT result resumes here
 }</code></pre>
 <h3 id="5-4-gateway-hold-the-client-forward-upstream-return-its-status">5.4 Gateway — hold the client, forward upstream, return its status</h3>
 <pre><code>export default function () {
-  after.fetch('https://upstream.example.com', { method: 'POST', body: request.bytes },
-           { on: 'onUpstream' });
+  after.fetch('https://upstream.example.com',
+           { method: 'POST', body: request.bytes, on: 'onUpstream' });
   return next();                                 // held, uncommitted — status still open
 }
 
@@ -193,7 +193,7 @@ export function onUpstream() {
 <p><code>next()</code> keeps the head uncommitted so <code>onUpstream</code> can return any status (a <code>502</code>). The fetch is connection-scoped — if the client leaves, abandoning it is correct.</p>
 <h3 id="5-5-llm-proxy-streamed-connection-fetch-held-client">5.5 LLM proxy — streamed connection fetch + held client</h3>
 <pre><code>export default function () {
-  after.fetch(LLM_URL, { method: 'POST', body: request.bytes }, { on: 'onUpstream' });
+  after.fetch(LLM_URL, { method: 'POST', body: request.bytes, on: 'onUpstream' });
   return next();                                 // hold the client; wait for the first chunk
 }
 
@@ -255,8 +255,8 @@ export function gcNotifs() {
 <p><code>after.kv</code> (connection, ephemeral) waits for changes *since the read view*; each wake <strong>drains the prefix past the cursor</strong> (so coalesced wakes never lose notifications) and advances the cursor in <code>ctx</code>. The notifications live in <code>kv</code> (durable) and the client's resume point is its <code>Last-Event-ID</code>, so a dropped connection just reconnects — no durable server-side connection state. (<code>effect-algebra.md</code> §6.5; retention bounds the reconnect-replay window.)</p>
 <h3 id="5-8-fan-in-join-wait-for-all-then-combine">5.8 Fan-in / join — wait for all, then combine</h3>
 <pre><code>export default function () {
-  const a = after.fetch(API_A, {}, { on: 'onResult' });   // returns the fetch id (`ftch_…`)
-  const b = after.fetch(API_B, {}, { on: 'onResult' });
+  const a = after.fetch(API_A, { on: 'onResult' });   // returns the fetch id (`ftch_…`)
+  const b = after.fetch(API_B, { on: 'onResult' });
   after.ms(30_000, { on: 'onTimeout' });                  // deadline
   return next({ a, b, got: {} });                         // uncommitted: response unknown until both land
 }

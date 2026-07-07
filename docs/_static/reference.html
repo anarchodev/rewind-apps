@@ -320,7 +320,7 @@ return next({ cursor: rows.at(-1)?.key ?? request.ctx?.cursor });</code></pre>
 <tr><td><code>opts.maxTotalBytes <em>(optional)</em></code></td><td><code>number</code></td><td><p>Cumulative response cap; exceeding sets <code>bodyTruncated</code> on the terminal event.</p></td></tr>
 <tr><td><code>opts.ctx <em>(optional)</em></code></td><td><code>*</code></td><td><p>Threaded forward to each activation as <code>request.ctx</code>.</p></td></tr>
 </table>
-<p><b>Returns</b> <code>string</code> — The subscription id. Pass to {@link http.cancelSubscription}.</p>
+<p><b>Returns</b> <code>string</code> — The subscription id — the same <code>ftch_…</code> form as <code>after.fetch</code>'s return and each chunk's <code>request.activation.fetchId</code>, so you can correlate them directly. Pass to {@link http.cancelSubscription}.</p>
 <pre><code>const id = http.subscribe({
 url: "https://bsky.network/xrpc/com.atproto.sync.subscribeRepos",
 on: "ingest_firehose",
