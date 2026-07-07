@@ -418,7 +418,7 @@ export function inviteMember(aid, addr) {
     const resendKey = kv.get("resend_key");
     if (resendKey) {
         email.send({
-            key: resendKey,
+            apiKey: resendKey,
             from: kv.get("platform_email_from") || "team@" + request.host,
             to: to,
             subject: (accountName(aid) || "A rewind team") + " invited you",

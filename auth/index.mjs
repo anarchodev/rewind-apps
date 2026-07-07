@@ -74,7 +74,7 @@ function startLogin() {
   const resendKey = kv.get("resend_key");
   if (resendKey) {
     email.send({
-      key: resendKey,
+      apiKey: resendKey,
       from: kv.get("platform_email_from") || "login@" + request.host,
       to: addr,
       subject: "Your sign-in link",
