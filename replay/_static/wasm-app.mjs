@@ -1267,12 +1267,29 @@ async function main() {
     // it to surface a clear error if a future capture demands an engine this
     // build doesn't ship. When we publish per-version engines (Phase 3), this
     // is where the driver fetches `qjs_wasm_{version}.wasm` instead.
-    const captureEngine = bundle.js_engine_version ?? 0;
+    // The engine word's high bit (0x8000) = the request completed under
+    // the GC arena regime (rove qjs/version.zig ENGINE_ARENA_GC_BIT);
+    // bits 0-14 are the engine version proper.
+    const engineWord = bundle.js_engine_version ?? 0;
+    const captureEngine = engineWord & 0x7fff;
+    const captureArenaGc = (engineWord & 0x8000) !== 0;
     if (captureEngine !== 0 && captureEngine !== REPLAY_ENGINE_VERSION) {
         renderError(new Error(
             `this capture ran on JS engine v${captureEngine}, but this replayer ` +
             `bundles engine v${REPLAY_ENGINE_VERSION}; per-version engine fetch ` +
             `is not shipped yet (format-versioning-audit.md §4 Phase 3)`));
+        return;
+    }
+    if (captureArenaGc) {
+        // The live request ran under the GC allocator (churny-handler
+        // fallback) — replaying it under bump would OOM where the live
+        // run succeeded. This wasm artifact predates the reactor's
+        // arena_set_request_mode export; rebuild it from arenajs >= 0.3.2
+        // and set the mode here (native `rewind replay` already does).
+        renderError(new Error(
+            "this capture ran under the GC arena regime; this replay engine " +
+            "build predates GC-mode support — rebuild qjs_arena_wasm from " +
+            "arenajs >= 0.3.2"));
         return;
     }
 
