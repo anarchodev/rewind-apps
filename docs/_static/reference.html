@@ -606,7 +606,7 @@ cron("*\/15 * * * *", "jobs/poll", { src }); // every 15 min</code></pre>
 <p><b>Returns</b> <code>{ok:boolean, mime?:string, bytes?:Uint8Array, data?:string, error?:string</code> — |null}</p>
 <h2>Utilities</h2>
 <h3 id="crypto"><code>crypto</code></h3>
-<p>Cryptographic primitives. Random sources (<code>getRandomValues</code>, <code>randomUUID</code>, <code>randomBytes</code>) are replay-deterministic — captured to the request tape and re-issued identically on replay. Hash and signature-verify operations are pure functions of their inputs and are not taped.</p>
+<p>Cryptographic primitives. Random sources (<code>getRandomValues</code>, <code>randomUUID</code>, <code>randomBytes</code>) are replay-deterministic — captured to the request tape and re-issued identically on replay. Hash and signature-verify operations are pure functions of their inputs and are not taped.</p><p>Two signature families, named by their KEY FORMAT — don't mix them: <code>verifyEcdsa</code> / <code>verifyRsa</code> take a JWK (the JOSE world: JWTs, OIDC id_tokens, JWKS documents); <code>ecdsaSign</code> / <code>ecdsaVerify</code> / <code>ecdsaGenerateKey</code> take raw key bytes (the protocol-crypto world: your own signing recipes). <code>oidcSign</code> is the JOSE-side signer (PEM private key → compact JWS).</p>
 <h4 id="crypto-getrandomvalues"><code>crypto.getRandomValues(typedArray)</code></h4>
 <p>Fill a typed array with cryptographically random bytes, in place. Web Crypto compatible.</p>
 <table><tr><th>Param</th><th>Type</th><th></th></tr>
@@ -879,6 +879,32 @@ const sig = base64url.decode(token.split(".")[2]);</code></pre>
 <p><b>Returns</b> <code>void</code></p>
 <pre><code>console.log("charge ok", chargeId, JSON.stringify({ amount }));
 // → "charge ok 42 {"amount":1999}" in the request log</code></pre>
+<h4 id="console-warn"><code>console.warn(args)</code></h4>
+<p><code>console.log</code> with a <code>[warn]</code> prefix — the standard quartet all land in the same request log (one stream, replay-deterministic); the prefix is the level.</p>
+<table><tr><th>Param</th><th>Type</th><th></th></tr>
+<tr><td><code>args</code></td><td><code>...*</code></td><td><p>Values to log.</p></td></tr>
+</table>
+<p><b>Returns</b> <code>void</code></p>
+<pre><code>console.warn("retrying", attempt);</code></pre>
+<h4 id="console-error"><code>console.error(args)</code></h4>
+<p><code>console.log</code> with an <code>[error]</code> prefix.</p>
+<table><tr><th>Param</th><th>Type</th><th></th></tr>
+<tr><td><code>args</code></td><td><code>...*</code></td><td><p>Values to log.</p></td></tr>
+</table>
+<p><b>Returns</b> <code>void</code></p>
+<pre><code>console.error("upstream failed", request.status);</code></pre>
+<h4 id="console-info"><code>console.info(args)</code></h4>
+<p><code>console.log</code> with an <code>[info]</code> prefix.</p>
+<table><tr><th>Param</th><th>Type</th><th></th></tr>
+<tr><td><code>args</code></td><td><code>...*</code></td><td><p>Values to log.</p></td></tr>
+</table>
+<p><b>Returns</b> <code>void</code></p>
+<h4 id="console-debug"><code>console.debug(args)</code></h4>
+<p><code>console.log</code> with a <code>[debug]</code> prefix.</p>
+<table><tr><th>Param</th><th>Type</th><th></th></tr>
+<tr><td><code>args</code></td><td><code>...*</code></td><td><p>Values to log.</p></td></tr>
+</table>
+<p><b>Returns</b> <code>void</code></p>
 <h2>Identity &amp; federation</h2>
 <h3 id="users"><code>users</code></h3>
 <p>Managed user store. B2C, passwordless. The library owns no namespace — all keys are plain kv in the calling tenant (docs/users-lib-plan.md).</p>
