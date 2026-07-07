@@ -37,7 +37,7 @@
 <table>
 <tr><td>Model &amp; state</td><td><a href="#kv"><code>kv</code></a> · <a href="#blob"><code>blob</code></a> · <a href="#segments"><code>segments</code></a></td></tr>
 <tr><td>Connection &amp; wakes</td><td><a href="#after"><code>after</code></a> · <a href="#next"><code>next</code></a> · <a href="#stream"><code>stream</code></a></td></tr>
-<tr><td>Durable effects</td><td><a href="#webhook"><code>webhook</code></a> · <a href="#email"><code>email</code></a> · <a href="#retry"><code>retry</code></a> · <a href="#scheduler"><code>scheduler</code></a> · <a href="#schedule-cron"><code>schedule / cron</code></a> · <a href="#cron-helpers"><code>cron helpers</code></a></td></tr>
+<tr><td>Durable effects</td><td><a href="#webhook"><code>webhook</code></a> · <a href="#email"><code>email</code></a> · <a href="#retry"><code>retry</code></a> · <a href="#schedule"><code>schedule</code></a> · <a href="#cron-helpers"><code>cron helpers</code></a></td></tr>
 <tr><td>Browser agent</td><td><a href="#browser"><code>browser</code></a></td></tr>
 <tr><td>Utilities</td><td><a href="#crypto"><code>crypto</code></a> · <a href="#jwt"><code>jwt</code></a> · <a href="#base64"><code>base64</code></a> · <a href="#base64url"><code>base64url</code></a> · <a href="#hex"><code>hex</code></a> · <a href="#textencoder-textdecoder"><code>TextEncoder / TextDecoder</code></a> · <a href="#urlsearchparams"><code>URLSearchParams</code></a> · <a href="#console"><code>console</code></a></td></tr>
 <tr><td>Identity &amp; federation</td><td><a href="#users"><code>users</code></a> · <a href="#sessions"><code>sessions</code></a> · <a href="#oauth"><code>oauth</code></a> · <a href="#oidc"><code>oidc</code></a> · <a href="#activitypub"><code>activitypub</code></a></td></tr>
@@ -296,11 +296,11 @@ return next({ cursor: rows.at(-1)?.key ?? request.ctx?.cursor });</code></pre>
 </table>
 <p><b>Returns</b> <code>void</code></p>
 <h2>Durable effects</h2>
-<p>Connectionless work that survives anything: outbound delivery (<code>webhook</code>, <code>email</code>, <code>retry</code>) and future activations (<code>scheduler</code>, <code>schedule</code>/<code>cron</code>).</p>
+<p>Connectionless work that survives anything: outbound delivery (<code>webhook</code>, <code>email</code>, <code>retry</code>) and future activations (<code>schedule</code>, <code>cron</code>).</p>
 <h3 id="webhook"><code>webhook</code></h3>
 <p>Durable outbound HTTP — at-least-once delivery, replay-deterministic. Customer code that hardcoded the previous <code>http.send</code> surface should migrate to <code>webhook.send</code>; the customer-visible API is the same call shape (<code>url</code>/<code>method</code>/<code>body</code>/<code>headers</code>/<code>on_result</code>/<code>context</code> plus the new <code>handle</code> and <code>fire_at_ns</code>).</p>
 <h4 id="webhook-send"><code>webhook.send(url, opts?)</code></h4>
-<p>Send a webhook. Writes a durable <code>_send/owed/{id}</code> marker through raft, then fires the request via {@link http.fetch}. On failure the platform retries with exponential backoff (1s, 2s, 4s, …, capped at 60s, max 5 attempts) — controlled by the baked <code>__system/webhook_onresult</code> shim, not customer code. Deferred fires (scheduled sends, retries, crash recovery) ride the durable {@link scheduler} and survive leader changes.</p><p>The handler's commit gates the marker: if the handler throws or raft faults, no marker is written and no request fires. After commit the platform owns delivery; the customer's <code>on_result</code> module sees one terminal result event (success or give-up after the retry budget).</p>
+<p>Send a webhook. Writes a durable <code>_send/owed/{id}</code> marker through raft, then fires the request via {@link http.fetch}. On failure the platform retries with exponential backoff (1s, 2s, 4s, …, capped at 60s, max 5 attempts) — controlled by the baked <code>__system/webhook_onresult</code> shim, not customer code. Deferred fires (scheduled sends, retries, crash recovery) ride the durable {@link schedule} and survive leader changes.</p><p>The handler's commit gates the marker: if the handler throws or raft faults, no marker is written and no request fires. After commit the platform owns delivery; the customer's <code>on_result</code> module sees one terminal result event (success or give-up after the retry budget).</p>
 <table><tr><th>Param</th><th>Type</th><th></th></tr>
 <tr><td><code>url</code></td><td><code>string</code></td><td><p>Target URL.</p></td></tr>
 <tr><td><code>opts <em>(optional)</em></code></td><td><code>object</code></td><td></td></tr>
@@ -416,61 +416,42 @@ const ctx = retry.stripContext(event);
 <tr><td><code>event</code></td><td><code>object</code></td><td><p>The result event.</p></td></tr>
 </table>
 <p><b>Returns</b> <code>number|null</code></p>
-<h3 id="scheduler"><code>scheduler</code></h3>
-<p>Durable, one-shot, absolute-time scheduled wakes. The canonical timer primitive — cron, webhook retry, delayed jobs, lease/TTL expiry all compose on <code>scheduler.at</code>. At-least-once *firing*; the target owns dedup + any retry.</p>
-<pre><code>scheduler.in(30 * 60_000, "jobs/reminder", { userId });
-scheduler.at(cron.dailyAt(3, 0), "jobs/cleanup", null,
-{ key: "cleanup/daily" }); // idempotent, re-armable</code></pre>
-<h4 id="scheduler-at"><code>scheduler.at(whenNs, target, msg?, opts?)</code></h4>
-<p>Schedule <code>target</code> to run at absolute time <code>whenNs</code>. At-least-once firing — the target sees <code>request.activation = { kind: "durable_wake", id, key, scheduled_at_ns, msg }</code> and owns dedup. <code>whenNs</code> rounds up to the next 1 s tick. Re-arming = call again with the same <code>opts.key</code> (moves <code>when</code>/<code>target</code>/<code>msg</code>, last-write-wins).</p>
+<h3 id="schedule"><code>schedule</code></h3>
+<p>The durable one-shot timer: run <code>target</code> once, at a time — a fresh connectionless activation that survives crashes and leader changes. At-least-once *firing* (the target owns dedup); the lib does not retry a failed target — compose retry on top. Recurrence is <code>cron(spec, target)</code>; a connection-scoped delay (dies with the caller) is <code>after.ms</code>.</p>
+<pre><code>const id = schedule({ in: "24h" }, "jobs/reminder", { user: "ada" });
+// ...or an absolute time, idempotent under a stable key:
+schedule({ at: cron.dailyAt(3, 0) }, "jobs/cleanup", null,
+{ key: "cleanup/daily" }); // re-arm = same key, last-write-wins</code></pre>
+<h4 id="schedule-schedule"><code>schedule(when, target, ctx?, opts?)</code></h4>
+<p>Schedule <code>target</code> to run once. <code>when</code> is <code>{ in }</code> — a delay (number = ms, or a duration string <code>"30s"</code>/<code>"5m"</code>/<code>"2h"</code>/<code>"1d"</code>) — or <code>{ at }</code> — an absolute time (Date, ISO-8601 string, number = ms-since-epoch, or bigint = ns for exact composition with the <code>cron.*</code> helpers). Fire times round up to the next 1 s tick.</p><p>The target runs as a fresh activation: your <code>ctx</code> arrives as <code>request.ctx</code>; delivery metadata (<code>id</code>, <code>key</code>, <code>scheduledAtNs</code>) on <code>request.activation</code>. At-least-once firing — dedup on <code>id</code> (or your <code>opts.key</code>) if exactly-once matters.</p>
 <table><tr><th>Param</th><th>Type</th><th></th></tr>
-<tr><td><code>whenNs</code></td><td><code>bigint</code></td><td><p>Absolute fire time, nanoseconds since epoch (e.g. from <code>cron.dailyAt</code> / <code>cron.fromNow</code>). A past time fires on the next sweep.</p></td></tr>
-<tr><td><code>target</code></td><td><code>string</code></td><td><p>Handler module specifier to invoke (same shape as a subscription module path).</p></td></tr>
-<tr><td><code>msg <em>(optional)</em></code></td><td><code>*</code></td><td><p>JSON-serializable payload, surfaced as <code>request.activation.msg</code>. Capped at 16 KiB serialized.</p></td></tr>
+<tr><td><code>when</code></td><td><code>object</code></td><td><p><code>{ in: number|string }</code> or <code>{ at: bigint|number|Date|string }</code>.</p></td></tr>
+<tr><td><code>target</code></td><td><code>string</code></td><td><p>Handler module specifier to invoke (<code>"module"</code> or <code>"module.method"</code>).</p></td></tr>
+<tr><td><code>ctx <em>(optional)</em></code></td><td><code>*</code></td><td><p>JSON-serializable payload, surfaced as <code>request.ctx</code>. Capped at 16 KiB serialized.</p></td></tr>
 <tr><td><code>opts <em>(optional)</em></code></td><td><code>object</code></td><td></td></tr>
-<tr><td><code>opts.key <em>(optional)</em></code></td><td><code>string</code></td><td><p>Idempotency key. Same key ⇒ same id ⇒ last-write-wins. Omit for a fresh random id.</p></td></tr>
+<tr><td><code>opts.key <em>(optional)</em></code></td><td><code>string</code></td><td><p>Idempotency key. Same key ⇒ same id ⇒ last-write-wins (re-arming moves the fire time — the self-re-arming interval recipe). Omit for a fresh random id.</p></td></tr>
 </table>
-<p><b>Returns</b> <code>string</code> — The stable schedule id.</p>
-<pre><code>const id = scheduler.at(cron.fromNow("1h"), "jobs/expire", { leaseId });</code></pre>
-<h4 id="scheduler-in"><code>scheduler.in(delayMs, target, msg?, opts?)</code></h4>
-<p>Convenience: schedule <code>target</code> <code>delayMs</code> milliseconds from now. Rounds up to the next 1 s tick (so a sub-second delay fires at the next tick).</p>
-<table><tr><th>Param</th><th>Type</th><th></th></tr>
-<tr><td><code>delayMs</code></td><td><code>number</code></td><td><p>Delay from now in milliseconds (≤ 0 ⇒ fire on the next sweep).</p></td></tr>
-<tr><td><code>target</code></td><td><code>string</code></td><td><p>Handler module specifier.</p></td></tr>
-<tr><td><code>msg <em>(optional)</em></code></td><td><code>*</code></td><td><p>JSON-serializable payload (see {@link scheduler.at}).</p></td></tr>
-<tr><td><code>opts <em>(optional)</em></code></td><td><code>object</code></td><td></td></tr>
-<tr><td><code>opts.key <em>(optional)</em></code></td><td><code>string</code></td><td><p>Idempotency key (see {@link scheduler.at}).</p></td></tr>
-</table>
-<p><b>Returns</b> <code>string</code> — The stable schedule id.</p>
-<pre><code>scheduler.in(5000, "jobs/poll");</code></pre>
-<h4 id="scheduler-cancel"><code>scheduler.cancel(id)</code></h4>
+<p><b>Returns</b> <code>string</code> — The stable schedule id (feed to <code>schedule.cancel</code> / <code>schedule.get</code>).</p>
+<pre><code>const id = schedule({ in: 5000 }, "jobs/poll");
+schedule({ in: "1h" }, "jobs/expire", { leaseId: "l-7" });</code></pre>
+<h4 id="schedule-cancel"><code>schedule.cancel(id)</code></h4>
 <p>Cancel a scheduled wake by id. Removes both the <code>_sched/by_id</code> and <code>_sched/by_time</code> entries. Idempotent: cancelling an unknown / already-fired id returns <code>false</code>.</p>
 <table><tr><th>Param</th><th>Type</th><th></th></tr>
-<tr><td><code>id</code></td><td><code>string</code></td><td><p>The id returned by <code>at</code> / <code>after</code> (or <code>_idFromKey(opts.key)</code>).</p></td></tr>
+<tr><td><code>id</code></td><td><code>string</code></td><td><p>The id <code>schedule(...)</code> returned.</p></td></tr>
 </table>
 <p><b>Returns</b> <code>boolean</code> — <code>true</code> iff an entry was removed.</p>
-<pre><code>scheduler.cancel(id);</code></pre>
-<h4 id="scheduler-get"><code>scheduler.get(id)</code></h4>
+<pre><code>const id = schedule({ in: "1h" }, "jobs/expire");
+if (!schedule.cancel(id)) throw new Error("cancel missed");</code></pre>
+<h4 id="schedule-get"><code>schedule.get(id)</code></h4>
 <p>Look up a scheduled wake by id.</p>
 <table><tr><th>Param</th><th>Type</th><th></th></tr>
-<tr><td><code>id</code></td><td><code>string</code></td><td><p>The id returned by <code>at</code> / <code>after</code>.</p></td></tr>
+<tr><td><code>id</code></td><td><code>string</code></td><td><p>The id <code>schedule(...)</code> returned.</p></td></tr>
 </table>
 <p><b>Returns</b> <code>{id: string, whenNs: bigint, target: string,
 key: (string|null)</code> — | null} The schedule, or <code>null</code> if unknown / already fired.</p>
-<pre><code>const s = scheduler.get(id);
-if (s) console.log(s.target, s.whenNs);</code></pre>
-<h3 id="schedule-cron"><code>schedule / cron</code></h3>
-<p>Durable, connectionless timers.</p>
-<h4 id="schedule-cron-schedule"><code>schedule(when, target, ctx?)</code></h4>
-<p>Run <code>target</code> once, at a time. Connectionless + durable.</p>
-<table><tr><th>Param</th><th>Type</th><th></th></tr>
-<tr><td><code>when</code></td><td><code>object</code></td><td><p><code>{ at }</code> (absolute) or <code>{ in }</code> (delay). <code>at</code>: bigint ns | number ms-since-epoch | Date | ISO string. <code>in</code>: number ms | duration string (<code>"24h"</code>, <code>"30m"</code>, …).</p></td></tr>
-<tr><td><code>target</code></td><td><code>string</code></td><td><p>Module specifier to run, e.g. <code>"sendReminder"</code>.</p></td></tr>
-<tr><td><code>ctx <em>(optional)</em></code></td><td><code>*</code></td><td><p>JSON-serializable value delivered as <code>request.activation.msg</code>.</p></td></tr>
-</table>
-<p><b>Returns</b> <code>string</code> — The schedule id (cancel via <code>scheduler.cancel(id)</code>).</p>
-<pre><code>schedule({ in: "24h" }, "sendReminder", { user });
-schedule({ at: cron.dailyAt(3, 0) }, "jobs/cleanup");</code></pre>
+<pre><code>const id = schedule({ in: "1h" }, "jobs/expire");
+const s = schedule.get(id);
+if (!s || s.target !== "jobs/expire") throw new Error("lookup failed");</code></pre>
 <h3 id="cron-helpers"><code>cron helpers</code></h3>
 <p>Fire-time helpers for durable scheduling.</p>
 <h4 id="cron-helpers-tofireatns"><code>cron.toFireAtNs(input)</code></h4>
