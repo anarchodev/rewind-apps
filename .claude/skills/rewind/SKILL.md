@@ -1,6 +1,6 @@
 ---
 name: rewind
-description: Deploy / release / replay / simulate first-party app content (this repo's tenants) using the `rewind` customer CLI — the dogfooded, OIDC-authed path we expect customers to use. Use when asked to deploy, ship, release, roll back, replay, simulate/sim a request, or pull logs for a rewind-apps tenant (marketing, docs, admin, auth, agent-sample, or a customer-style app). This is the tenant-CONTENT path; deploying platform binaries is a different repo (rewind-infra `/deploy`).
+description: Deploy / release / replay / simulate / test first-party app content (this repo's tenants) using the `rewind` customer CLI — the dogfooded, OIDC-authed path we expect customers to use. Use when asked to deploy, ship, release, roll back, replay, simulate/sim a request, write or run handler tests, or pull logs for a rewind-apps tenant (marketing, docs, admin, auth, agent-sample, or a customer-style app). This is the tenant-CONTENT path; deploying platform binaries is a different repo (rewind-infra `/deploy`).
 ---
 
 # /rewind — ship app content with the customer CLI
@@ -157,6 +157,49 @@ Per-activation `request` shapes:
 those keys to `kv` (values whose shape you know — you wrote the handler) and
 re-run. It converges without guessing.
 
+## Test handlers offline — `rewind test`
+
+Where `sim`/`replay` run ONE activation and hand you the effect log, `rewind
+test` runs a whole **saga** — an inbound plus every resume it sets off — and
+lets you assert on each. Tests are JS in `_tests/*.mjs` next to the handlers;
+`_tests/` never ships (the deploy path strips it, the server rejects it). Run
+from the app dir:
+
+```
+rewind test              # ./_tests/*.mjs against ./ handlers
+rewind test ./docs       # a specific app dir
+rewind test --update     # re-baseline snapshots
+```
+
+A failing assertion exits non-zero (CI-ready). The library is `rewind:test`:
+
+```js
+import { scenario, expect } from "rewind:test";
+
+const s = scenario({ kv: { "cart/jess": JSON.stringify({ price: 1200 }) }, now: "2026-07-01T00:00:00Z" });
+
+const req = s.inbound({ method: "POST", path: "/checkout", body: { user: "jess" } });
+expect(req.status).toBe(202);
+expect(req).toHaveWritten("order/jess", { status: "pending" });
+
+// resolve an emitted effect → the dependent activation (writes + ctx threaded)
+const charged = req.fetch(/stripe/).resolve({ status: 200, body: { id: "ch_1" } });
+expect(charged).toHaveWritten("order/jess", { status: "paid" });
+expect(charged).toHaveSent("email", { to: "jess@example.com" });
+```
+
+Surface: `scenario({kv, now, seed, sourceDir, entry})`; node getters
+`.status/.body/.ctx/.disposition/.kv(k)/.frames`; matchers
+`toBe/toEqual/toMatch/toHaveWritten/toHaveFetched/toHaveSent/toHaveScheduled/toHaveSentFrame/toMatchSnapshot`
+(+ `.not`). Held resumes: `.fetch(re).resolve/.branch/.cases/.stream`,
+`.clock.advance("1h").fire()`, `.wakeKv({key:val})`, `.disconnect()`; WebSockets
+`s.ws({path}).receive(frame)`; detached delivery callbacks
+`s.sendCallback({on, result, ctx})`. Full guide: rove `docs/guides/testing.md`.
+
+Same faithfulness caveat as `sim`: it runs handler LOGIC through the real engine
+(you supply each external result); it does not run consensus/routing/real fetches
+or the durable retry ladder. Green = "the logic is right for these inputs."
+
 ## Other verbs
 
 - `rewind deployments <tenant>` — release history (operator session for tenants
@@ -193,10 +236,11 @@ re-run. It converges without guessing.
 
 ## Gaps (surface, don't work around)
 
-- **Multi-activation sagas aren't drivable in one command.** `sim` runs ONE
-  activation. A request where an inbound fires `on.fetch`es whose resumes race —
-  supplying the fetch responses, threading `ctx`, exploring interleavings — is
-  prototyped (a scenario driver) but not a `rewind` verb yet. For now, `sim` each
-  activation or `pull` the real request; surface the saga case as the gap.
+- **Concurrent-effect orderings aren't explorable yet.** `rewind test` drives a
+  full saga (resolve/branch/stream, held resumes, WS) — but when one activation
+  emits several effects whose results race (two `after.fetch`es on one held
+  chain), asserting an invariant holds across *every arrival order* isn't a
+  combinator yet (`whenConcurrent(...).interleavings()`). For now, resolve them
+  in a fixed order per test; surface the ordering case as the gap.
 - If `rewind` can't express a customer-needed operation, note it as a CLI/product
   gap rather than dropping to operator tooling.
