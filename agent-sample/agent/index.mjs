@@ -280,7 +280,7 @@ export function onLLM() {
   if (tu.name === "getReplay") {
     browser.status("checking server logs…");
     browser.act({ op: "snapshot", id: tu.id });
-    return next({ sid, replay_tool_id: tu.id, refs });
+    return next({ sid, replay_tool_id: tu.id, refs: ctx.refs || {} });
   }
 
   // Tool name IS the op; the input carries ref/text/path.
