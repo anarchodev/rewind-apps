@@ -7,12 +7,8 @@
 // be matched + resolved. tenant + correlationId are set so browser.getReplay can
 // issue its read-only replay fetch.
 //
-// NOTE: the harness can't yet continue a WS conversation AFTER a fetch resume — a
-// fetch resolve returns a plain node, not a WS-connection node, so `.receive(next
-// frame)` on it drives the blob path, not the next onMessage. So the second leg of
-// the confirm flow (confirm_result → act) and the getReplay follow-ups aren't
-// asserted here (filed as a rove harness gap). Every branch is still covered up to
-// its onLLM resume.
+// The multi-turn legs (the frame the page sends AFTER an onLLM resume) work now
+// that a WS-chain fetch resume is itself a WS node (rove 6c5460e).
 import { scenario, expect } from "rewind:test";
 
 const s = scenario({
@@ -74,13 +70,38 @@ expect(confirm).toHaveSentFrame(/"t":"confirm"/);
 expect(confirm.ctx.confirm_tool_id).toBe("tu2");
 expect(confirm.ctx.pending_action).toEqual({ op: "click", id: "tu2", ref: "e9" });
 
-// ── getReplay: model asks for server history → snapshot bounce ────────────
+// approved → the page's confirm_result runs the held action
+const approved = confirm.receive(frame({ t: "confirm_result", approved: true }));
+expect(approved).toHaveSentFrame(/"t":"act".*"ref":"e9"/);
+expect(approved.ctx.pending_tool_id).toBe("tu2");
+
+// denied → cancel + ask for a fresh snapshot, flag it for the next turn
+const denied = confirm.receive(frame({ t: "confirm_result", approved: false }));
+expect(denied).toHaveSentFrame(/action cancelled/);
+expect(denied).toHaveSentFrame(/"op":"snapshot"/);
+expect(denied.ctx.denied).toBe(true);
+
+// ── getReplay: model asks for server history → snapshot bounce → onReplay ──
 // (regression for the onLLM `refs` TDZ bug — pre-fix this activation threw.)
 const gr = snap.fetch(/llm\.stub/).resolve(claude(
   [{ type: "tool_use", id: "tu3", name: "getReplay", input: {} }]));
 expect(gr.disposition).toBe("held");
 expect(gr).toHaveSentFrame(/"op":"snapshot"/);
 expect(gr.ctx.replay_tool_id).toBe("tu3");
+
+// the bounced snapshot → think issues the read-only replay fetch
+const grSnap = gr.receive(frame({ t: "snapshot", sid: "s1", elements: [] }));
+expect(grSnap.disposition).toBe("held");
+expect(grSnap).toHaveFetched(/rewind-logs\.internal/);
+expect(grSnap).toHaveSentFrame(/reading session replay/);
+
+// the replay result feeds the model → a fresh LLM turn. (Structural only for now:
+// onReplay's ctx — hence the tool_result's tool_use_id — doesn't thread through
+// browser.getReplay's resume yet; filed as rove-sim-getReplay-onReplay-ctx. Tighten
+// to assert the tu3 tool_result once that's resolved.)
+const replayed = grSnap.fetch(/rewind-logs/).resolve({ status: 200, done: true, body: "[]" });
+expect(replayed.disposition).toBe("held");
+expect(replayed).toHaveFetched(/llm\.stub/);
 
 // ── terminal paths: bye frame + disconnect both release the chain ─────────
 const bye = hello.receive(frame({ t: "bye" }));
