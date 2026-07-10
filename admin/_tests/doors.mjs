@@ -24,11 +24,8 @@ const s = scenario({
     "_rp/sess/al": sess("alice@x.com", false),       // plain user
   },
 });
-// NB: bodyless requests pass body:"" — admin's default() reads request.text
-// (rawBody) unconditionally, and the sim throws on a MISSING payload (a GET body
-// reads as "" in prod). See _tests/README for the rove sim faithfulness note.
 const call = (method, path, sid, body) =>
-  s.inbound({ method, path, host: "app.rewindjs.com", body: body === undefined ? "" : body, session: sid ? { id: sid } : undefined });
+  s.inbound({ method, path, host: "app.rewindjs.com", body, session: sid ? { id: sid } : undefined });
 
 // ── log-door saga (GET /v1/logs/{tenant}/{sub}) ───────────────────────────
 // authz gate: unauthenticated 401 (middleware), non-operator 403 (handler),
