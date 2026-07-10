@@ -236,11 +236,22 @@ or the durable retry ladder. Green = "the logic is right for these inputs."
 
 ## Gaps (surface, don't work around)
 
-- **Concurrent-effect orderings aren't explorable yet.** `rewind test` drives a
-  full saga (resolve/branch/stream, held resumes, WS) — but when one activation
-  emits several effects whose results race (two `after.fetch`es on one held
-  chain), asserting an invariant holds across *every arrival order* isn't a
-  combinator yet (`whenConcurrent(...).interleavings()`). For now, resolve them
-  in a fixed order per test; surface the ordering case as the gap.
+Three harness gaps that used to block first-party handler tests are now **closed**
+(rove `docs/guides/testing.md`):
+
+- ~~**Headers-first upload path was undriveable.**~~ Now: `scenario.inboundHeaders`
+  drives the `onHeaders` entry, and `node.receive().stored({ hash, len, ok? })`
+  resumes the `blob.receive` → `onStored` continuation (`request.ctx = {hash, len,
+  app}`, `request.activation.ok`). The admin `/v1/upload` path is testable.
+- ~~**Concurrent-effect orderings weren't explorable.**~~ Now:
+  `node.whenConcurrent([{match, resolve}, …])` folds every arrival order (writes
+  threaded leg-to-leg); `.forEachOrder(fn)` / `.invariant(project)` assert the
+  cross-order invariant.
+- ~~**Cross-module fetch continuations ran the wrong file.**~~ Now: a fetch whose
+  `on` is a module path resolves in *that* module, and `scenario.fetchResult({on,
+  ctx, status, body})` drives a bare continuation module in isolation.
+
+Still surface, don't work around:
+
 - If `rewind` can't express a customer-needed operation, note it as a CLI/product
   gap rather than dropping to operator tooling.
