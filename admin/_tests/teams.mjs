@@ -58,8 +58,11 @@ const s = scenario({
   kv: BASE,
   root: { kv: { "instance/taken1": j({ created: true }) } }, // for provision name-taken
 });
+// bodyless requests pass body:"" — admin's default() reads request.text (rawBody)
+// unconditionally, and the sim throws on a MISSING payload (a GET body reads as ""
+// in prod). See _tests/README for the rove sim faithfulness note.
 const call = (method, path, sid, body) =>
-  s.inbound({ method, path, host: "app.rewindjs.com", body, session: sid ? { id: sid } : undefined });
+  s.inbound({ method, path, host: "app.rewindjs.com", body: body === undefined ? "" : body, session: sid ? { id: sid } : undefined });
 
 // ── routeAuthz matrix ─────────────────────────────────────────────────────
 // authed: no session → 401
