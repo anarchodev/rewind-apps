@@ -233,12 +233,11 @@ function callLLM(sid, userTurn, parkCtx) {
         messages: msgs.concat([userTurn]),
       }),
       timeoutMs: 30_000,
-      // The callback target AND the resume ctx both ride IN opts: after.fetch
-      // takes two params (a third arg is silently dropped), and a bound fetch's
-      // resume reads `opts.ctx` — NOT the connection's next(parkCtx), which is
-      // only for timer/kv/disconnect wakes. Without both, onLLM would resume the
-      // default onFetchResult with an empty ctx and lose the whole turn's state.
-      ctx: parkCtx,
+      // The callback target rides IN opts — after.fetch takes two params, so a
+      // third `{on}` arg is silently dropped and the result would resume the
+      // default onFetchResult (which this module doesn't export). No `ctx` here:
+      // a bound fetch with no ctx inherits the held chain's next(parkCtx) below,
+      // so onLLM reads the parked turn state.
       on: "onLLM",
     },
   );

@@ -95,13 +95,13 @@ expect(grSnap.disposition).toBe("held");
 expect(grSnap).toHaveFetched(/rewind-logs\.internal/);
 expect(grSnap).toHaveSentFrame(/reading session replay/);
 
-// the replay result feeds the model → a fresh LLM turn. (Structural only for now:
-// onReplay's ctx — hence the tool_result's tool_use_id — doesn't thread through
-// browser.getReplay's resume yet; filed as rove-sim-getReplay-onReplay-ctx. Tighten
-// to assert the tu3 tool_result once that's resolved.)
+// the replay result feeds the model → a fresh LLM turn whose tool_result is bound
+// to the getReplay tool_use id. onReplay inherits think()'s next() ctx (the getReplay
+// fetch carries none) — the issue #3 rule: fetch resume ctx = fetch ctx else chain next().
 const replayed = grSnap.fetch(/rewind-logs/).resolve({ status: 200, done: true, body: "[]" });
 expect(replayed.disposition).toBe("held");
-expect(replayed).toHaveFetched(/llm\.stub/);
+const llmBody = replayed.effects.find((e) => e.kind === "fetch" && /llm\.stub/.test(e.url)).body;
+expect(llmBody).toContain('"tool_use_id":"tu3"');
 
 // ── terminal paths: bye frame + disconnect both release the chain ─────────
 const bye = hello.receive(frame({ t: "bye" }));
