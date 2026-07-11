@@ -57,11 +57,15 @@ jobs:
           ref: ${{ env.ROVE_REF }}
           path: rove
 
-      - name: Set up Zig
+      - name: Install Zig
         if: steps.cache-rewind.outputs.cache-hit != 'true'
-        uses: mlugg/setup-zig@v1
-        with:
-          version: ${{ env.ZIG_VERSION }}
+        run: |
+          # Direct download (the confirmed tarball name is zig-<arch>-<os>-<ver>);
+          # avoids a setup action's version/naming resolution.
+          mkdir -p "$HOME/zig"
+          curl -sSL --retry 3 "https://ziglang.org/download/${ZIG_VERSION}/zig-x86_64-linux-${ZIG_VERSION}.tar.xz" \
+            | tar -xJ -C "$HOME/zig" --strip-components=1
+          echo "$HOME/zig" >> "$GITHUB_PATH"
 
       - name: Build the rewind CLI
         if: steps.cache-rewind.outputs.cache-hit != 'true'
