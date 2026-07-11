@@ -78,6 +78,14 @@
       "kind": "example",
       "provision": true,
       "note": "Reference browser-agent sample, not a production site. Reachable at agent-sample.rewindjs.app (wildcard) when published with --include-examples."
+    },
+    {
+      "tenant": "registry",
+      "dir": "registry",
+      "hosts": ["registry.rewindjs.com"],
+      "kind": "operator",
+      "provision": true,
+      "note": "The @rewind package registry (issue #1, P-Reg). A normal operator tenant (no platform.*): store-of-record for package source + version index, serving the publish/resolve/discovery API the rewind CLI drives. Publish is operator-only (OIDC is_root); resolve + discovery are public. RP client registry-dashboard registered in auth/_config/oidc/default.json."
     }
   ]
 }
