@@ -24,6 +24,16 @@ these — this manifest + the dirs are the entire "first-party-ness."
 
 `rove.js` / `rove-agent.js` are shared client SDK assets used across the apps.
 
+## Testing
+
+Handler tenants (`admin/`, `auth/`, `agent-sample/`) carry offline `_tests/*.mjs`
+suites run through the real engine by `rewind test` — no cluster, network, or
+secrets. Run locally with e.g. `rewind test ./admin`. The `rewind-test` GitHub
+workflow gates every PR that touches a handler tenant (it builds the `rewind` CLI
+from a pinned `rove` commit and runs all suites). This is separate from `e2e.yml`,
+which drives live prod as a post-merge monitor. See `CLAUDE.md` for the test-gate
+details and the fixture recipe.
+
 ## Publishing
 
 The publisher (`scripts/publish_firstparty.py`) and `rewind-ops` live in the
