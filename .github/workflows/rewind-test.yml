@@ -31,7 +31,7 @@ concurrency:
 
 env:
   # The rove commit the `rewind` CLI is built from. Bump to pick up a harness fix.
-  ROVE_REF: 0bb26091327098d894251b03ec6b55ca78de0799
+  ROVE_REF: 3f36f0ad2d0416cf9923c835c7363608dfe3f572
   ZIG_VERSION: 0.15.2
 
 jobs:
