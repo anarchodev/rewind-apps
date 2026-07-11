@@ -1,0 +1,83 @@
+name: rewind-test
+
+# Offline handler tests via `rewind test` — the saga runner executes each tenant's
+# `_tests/*.mjs` against its handlers through the real engine, with NO cluster, NO
+# network, and NO secrets. So unlike e2e.yml (which hits live prod and is a post-merge
+# monitor), this is a real PER-PR GATE: deterministic, fast, and it runs on forked PRs.
+#
+# `rewind test` lives in the `rewind` CLI, which is built from the rove repo (public).
+# We build it from a pinned commit and cache the binary by that SHA, so all but the
+# first run after a bump is a cache hit. Bump ROVE_REF when a harness fix is needed.
+
+on:
+  pull_request:
+    paths:
+      - "admin/**"
+      - "auth/**"
+      - "agent-sample/**"
+      - ".github/workflows/rewind-test.yml"
+  push:
+    branches: [main]
+    paths:
+      - "admin/**"
+      - "auth/**"
+      - "agent-sample/**"
+      - ".github/workflows/rewind-test.yml"
+  workflow_dispatch: {}
+
+concurrency:
+  group: rewind-test-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # The rove commit the `rewind` CLI is built from. Bump to pick up a harness fix.
+  ROVE_REF: 0bb26091327098d894251b03ec6b55ca78de0799
+  ZIG_VERSION: 0.15.2
+
+jobs:
+  rewind-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Check out rewind-apps
+        uses: actions/checkout@v4
+
+      - name: Cache the rewind CLI (keyed by rove commit)
+        id: cache-rewind
+        uses: actions/cache@v4
+        with:
+          path: ~/.local/bin/rewind
+          key: rewind-cli-${{ env.ROVE_REF }}-zig${{ env.ZIG_VERSION }}
+
+      - name: Check out rove
+        if: steps.cache-rewind.outputs.cache-hit != 'true'
+        uses: actions/checkout@v4
+        with:
+          repository: anarchodev/rove
+          ref: ${{ env.ROVE_REF }}
+          path: rove
+
+      - name: Set up Zig
+        if: steps.cache-rewind.outputs.cache-hit != 'true'
+        uses: mlugg/setup-zig@v1
+        with:
+          version: ${{ env.ZIG_VERSION }}
+
+      - name: Build the rewind CLI
+        if: steps.cache-rewind.outputs.cache-hit != 'true'
+        working-directory: rove
+        run: |
+          zig build rewind
+          mkdir -p "$HOME/.local/bin"
+          install zig-out/bin/rewind "$HOME/.local/bin/rewind"
+
+      - name: Run the handler test suites
+        run: |
+          export PATH="$HOME/.local/bin:$PATH"
+          fail=0
+          for dir in admin auth agent-sample/agent; do
+            echo "::group::rewind test ./$dir"
+            rewind test "./$dir" || fail=1
+            echo "::endgroup::"
+          done
+          exit $fail
