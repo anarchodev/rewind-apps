@@ -15,22 +15,49 @@ ones with handlers:
 | `admin/` | `__admin__` | `admin/index.mjs` | operator dashboard: instances, teams, deploy doors, source-read; OIDC relying party (`_middlewares` guard) |
 | `auth/` | `__auth__` | `auth/index.mjs` | OIDC IdP + magic-link login |
 | `agent-sample/agent/` | `agent-sample` | `agent-sample/agent/index.mjs` | reference browser-agent WS saga (note the nested `agent/` dir) |
+| `registry/` | `registry` | `registry/index.mjs` | the `@rewind` package registry (issue #1, P-Reg): store-of-record + publish/resolve/discovery API; OIDC RP, publish is operator-only, resolve/discovery public |
 
 Deploy/release/replay/sim/**test** these with the customer `rewind` CLI — see the
 **`/rewind` skill** (`.claude/skills/rewind/`). System tenants (`__admin__`,
 `__auth__`) deploy via `rewind-ops` — the **`/deploy-admin` skill**.
 
+### `registry/` — the package registry (issue #1, P-Reg): slice status
+
+`registry/` is the **R0 slice**: the store-of-record (source blobs + version
+index) and the publish / resolve / discovery API, driving the already-shipped
+**"B" per-tenant deploy path** — it stores + resolves *source* and never
+compiles (package bytecode is compiled at the consumer's deploy via rove's
+`/v1/deploy/pkgfile`), so it's a plain operator tenant with no `platform.*` and
+needs no rove change. Decisions: **D1=A** (publish-time compile into a shared
+`__packages__`) is the *target*, reached via the B→A cutover later; **D2** the
+`pkg_hash` is canonical-JSON (JCS) over `{spec, version, files[source_hash],
+imports}` — a permanent cross-publisher contract (rove treats it as opaque, 64
+lc hex); **D3** private/paid packages are out of v1 (field reserved).
+
+`index.mjs` is deliberately ONE self-contained module (the offline harness can't
+resolve module imports yet — **rove#19(c)**); the pure cores are bannered
+`==== pkg_hash / gates / resolve (pure) ====` and lift out verbatim into their
+own files once rove#19 lands. **Deferred** (not in this slice): the A-cutover +
+`__packages__` shared store (rove companion task), the genesis seed + lifting
+the 12 `@rewind/*` libs (P-Lift), full discovery UX, `rewind publish`/resolve
+CLI verbs (P-CLI, rove-side), and the end-to-end *consume* test (needs
+rove#19(c) to run offline).
+
 ## Testing — offline handler suites + the CI gate
 
 Every handler tenant has a `_tests/*.mjs` suite run offline through the real engine
 by `rewind test` (no cluster, network, or secrets). `_tests/` never ships (the
-deploy path strips it). **163 assertions** across:
+deploy path strips it). **215 assertions** across:
 
 - `admin/_tests/` — `release.mjs` (dep_id regression), `teams.mjs` (authz matrix +
   membership), `doors.mjs` (log/CP after.fetch relay), `deploy.mjs` (reset/file/cut
   + source-read saga). See `admin/_tests/README.md` for the admin fixture recipe.
 - `auth/_tests/login.mjs` — magic-link security (single-use, expiry, open-redirect).
 - `agent-sample/agent/_tests/agent.mjs` — the full WS agent loop.
+- `registry/_tests/` — `publish.mjs` (source-only gates, reserved scope, dep
+  freezing, immutability, the `pkg_hash` contract cross-check), `resolve.mjs`
+  (encapsulation + dedup + nested `private`, overrides, discovery). See
+  `registry/_tests/README.md`.
 
 Run locally (from the repo root):
 
@@ -38,10 +65,11 @@ Run locally (from the repo root):
 rewind test ./admin
 rewind test ./auth
 rewind test ./agent-sample/agent
+rewind test ./registry
 ```
 
 **CI gate:** `.github/workflows/rewind-test.yml` runs these on every PR/push touching
-`admin/**`, `auth/**`, or `agent-sample/**`. It's a *real per-PR gate* (offline,
+`admin/**`, `auth/**`, `agent-sample/**`, or `registry/**`. It's a *real per-PR gate* (offline,
 deterministic, runs on forked PRs) — distinct from `e2e.yml`, which hits live prod
 and is a post-merge monitor. The gate builds the `rewind` CLI from a **pinned rove
 commit** (`ROVE_REF`) via `zig build rewind` and caches the binary by that SHA.

@@ -1,0 +1,8 @@
+{
+  "_comment": "Registry OIDC relying-party config. Config-mirrored to kv _config/oidc/rp/default on deploy; oidc.rp('default') falls back to it (engine: oidc.js). Declarative so a wipe self-heals. Only the operator (is_root, per operator_prefix) may publish in v1 — resolve + discovery are public and need no session. Mirrors admin/_config/oidc/rp/default.json.",
+  "issuer": "https://auth.rewindjs.com",
+  "client_id": "registry-dashboard",
+  "redirect_uri": "https://registry.rewindjs.com/_rp/callback",
+  "post_login": "/",
+  "operator_prefix": "_admin/operator/"
+}

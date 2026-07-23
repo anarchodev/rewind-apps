@@ -7,6 +7,8 @@
     { "client_id": "replay-dashboard",
       "redirect_uris": ["https://replay.${ISSUER_PARENT}/_rp/callback"] },
     { "client_id": "logs-dashboard",
-      "redirect_uris": ["https://logs.${ISSUER_PARENT}/_rp/callback"] }
+      "redirect_uris": ["https://logs.${ISSUER_PARENT}/_rp/callback"] },
+    { "client_id": "registry-dashboard",
+      "redirect_uris": ["https://registry.${ISSUER_PARENT}/_rp/callback"] }
   ]
 }
