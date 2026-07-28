@@ -57,6 +57,26 @@ const pub = (sid, body) => s().inbound({ method: "POST", path: "/v1/packages", h
 expect(pub(null, { spec: "@rewind/a", version: "1.0.0", files: [{ path: "i.mjs", source: "export const x=1;" }] }).status).toBe(401);
 expect(pub("jess", { spec: "@rewind/a", version: "1.0.0", files: [{ path: "i.mjs", source: "export const x=1;" }] }).status).toBe(403);
 
+// ── operator-token publish (genesis-seed / CI path — no OIDC session) ──────
+// A Bearer whose sha256 matches the seeded `_optoken/publish_sha256` hash grants
+// is_root without a session. Inert unless the hash is seeded (only platform
+// kv-put writes it at genesis). Value is stored raw (no JSON quoting).
+const OP_TOKEN = "genesis-operator-token-deadbeef0123456789";
+const OP_BODY = { spec: "@rewind/optok", version: "1.0.0", files: [{ path: "index.mjs", source: "export const x=1;" }] };
+const opScen = (extra) => scenario({ now: "2026-07-01T00:00:00Z", seed: 1, kv: Object.assign({}, BASE, extra) });
+const opPub = (extra, hdrs) => opScen(extra).inbound({ method: "POST", path: "/v1/packages", host: HOST, body: OP_BODY, headers: hdrs || {} });
+const SEED = { "_optoken/publish_sha256": crypto.sha256(OP_TOKEN) };
+// valid operator token → publishes
+expect(opPub(SEED, { authorization: "Bearer " + OP_TOKEN }).status).toBe(201);
+// wrong token → 401 (no session, no valid operator auth)
+expect(opPub(SEED, { authorization: "Bearer wrong-token" }).status).toBe(401);
+// bearer present but NO seed key → path is inert → 401
+expect(opPub({}, { authorization: "Bearer " + OP_TOKEN }).status).toBe(401);
+// seeded but no bearer → 401
+expect(opPub(SEED, {}).status).toBe(401);
+// a valid OIDC operator session still publishes (operator path doesn't disturb it)
+expect(pub("op", OP_BODY).status).toBe(201);
+
 // ── input validation ──────────────────────────────────────────────────────
 expect(pub("op", { spec: "not-a-spec", version: "1.0.0", files: [{ path: "i.mjs", source: "x" }] }).status).toBe(400);
 expect(pub("op", { spec: "@rewind/a", version: "v1", files: [{ path: "i.mjs", source: "x" }] }).status).toBe(400);
