@@ -15,7 +15,6 @@
 //
 // ── operator (genesis-seed / CI) publish path ────────────────────────────
 //
-// (`oidc` is the first-party @rewind/oidc package, declared in manifest.json.)
 // The registry is a NORMAL tenant with no platform.auth.checkRootToken (that
 // native is admin-only), and at genesis there is no OIDC IdP to mint a session
 // yet — so the genesis seed (rove-side) cannot log in to publish the first
@@ -27,15 +26,32 @@
 // here, only its hash) and INERT until seeded — with no seed key present, a
 // Bearer grants nothing and publish stays OIDC-only. This is also the general
 // operator/CI publish path once genesis exists.
-import oidc from "@rewind/oidc";
 
 export function before() {
-    const auth = oidc.rp("default").guard();
+    const auth = guardSession();
     if (auth) { request.auth = auth; return; } // { sub, is_root }
 
     const op = operatorAuth();
     if (op) request.auth = op;
     // else fall through unauthenticated → routeAuthz gates the one publish route
+}
+
+// Inline OIDC RP session read. The registry is the package REGISTRY — it serves
+// every @rewind/* package, so it CANNOT depend on one: an `import oidc from
+// "@rewind/oidc"` would deadlock genesis (the registry can't resolve its own
+// dependency until it's running to serve it). So the RP session guard is inlined
+// here (mirrors OIDCRelyingParty.guard: the default, only, session path is
+// `_rp/sess/{sid}`; a valid unexpired row yields {sub, is_root}). The operator
+// token path below handles genesis + CI publish without any OIDC at all.
+function guardSession() {
+    const sid = request.session && request.session.id;
+    if (!sid) return null;
+    const raw = kv.get("_rp/sess/" + sid);
+    if (raw == null) return null;
+    let s = null;
+    try { s = JSON.parse(raw); } catch (_) { return null; }
+    if (!s || Date.now() >= s.exp) return null;
+    return { sub: s.sub, is_root: !!s.is_root };
 }
 
 // Resolve the operator Bearer against the seeded hash. Returns an is_root auth
