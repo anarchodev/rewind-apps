@@ -7,6 +7,9 @@
 // X-Rove-Scope no longer rebinds it), so the RP session lookup is
 // naturally scope-independent and correct on every dispatch. The
 // /_system/* root-token surface is separate and unaffected.
+//
+// `oidc` is the first-party @rewind/oidc package (declared in manifest.json).
+import oidc from "@rewind/oidc";
 
 const PRE_AUTH_PATHS = [
     // The browser-facing RP handshake endpoints.

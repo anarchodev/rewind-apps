@@ -4,6 +4,8 @@
 // the RP session keyed by the sid threaded through http.send context.
 // A bare `_rp/*.mjs` file — invoked only as an {on} callback module, not
 // HTTP-routable.
+import oidc from "@rewind/oidc";
+
 export default function () {
     return oidc.rp("default").completeToken();
 }

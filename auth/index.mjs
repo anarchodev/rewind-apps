@@ -8,6 +8,10 @@
 // `_oidc/session/{sid}` — exactly the seam oidc.js._authorize reads.
 //
 // §0: every URL is derived from request.host — no compiled-in domain.
+//
+// oidc/email are first-party @rewind packages (declared in manifest.json).
+import oidc from "@rewind/oidc";
+import email from "@rewind/email";
 
 const MAGIC_TTL_MS = 15 * 60 * 1000; // 15 min, single-use
 const MAGIC_PREFIX = "_oidc/magic/";

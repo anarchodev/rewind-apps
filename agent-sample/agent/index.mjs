@@ -16,6 +16,7 @@
 // Swap the `on.fetch` block for any model; the rest is model-agnostic.
 // The LLM endpoint/key/model are read from `_config/*` so an operator
 // (or the smoke harness) can point this at a stub.
+import browser from "@rewind/browser";
 
 const SYSTEM_PROMPT =
   "You drive a web UI on the user's behalf. Each turn you receive a " +
