@@ -69,6 +69,15 @@ jobs:
             | tar -xJ -C "$HOME/zig" --strip-components=1
           echo "$HOME/zig" >> "$GITHUB_PATH"
 
+      - name: Install system libraries
+        # The rewind CLI links libcurl (deploy HTTP) + liblmdb (kvexp) and their
+        # companions. Only needed on a cache miss (fresh CLI build).
+        if: steps.cache-rewind.outputs.cache-hit != 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libcurl4-openssl-dev liblmdb-dev libssl-dev zlib1g-dev
+
       - name: Build the rewind CLI
         if: steps.cache-rewind.outputs.cache-hit != 'true'
         working-directory: rove
