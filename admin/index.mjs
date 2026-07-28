@@ -670,7 +670,7 @@ function handleCpRead(cpSub, qs) {
 // cap, or the CP unreachable) surfaces as 502.
 export function onFetchResult() {
     response.headers = { "content-type": "application/json" };
-    if (request.ok) {
+    if (request.status >= 200 && request.status < 300) {
         response.status = request.status;
         return (request.text || "");
     }
@@ -825,7 +825,7 @@ function handleReadSources(tenant, depArg) {
 // none).
 export function onManifest() {
     const ctx = request.ctx || {};
-    if (!request.ok) {
+    if (!(request.status >= 200 && request.status < 300)) {
         response.headers = { "content-type": "application/json" };
         response.status = request.status === 404 ? 404 : 502;
         return JSON.stringify({ error: "manifest read failed", status: request.status || 0 });
@@ -851,10 +851,10 @@ export function onManifest() {
 export function onModuleSource() {
     const ctx = request.ctx || {};
     const handlers = (ctx.entries || []).filter((e) => e.kind === "handler");
-    const src = request.ok
-        ? (request.text || "") : null;
+    const ok = request.status >= 200 && request.status < 300;
+    const src = ok ? (request.text || "") : null;
     const acc = ctx.acc.concat([{
-        path: handlers[ctx.idx].path, source: src, missing: !request.ok,
+        path: handlers[ctx.idx].path, source: src, missing: !ok,
     }]);
     const nextIdx = ctx.idx + 1;
     if (nextIdx < handlers.length) {
