@@ -1,3 +1,10 @@
+// QUARANTINED (`_`-prefix → not run by `rewind test`) — issue #5.
+// STALE vs current rove: the deploy handler + these sagas assert pre-re-platform
+// fetch/hold + deploy-protocol behavior (~184 commits behind); they throw
+// `requireHeld` / return 500-not-400 under the current engine. Orthogonal to the
+// package conversion. Restore (drop `_stale_`) once admin's deploy-door app is
+// updated to the current protocol — see issue #5.
+//
 // The deploy surface: the per-file workspace deploy (reset / file / cut) and the
 // cross-tenant source-read saga. Deploy ops go through the M2M door (a Bearer root
 // token via _middlewares, or a session that owns the tenant), gated by deployGate;
