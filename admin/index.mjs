@@ -670,7 +670,7 @@ function handleCpRead(cpSub, qs) {
 // cap, or the CP unreachable) surfaces as 502.
 export function onFetchResult() {
     response.headers = { "content-type": "application/json" };
-    if (request.ok) {
+    if (request.status >= 200 && request.status < 300) {
         response.status = request.status;
         return (request.text || "");
     }
@@ -710,6 +710,11 @@ export function onFetchResult() {
 //                     content_type?}                      → stage one file
 //   /v1/deploy/cut   {tenant}                             → {ok, dep_id}
 const WS = "_workspace/";
+// Package files stage under a parallel prefix keyed by pkg_hash so `cut` can
+// assemble the manifest's packages[].files. Mirrors the baked genesis deploy
+// app (starter/genesis_admin.mjs) — the @rewind package-staging half of the
+// deploy protocol. See docs/architecture/package-resolution.md.
+const WSPKG = "_workspace_pkg/";
 
 // Parse + ownership-gate a deploy op. Returns the body on success, or null
 // after stamping the error response.
@@ -732,7 +737,9 @@ function handleWsReset(body) {
     const sk = platform.scope(b.tenant).kv;
     const rows = sk.prefix(WS, "", 1000);
     for (let i = 0; i < rows.length; i++) sk.delete(rows[i].key);
-    return { ok: true, cleared: rows.length };
+    const prows = sk.prefix(WSPKG, "", 1000);
+    for (let i = 0; i < prows.length; i++) sk.delete(prows[i].key);
+    return { ok: true, cleared: rows.length + prows.length };
 }
 
 function handleWsFile(body) {
@@ -742,11 +749,52 @@ function handleWsFile(body) {
     // which records their own workspace entry — only handlers come through here.
     if (b.kind !== "handler")
         return jsonError(400, "kind must be 'handler' (statics stream via PUT /v1/upload)");
-    platform.compile([{ path: b.path, source: b.source || "" }], {
+    const copts = {
         scope: b.tenant, on: "onFileStaged",
         ctx: { target: b.tenant, path: b.path, content_type: b.content_type || "" },
-    });
+    };
+    // A handler that imports @rewind/* compiles against the deploy's resolution
+    // — imports validate at compile (deploy fails loud here, not at first
+    // request). See docs/architecture/package-resolution.md.
+    if (b.resolution !== undefined) copts.resolution = b.resolution;
+    platform.compile([{ path: b.path, source: b.source || "" }], copts);
     return next();
+}
+
+// Stage one PACKAGE file: compiled under /pkg/<pkg_hash>/<path> (its module
+// identity), recorded under _workspace_pkg/{pkg_hash}/{path} so `cut` can
+// assemble the manifest's packages[].files. The @rewind package-staging half of
+// the deploy protocol (mirrors starter/genesis_admin.mjs).
+function handleWsPkgFile(body) {
+    const b = deployGate(body); if (!b) return null;
+    if (!b.pkg_hash || !b.path) return jsonError(400, "pkg_hash + path required");
+    const copts = {
+        scope: b.tenant, pkg_hash: b.pkg_hash, on: "onPkgStaged",
+        ctx: { target: b.tenant, pkg_hash: b.pkg_hash, path: b.path },
+    };
+    if (b.resolution !== undefined) copts.resolution = b.resolution;
+    platform.compile([{ path: b.path, source: b.source || "" }], copts);
+    return next();
+}
+
+// compile bound-resume for a package file → record the staged {source_hex,
+// bytecode_hex} row `cut` reads back (server-authoritative hashes).
+export function onPkgStaged() {
+    const ctx = request.ctx;
+    if (!ctx || !ctx.ok) {
+        response.status = 500;
+        return JSON.stringify({ stage: "pkg-compile", ctx: ctx || null });
+    }
+    const app = ctx.app || {};
+    const r = ctx.results[0];
+    platform.scope(app.target).kv.set(WSPKG + app.pkg_hash + "/" + app.path, JSON.stringify({
+        source_hex: r.source_hex, bytecode_hex: r.bytecode_hex,
+    }));
+    response.status = 200;
+    return JSON.stringify({
+        ok: true, pkg_hash: app.pkg_hash, path: app.path,
+        source_hex: r.source_hex, bytecode_hex: r.bytecode_hex,
+    });
 }
 
 // compile bound-resume (continuation — skips _middlewares) → record the entry.
@@ -767,7 +815,8 @@ export function onFileStaged() {
 
 function handleWsCut(body) {
     const b = deployGate(body); if (!b) return null;
-    const rows = platform.scope(b.tenant).kv.prefix(WS, "", 1000);
+    const sk = platform.scope(b.tenant).kv;
+    const rows = sk.prefix(WS, "", 1000);
     if (rows.length === 0) return jsonError(400, "workspace empty — nothing to cut");
     const entries = rows.map(function (row) {
         const e = JSON.parse(row.value);
@@ -775,7 +824,32 @@ function handleWsCut(body) {
                  content_type: e.content_type || "",
                  source_hex: e.source_hex, bytecode_hex: e.bytecode_hex || "" };
     });
-    platform.scope(b.tenant).deploy.stampManifest(entries, { on: "onCut" });
+    const sopts = { on: "onCut" };
+    // Join the client's lockfile (spec/version/pkg_hash/imports) with the
+    // server-staged package files — hashes stay server-authoritative (recorded
+    // by onPkgStaged) → manifest-v2 packages[]. See package-resolution.md.
+    if (b.resolution !== undefined) {
+        const res = { packages: [], app_imports: b.resolution.app_imports || {} };
+        const pkgs = b.resolution.packages || [];
+        for (let i = 0; i < pkgs.length; i++) {
+            const p = pkgs[i];
+            const staged = sk.prefix(WSPKG + p.pkg_hash + "/", "", 1000);
+            if (staged.length === 0)
+                return jsonError(400, "package " + p.spec + "@" + p.version + " has no staged files");
+            const files = staged.map(function (row) {
+                const f = JSON.parse(row.value);
+                return { path: row.key.slice((WSPKG + p.pkg_hash + "/").length),
+                         source_hash: f.source_hex, bytecode_hash: f.bytecode_hex };
+            });
+            res.packages.push({
+                spec: p.spec, version: p.version, pkg_hash: p.pkg_hash,
+                files: files, imports: p.imports || {},
+                capabilities: p.capabilities || [], private: !!p.private,
+            });
+        }
+        sopts.resolution = res;
+    }
+    platform.scope(b.tenant).deploy.stampManifest(entries, sopts);
     return next();
 }
 
@@ -825,7 +899,7 @@ function handleReadSources(tenant, depArg) {
 // none).
 export function onManifest() {
     const ctx = request.ctx || {};
-    if (!request.ok) {
+    if (!(request.status >= 200 && request.status < 300)) {
         response.headers = { "content-type": "application/json" };
         response.status = request.status === 404 ? 404 : 502;
         return JSON.stringify({ error: "manifest read failed", status: request.status || 0 });
@@ -851,10 +925,10 @@ export function onManifest() {
 export function onModuleSource() {
     const ctx = request.ctx || {};
     const handlers = (ctx.entries || []).filter((e) => e.kind === "handler");
-    const src = request.ok
-        ? (request.text || "") : null;
+    const ok = request.status >= 200 && request.status < 300;
+    const src = ok ? (request.text || "") : null;
     const acc = ctx.acc.concat([{
-        path: handlers[ctx.idx].path, source: src, missing: !request.ok,
+        path: handlers[ctx.idx].path, source: src, missing: !ok,
     }]);
     const nextIdx = ctx.idx + 1;
     if (nextIdx < handlers.length) {
@@ -979,6 +1053,7 @@ const ROUTES = [
     // deploy chokepoint (root-token M2M or session-ownership; deployGate self-gates)
     ["POST",   "/v1/deploy/reset",              "open",          (c) => handleWsReset(c.rawBody || "{}")],
     ["POST",   "/v1/deploy/file",               "open",          (c) => handleWsFile(c.rawBody || "{}")],
+    ["POST",   "/v1/deploy/pkgfile",            "open",          (c) => handleWsPkgFile(c.rawBody || "{}")],
     ["POST",   "/v1/deploy/cut",                "open",          (c) => handleWsCut(c.rawBody || "{}")],
     // deployment history (handler enforces ownership) — /v1/history/{tenant}
     ["GET",    "/v1/history/:id",               "self",          (c) => handleHistory(c.params.id)],
