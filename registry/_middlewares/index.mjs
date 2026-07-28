@@ -14,6 +14,8 @@
 // (_rp/sess/{sid}) is naturally correct on every dispatch.
 //
 // ── operator (genesis-seed / CI) publish path ────────────────────────────
+//
+// (`oidc` is the first-party @rewind/oidc package, declared in manifest.json.)
 // The registry is a NORMAL tenant with no platform.auth.checkRootToken (that
 // native is admin-only), and at genesis there is no OIDC IdP to mint a session
 // yet — so the genesis seed (rove-side) cannot log in to publish the first
@@ -25,6 +27,7 @@
 // here, only its hash) and INERT until seeded — with no seed key present, a
 // Bearer grants nothing and publish stays OIDC-only. This is also the general
 // operator/CI publish path once genesis exists.
+import oidc from "@rewind/oidc";
 
 export function before() {
     const auth = oidc.rp("default").guard();

@@ -12,6 +12,13 @@
 // no middleware and gates on the root token.
 //
 // PUT /v1/upload?tenant=X&path=Y&content_type=Z   (raw bytes as the body)
+//
+// `oidc` is the first-party @rewind/oidc package (declared in manifest.json).
+// NOTE: the baked genesis upload shim (rove src/js/starter/upload.mjs) is a
+// separate copy that stays on the ambient global — the baked deploy path has no
+// package resolution.
+import oidc from "@rewind/oidc";
+
 const WS = "_workspace/";
 
 // Access check — mirrors `canAccess` in admin/index.mjs (duplicated rather than

@@ -1,3 +1,7 @@
+// oidc/email are first-party @rewind packages (declared in manifest.json).
+import oidc from "@rewind/oidc";
+import email from "@rewind/email";
+
 function validId(id) {
     return typeof id === "string" && /^[A-Za-z0-9_-]{1,64}$/.test(id);
 }
@@ -393,7 +397,8 @@ export function setMemberRole(aid, memberHash, role) {
 }
 
 // Invite by email (tokened magic-link). `addr` is NOT named `email` on purpose —
-// a local `email` would shadow the global `email` API and break `email.send`.
+// a local `email` would shadow the imported `@rewind/email` binding and break
+// `email.send`.
 export function inviteMember(aid, addr) {
     const a = request.auth || {};
     const caller = accountHashFor(a.sub);

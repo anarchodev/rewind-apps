@@ -2,6 +2,8 @@
 // Caches the IdP JWKS, RS256-verifies the id_token, validates
 // iss/aud/exp, and writes _rp/sess/{sid} (= the verified session).
 // A bare `_rp/*.mjs` file — invoked only as an {on} callback module.
+import oidc from "@rewind/oidc";
+
 export default function () {
     return oidc.rp("default").completeJwks();
 }
