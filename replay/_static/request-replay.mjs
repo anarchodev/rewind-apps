@@ -91,6 +91,108 @@ export function foldRequestReads(entries) {
     return out;
 }
 
+
+/// Rebuild the non-inbound half of the `request` surface from the tapes
+/// (`docs/architecture/replay-and-sim.md` §3). Mirrors the native
+/// transcoder `src/replay/export_fixture.zig` — same channels, same
+/// splits — because a browser replay and a `rewind replay` of the same
+/// record must reconstruct the same activation.
+///
+/// Returns `{ ctx, activation, result, bodyBytes }`, all null/undefined
+/// when the record is a plain inbound.
+// Activation source → the `kind` string prod puts on the bag. Mirrors the
+// switch in `src/js/globals_request.zig` — note `kv_wake` surfaces as
+// "kv", not "kv_wake"; the rest are identity.
+const ACTIVATION_KIND = { kv_wake: "kv" };
+
+export function deriveActivationSurface({ activation = "inbound", tapes = {}, activationBytes = null } = {}) {
+    // Prod installs `request.activation = {kind, ...payload}` on EVERY
+    // activation, inbound included (globals_request.zig) — a handler that
+    // branches on `request.activation.kind` is doing the documented thing.
+    // So the bag always exists; only its extras vary by kind.
+    const out = {
+        ctx: undefined,
+        activation: { kind: ACTIVATION_KIND[activation] ?? activation },
+        result: null,
+        bodyBytes: null,
+    };
+    const trigger = (tapes.trigger_payload || []).filter((e) => e.batch_id === 0 && e.inline_bytes?.length);
+    const fetches = tapes.fetch_responses || [];
+
+    // The threaded ctx rides a synthesized `{"ctx": …}` envelope.
+    let envelope = null;
+    if (trigger.length) {
+        try { envelope = JSON.parse(_decoder.decode(trigger[0].inline_bytes)); }
+        catch (_) { envelope = null; }
+    }
+    if (envelope && "ctx" in envelope) out.ctx = envelope.ctx;
+
+    // A send_callback's Msg IS that envelope: `{ctx:{result, context}}`
+    // for a result delivery. Split it exactly as prod's install hoist
+    // does — `result` onto the flattened surface + the activation
+    // metadata bag, `context` onto the bare `request.ctx`. A bare-ctx
+    // envelope (an internal chained hop) keeps the whole-ctx lift.
+    if (activation === "send_callback" && envelope?.ctx && typeof envelope.ctx === "object") {
+        const r = envelope.ctx.result;
+        if (r && typeof r === "object") {
+            out.ctx = envelope.ctx.context;
+            out.result = {
+                status: r.status ?? null,
+                done: r.done ?? null,
+                bodyTruncated: r.bodyTruncated ?? r.body_truncated ?? null,
+            };
+            if (typeof r.body === "string") out.bodyBytes = r.body;
+            else if (typeof r.bodyB64 === "string") {
+                const bin = atob(r.bodyB64);
+                const u = new Uint8Array(bin.length);
+                for (let i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i);
+                out.bodyBytes = u;
+            }
+            // Delivery metadata, passed through as recorded — absent
+            // fields stay absent (→ undefined on replay), matching the
+            // hoist. `ok` is deliberately not surfaced: status is the
+            // single success signal (rove#7 / #214).
+            for (const k of ["attempts", "error", "id", "headers", "hash"]) {
+                if (k in r) out.activation[k] = r[k];
+            }
+        }
+    }
+
+    // A bound fetch's result: the last recorded chunk carries the
+    // terminal status; its bytes are the activation's body.
+    if (activation === "fetch_chunk" && fetches.length) {
+        const last = fetches[fetches.length - 1];
+        out.result = {
+            status: last.final ? last.terminal_status : null,
+            done: last.final,
+            fetchId: last.fetch_id || null,
+            chunkSeq: last.seq ?? null,
+            bodyTruncated: last.body_truncated ?? null,
+        };
+        if (last.inline_bytes?.length) out.bodyBytes = last.inline_bytes;
+    }
+
+    // ws_message: activationBytes = [opcode][data]. A binary frame's
+    // data must reach the handler as bytes, a text frame as a string.
+    if (activation === "ws_message" && activationBytes?.length) {
+        const opcode = activationBytes[0];
+        const data = activationBytes.subarray(1);
+        out.activation.opcode = opcode;
+        out.activation.data = opcode === 2 ? Array.from(data) : _decoder.decode(data);
+    }
+
+    // wake_batch: activationBytes = the fired-watch bag, verbatim in the
+    // JS-facing encoding (`captureWakeBatchTapes`), always at least `[]`.
+    if (activation === "wake_batch" && activationBytes?.length) {
+        try {
+            const wakes = JSON.parse(_decoder.decode(activationBytes));
+            if (Array.isArray(wakes)) out.activation.wakes = wakes;
+        } catch (_) { /* unparseable bag → leave undefined */ }
+    }
+
+    return out;
+}
+
 /// Build the epilogue source.
 ///
 ///   record       — the LogRecord fields ({method, path, host}); the
@@ -111,7 +213,7 @@ export function foldRequestReads(entries) {
 ///                  Uint8Array of arbitrary bytes (the chunk IS the
 ///                  Msg, always recorded — never read-elided), so the
 ///                  replay body must be byte-exact binary too.
-export function buildRequestEpilogue({ record = {}, requestReads = null, bodyBytes = null, exportName = "default", binaryBody = false, activation = "inbound" } = {}) {
+export function buildRequestEpilogue({ record = {}, requestReads = null, bodyBytes = null, exportName = "default", binaryBody = false, activation = "inbound", ctx = undefined, activationBag = undefined, result = null } = {}) {
     const reads = foldRequestReads(requestReads);
 
     const rawPath = record.path || "/";
@@ -137,6 +239,14 @@ export function buildRequestEpilogue({ record = {}, requestReads = null, bodyByt
         ipRaw: reads.ipRaw,
         fn: exportName,
         kind: activation,
+        // The non-inbound surface (replay-and-sim.md §3). `hasCtx`
+        // distinguishes a recorded `undefined` ctx from an absent one —
+        // JSON cannot carry undefined, and the first activation of a
+        // chain legitimately has none.
+        hasCtx: ctx !== undefined,
+        ctx: ctx === undefined ? null : ctx,
+        activationBag: activationBag ?? null,
+        result: result ?? null,
     };
 
     // JSON is JS-literal-safe except the two line separators.
@@ -235,6 +345,17 @@ export function buildRequestEpilogue({ record = {}, requestReads = null, bodyByt
         "  Object.defineProperty(request, \"ip\", { enumerable: true, configurable: true,\n" +
         "    get() { if (!D.ipMasked) miss(\"request.ip\"); return D.ipMasked.value || null; } });\n" +
         "  request.unmaskedIp = function () { if (!D.ipRaw) miss(\"request.unmaskedIp()\"); return D.ipRaw.value || null; };\n" +
+        // The non-inbound surface: threaded ctx, the activation metadata
+        // bag, and the flattened callback/fetch result. Defined only when
+        // recorded, so a payload-less kind reads `undefined` exactly as it
+        // does live rather than a fabricated null.
+        "  if (D.hasCtx) request.ctx = D.ctx;\n" +
+        "  request.activation = D.activationBag;\n" +
+        "  if (D.result) {\n" +
+        "    for (const k of [\"status\", \"done\", \"fetchId\", \"chunkSeq\", \"bodyTruncated\"]) {\n" +
+        "      if (D.result[k] !== null && D.result[k] !== undefined) request[k] = D.result[k];\n" +
+        "    }\n" +
+        "  }\n" +
         "  globalThis.request = request;\n" +
         "  globalThis.response = { status: 200, headers: {}, cookies: [] };\n" +
         "  const ns = __arena_entry_ns();\n" +

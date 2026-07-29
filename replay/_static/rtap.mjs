@@ -34,6 +34,8 @@ export const RTAP_VERSION = 5;
 
 export const CHANNEL_KV            = 0;
 export const CHANNEL_MODULE        = 1;
+export const CHANNEL_FETCH_RESPONSES = 2;
+export const CHANNEL_TRIGGER_PAYLOAD = 3;
 export const CHANNEL_REQUEST_READS = 4;
 
 // `request_reads` entry kinds — mirrors `RequestReadKind` in
@@ -110,6 +112,39 @@ function decodeEntry(channel, bytes) {
             const specifier = readUtf8();
             const source_hash_hex = readUtf8();
             return { specifier, source_hash_hex };
+        }
+        // A fetch result's bytes + terminal status (src/tape/root.zig
+        // `FetchResponseEntry`; decoder mirrored from
+        // src/replay/tape_decode.zig decodeFetchResponses). The two
+        // BodyRef fields are read past — an out-of-line body lives in a
+        // readset blob the bundle does not carry, so only `inline_bytes`
+        // (≤16 KB captures) is replayable offline.
+        case CHANNEL_FETCH_RESPONSES: {
+            const fetch_id = readUtf8();
+            const seq = view.getUint32(off); off += 4;
+            const byte_offset = Number(view.getBigUint64(off)); off += 8;
+            const batch_id = Number(view.getBigUint64(off)); off += 8;
+            off += 8;  // body_ref.offset — unused offline
+            off += 4;  // body_ref.len    — unused offline
+            const final = bytes[off++] !== 0;
+            const terminal_status = view.getUint16(off); off += 2;
+            const terminal_ok = bytes[off++] !== 0;
+            const body_truncated = bytes[off++] !== 0;
+            const headers = readUtf8();
+            const inline_bytes = readLenPrefixed();
+            return { fetch_id, seq, byte_offset, batch_id, final,
+                     terminal_status, terminal_ok, body_truncated,
+                     headers, inline_bytes };
+        }
+        // The activation's Msg: the request body for an inbound, or a
+        // synthesized `{"ctx": …}` envelope for a continuation resume
+        // (src/tape/root.zig `TriggerPayloadEntry`).
+        case CHANNEL_TRIGGER_PAYLOAD: {
+            const batch_id = Number(view.getBigUint64(off)); off += 8;
+            off += 8;  // body_ref.offset
+            off += 4;  // body_ref.len
+            const inline_bytes = readLenPrefixed();
+            return { batch_id, inline_bytes };
         }
         case CHANNEL_REQUEST_READS: {
             const kind = bytes[off++];
@@ -209,6 +244,12 @@ export function buildTapesFromBlobs(blobs) {
         kv: CHANNEL_KV,
         module: CHANNEL_MODULE,
         request_reads: CHANNEL_REQUEST_READS,
+        // The non-inbound half: a callback's result bytes and the
+        // threaded-ctx envelope. Carried in every bundle, decoded here
+        // so the epilogue can rebuild `request.ctx` / `.activation` /
+        // the flattened result (rove#230).
+        fetch_responses: CHANNEL_FETCH_RESPONSES,
+        trigger_payload: CHANNEL_TRIGGER_PAYLOAD,
     };
     for (const name of Object.keys(map)) {
         const blob = blobs[name];
