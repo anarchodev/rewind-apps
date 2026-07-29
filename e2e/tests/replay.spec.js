@@ -32,7 +32,16 @@ test("replay shell loads an existing request end-to-end", async ({ page }) => {
 
   // Straight to the instance's Logs tab (the operator sees every tenant).
   await page.goto(APP + "/#/instance/" + encodeURIComponent(INSTANCE));
-  const firstRow = page.locator("tr.log-row").first();
+  // Newest record — EXCEPT the activation classes that are known not to
+  // replay yet, which would make this shell-loads test fail for a reason
+  // it is not testing. `__system/*` entries are send_callback hops whose
+  // baked entry module the bundle does not ship (rove#236); the fidelity
+  // gate is what tracks that, and it fails loudly if the list goes stale.
+  await page.locator("tr.log-row").first().waitFor({ state: "visible", timeout: 30_000 });
+  const firstRow = page
+    .locator("tr.log-row")
+    .filter({ hasNot: page.locator("td.path", { hasText: "__system/" }) })
+    .first();
   await firstRow.waitFor({ state: "visible", timeout: 30_000 });
 
   // Newest record first — with INSTANCE=__auth__ that's one of the handler
