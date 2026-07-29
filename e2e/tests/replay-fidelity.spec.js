@@ -34,8 +34,8 @@ const CORPUS = Number(process.env.E2E_REPLAY_CORPUS || 4);
 // that diverges the same way for a DIFFERENT reason still fails.
 const KNOWN = [
   {
-    issue: "rove#230",
-    what: "request.session is not reconstructed, so session-gated handlers take their no-session branch",
+    issue: "rove#245",
+    what: "request.session is never recorded, so a session-gated handler takes its no-session branch",
     match: (f) => f.verdict === "mismatch" && /no session context/.test(String(f.replayedResult ?? "")),
   },
 ];
