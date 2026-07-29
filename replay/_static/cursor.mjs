@@ -47,6 +47,13 @@ export class CursorEngine {
         // returns the same value — same semantics as the original
         // request's pinned time.
         this._setNow   = Module.cwrap("arena_set_date_now",    null,    ["number","number"]);
+        // OOM record of the most recent run. A request-arena exhaustion
+        // returns a nonzero rc and emits NO throw event, so it is
+        // invisible in the timeline — these are the only way to tell an
+        // exhausted run from a clean one.
+        this._oomHit   = Module.cwrap("arena_oom_hit",         "number", []);
+        this._oomUsed  = Module.cwrap("arena_oom_used",        "number", []);
+        this._oomLimit = Module.cwrap("arena_oom_limit",       "number", []);
         this._scanCache = new WeakMap();
         this._matCache  = new WeakMap();
     }
@@ -334,8 +341,35 @@ export class CursorEngine {
         const packedLineIndex = new Map();
         for (const [k, v] of lineIndex) packedLineIndex.set(k, Int32Array.from(v));
 
+        // The epilogue parks the re-executed outcome (status + result) on
+        // the kv overlay. Read it HERE: pass 1 is the only pass that runs
+        // the handler to completion. Pass 2 stops at the trace sentinel
+        // before the wind-down (see below) and `inspectAt` stops mid-run,
+        // and both reset the overlay first — so a caller reading it after
+        // materialise() returns always finds nothing.
+        // How the run ENDED, not just what it traced. `rc` 0 with a parked
+        // outcome is a clean reproduction; anything else is a run the
+        // timeline alone would misrepresent as complete.
+        const oomHit = this._oomHit ? this._oomHit() === 1 : false;
+        const runStatus = {
+            rc,
+            oom: oomHit,
+            oomUsed: oomHit && this._oomUsed ? this._oomUsed() : null,
+            oomLimit: oomHit && this._oomLimit ? this._oomLimit() : null,
+        };
+
+        let outcome = null;
+        if (replay.outputKey) {
+            const raw = this.M._kvOverlay?.get(replay.outputKey);
+            if (raw != null) {
+                try { outcome = JSON.parse(raw); } catch (_) { outcome = null; }
+            }
+        }
+
         return {
             replay,
+            outcome,
+            runStatus,
             events,
             matchingExit: Int32Array.from(matchingExitArr),
             stackSnapshots,

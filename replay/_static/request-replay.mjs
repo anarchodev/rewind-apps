@@ -26,6 +26,12 @@
 
 import { READ_KIND_HEADER_NAMES, READ_KIND_HEADER_VALUE, READ_KIND_BODY_READ, READ_KIND_IP_MASKED, READ_KIND_IP_RAW } from "./rtap.mjs";
 
+// Sentinel kv key the epilogue parks the re-executed outcome under; the
+// shell reads it back from the kv overlay after a run. Mirrors the native
+// driver's OUTPUT_KEY (rove src/replay/host.zig) — the same side channel,
+// because the arena's own result value is unreachable from the host.
+export const REPLAY_OUTPUT_KEY = "__replay_output__";
+
 const _decoder = new TextDecoder("utf-8", { fatal: false });
 const _encoder = new TextEncoder();
 
@@ -203,6 +209,15 @@ export function buildRequestEpilogue({ record = {}, requestReads = null, bodyByt
         "  const ns = __arena_entry_ns();\n" +
         "  if (typeof ns[D.fn] !== \"function\") throw new Error(\"replay: entry module has no '\" + D.fn + \"' export\");\n" +
         "  globalThis.__replay_result = ns[D.fn]();\n" +
+        // Park the RE-EXECUTED outcome on the host's kv side channel: kv.set
+        // writes into the shell's overlay, never the tape, so the host can
+        // read back what THIS run produced and compare it against what the
+        // capture recorded. Written only on the success path — a handler
+        // that throws leaves the key absent, which the shell reports as
+        // "did not complete" rather than as a bogus match.
+        "  const __res = globalThis.response || {};\n" +
+        "  const __ser = (v) => { if (v === undefined || v === null) return null; if (typeof v === \"string\") return v; try { return JSON.stringify(v); } catch (_) { return String(v); } };\n" +
+        "  kv.set(" + JSON.stringify(REPLAY_OUTPUT_KEY) + ", JSON.stringify({ status: __res.status === undefined ? null : __res.status, result: __ser(globalThis.__replay_result) }));\n" +
         "})();\n"
     );
 }

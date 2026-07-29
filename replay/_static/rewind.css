@@ -489,6 +489,10 @@ hr {
 .badge--warn  { background: rgba(249,226,175,0.12); color: var(--c-warn);  }
 .badge--error { background: rgba(243,139,168,0.12); color: var(--c-error); }
 .badge--info  { background: rgba(137,180,250,0.12); color: var(--c-info);  }
+/* A replay that did not reproduce its capture. Reads like an error but is
+   its own class: `.badge--error` means the shell failed to LOAD, which
+   callers (the e2e suite) select on separately. */
+.badge--diverged { background: rgba(243,139,168,0.12); color: var(--c-error); }
 
 /* ---------- 10. Panels + cards ---------- */
 
