@@ -408,6 +408,13 @@ export const api = {
     let entryPath = null;
     let entrySource = "";
     let sourcesUnavailable = false;
+    // Package resolution for the shell's import rewrite: the live engine
+    // normalizes `@scope/pkg` to `/pkg/<pkg_hash>/index.mjs` and the module
+    // tape records that virtual name, so the shell must rewrite specifiers
+    // identically before eval. `app_imports` maps the app modules'
+    // specifiers; each package's `imports` maps its own.
+    let appImports = {};
+    let packages = [];
     try {
       // record.deployment_id is the opaque `dep_<16hex>` token (§7.5);
       // the read door is keyed by the bare hex, so strip the prefix.
@@ -416,6 +423,20 @@ export const api = {
       const handlers = (sr.entries || [])
         .filter((e) => e.kind === "handler" && e.source != null);
       modules = handlers.map((e) => ({ path: e.path, hash: e.source_hex, source: e.source }));
+      // Package files join the module set under their VIRTUAL keys — the
+      // names the module tape recorded — so the WASM host can serve them
+      // and the modules rail can show them.
+      appImports = sr.app_imports || {};
+      packages = (sr.packages || []).map((p) => ({
+        spec: p.spec, pkg_hash: p.pkg_hash, imports: p.imports || {},
+      }));
+      for (const p of sr.packages || []) {
+        for (const f of p.files || []) {
+          if (f.source != null) {
+            modules.push({ path: f.virtual, hash: f.source_hex, source: f.source });
+          }
+        }
+      }
       const entry = handlers.find((e) => e.path === "index.mjs" || e.path === "index.js")
         || handlers[0];
       if (entry) { entryPath = entry.path; entrySource = entry.source; }
@@ -477,6 +498,8 @@ export const api = {
       entry_path: entryPath,
       entry_source: entrySource,
       modules,
+      app_imports: appImports,
+      packages,
       seed,
       timestamp_ns,
       js_engine_version,

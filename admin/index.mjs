@@ -911,17 +911,37 @@ export function onManifest() {
     const entries = (manifest.entries || []).map((e) => ({
         path: e.path, kind: e.kind, content_type: e.content_type, hash: e.hash,
     }));
+    // Package metadata + resolution maps, for the replay shell: a handler
+    // importing `@scope/pkg` resolves (the engine's module normalize) to the
+    // package-virtual key `/pkg/<pkg_hash>/<file>`, and the captured module
+    // tape records THAT name — so a replay needs the package sources under
+    // their virtual keys plus the specifier→pkg_hash maps to rewrite its
+    // imports the same way.
+    const pkgs = (manifest.packages || []).map((p) => ({
+        spec: p.spec, version: p.version, pkg_hash: p.pkg_hash,
+        imports: p.imports || {},
+        files: (p.files || []).map((f) => ({
+            path: f.path,
+            virtual: "/pkg/" + p.pkg_hash + "/" + f.path,
+            source_hash: f.source_hash,
+        })),
+    }));
+    const ctx2 = {
+        tenant: ctx.tenant, dep: ctx.dep, entries: entries,
+        pkgs: pkgs, app_imports: manifest.app_imports || {},
+    };
     const handlers = entries.filter((e) => e.kind === "handler");
-    if (handlers.length === 0) return finishSources(ctx.dep, entries, []);
+    if (handlers.length === 0) return startPkgSources(ctx2, []);
     platform.scope(ctx.tenant).blob.get(handlers[0].hash, {
         on: "onModuleSource",
-        ctx: { tenant: ctx.tenant, dep: ctx.dep, entries: entries, idx: 0, acc: [] },
+        ctx: { ...ctx2, idx: 0, acc: [] },
     });
     return next();
 }
 
 // Read-door continuation: one handler's source bytes arrive on request.body.
-// Accumulate, then either read the next handler or assemble the response.
+// Accumulate, then either read the next handler or move on to the package
+// files.
 export function onModuleSource() {
     const ctx = request.ctx || {};
     const handlers = (ctx.entries || []).filter((e) => e.kind === "handler");
@@ -934,20 +954,56 @@ export function onModuleSource() {
     if (nextIdx < handlers.length) {
         platform.scope(ctx.tenant).blob.get(handlers[nextIdx].hash, {
             on: "onModuleSource",
-            ctx: { tenant: ctx.tenant, dep: ctx.dep, entries: ctx.entries, idx: nextIdx, acc: acc },
+            ctx: { ...ctx, idx: nextIdx, acc: acc },
         });
         return next();
     }
-    return finishSources(ctx.dep, ctx.entries, acc);
+    return startPkgSources(ctx, acc);
+}
+
+// Kick off (or skip) the sequential package-file source reads that follow the
+// handler reads. Package sources are content-addressed blobs in the SAME
+// tenant's file-blobs (the pkgfile door staged them there at deploy time), so
+// the read is the same `blob.get` the handler sources use.
+function startPkgSources(ctx, handlerAcc) {
+    const files = (ctx.pkgs || []).flatMap((p) => p.files);
+    if (files.length === 0) return finishSources(ctx, handlerAcc, []);
+    platform.scope(ctx.tenant).blob.get(files[0].source_hash, {
+        on: "onPkgSource",
+        ctx: { ...ctx, handler_acc: handlerAcc, pidx: 0, pacc: [] },
+    });
+    return next();
+}
+
+// Read-door continuation: one package file's source bytes arrive.
+export function onPkgSource() {
+    const ctx = request.ctx || {};
+    const files = (ctx.pkgs || []).flatMap((p) => p.files);
+    // `status` is the single result signal (handler-shape.md — no request.ok).
+    const ok = request.status >= 200 && request.status < 300;
+    const src = ok ? (request.text || "") : null;
+    const pacc = ctx.pacc.concat([{
+        virtual: files[ctx.pidx].virtual, source: src, missing: !ok,
+    }]);
+    const nextIdx = ctx.pidx + 1;
+    if (nextIdx < files.length) {
+        platform.scope(ctx.tenant).blob.get(files[nextIdx].source_hash, {
+            on: "onPkgSource",
+            ctx: { ...ctx, pidx: nextIdx, pacc: pacc },
+        });
+        return next();
+    }
+    return finishSources(ctx, ctx.handler_acc, pacc);
 }
 
 // Merge handler sources into the manifest entries + respond (releases the held
 // chain). Handlers carry `source` (or `missing:true` if the blob read failed);
-// statics carry metadata only.
-function finishSources(dep, entries, sources) {
+// statics carry metadata only. Packages ride alongside with their files'
+// sources folded in under the virtual key.
+function finishSources(ctx, sources, pkgSources) {
     const srcByPath = {};
     for (const s of sources) srcByPath[s.path] = s;
-    const out = entries.map((e) => {
+    const out = (ctx.entries || []).map((e) => {
         const r = { path: e.path, kind: e.kind, content_type: e.content_type, source_hex: e.hash };
         if (e.kind === "handler") {
             const s = srcByPath[e.path];
@@ -955,9 +1011,24 @@ function finishSources(dep, entries, sources) {
         }
         return r;
     });
+    const srcByVirtual = {};
+    for (const s of pkgSources) srcByVirtual[s.virtual] = s;
+    const pkgsOut = (ctx.pkgs || []).map((p) => ({
+        spec: p.spec, version: p.version, pkg_hash: p.pkg_hash,
+        imports: p.imports,
+        files: p.files.map((f) => {
+            const r = { path: f.path, virtual: f.virtual, source_hex: f.source_hash };
+            const s = srcByVirtual[f.virtual];
+            if (s && s.source != null) r.source = s.source; else r.missing = true;
+            return r;
+        }),
+    }));
     response.status = 200;
     response.headers = { "content-type": "application/json" };
-    return JSON.stringify({ ok: true, dep_id: dep, entries: out });
+    return JSON.stringify({
+        ok: true, dep_id: ctx.dep, entries: out,
+        packages: pkgsOut, app_imports: ctx.app_imports || {},
+    });
 }
 
 // ── Deployment history (deployments list + rollback support) ────────
