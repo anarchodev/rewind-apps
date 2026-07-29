@@ -1275,13 +1275,40 @@ async function main() {
         return;
     }
 
-    const arena_init    = Module.cwrap("arena_init",    "number", ["number","number"]);
-    const arena_destroy = Module.cwrap("arena_destroy", null,     []);
+    const arena_init_open = Module.cwrap("arena_init_open", "number", ["number","number"]);
+    const arena_eval_base = Module.cwrap("arena_eval_base", "number", ["string"]);
+    const arena_freeze    = Module.cwrap("arena_freeze",    null,     []);
+    const arena_destroy   = Module.cwrap("arena_destroy",   null,     []);
 
-    if (arena_init(8192, 8192) !== 0) {
-        renderError(new Error("arena_init failed"));
+    // Engine-shim prelude: the pure compute globals prod compiles into the
+    // worker (URLSearchParams / TextEncoder / atob / base64url / time).
+    // `arena-prelude.js` is GENERATED from the engine's own shim sources
+    // (rove scripts/ops/gen_replay_prelude.py, the replay tenant's manifest
+    // `generate` hook) and evaled into the OPEN arena base — pre-freeze,
+    // before any run, outside every drill trace — so a replayed handler
+    // sees the same compute surface the live run had. Fail LOUD on a
+    // missing or broken prelude: a bare arena replays a faithful capture
+    // with a spurious THROW (rove#227).
+    let preludeSrc;
+    try {
+        const resp = await fetch(new URL("arena-prelude.js", import.meta.url));
+        if (!resp.ok) throw new Error("HTTP " + resp.status);
+        preludeSrc = await resp.text();
+    } catch (err) {
+        renderError(new Error("arena-prelude.js fetch failed: " + err.message));
         return;
     }
+
+    if (arena_init_open(8192, 8192) !== 0) {
+        renderError(new Error("arena_init_open failed"));
+        return;
+    }
+    if (arena_eval_base(preludeSrc) !== 0) {
+        renderError(new Error("arena_eval_base(prelude) failed — see the browser console for the engine's exception dump"));
+        arena_destroy();
+        return;
+    }
+    arena_freeze();
 
     let tapes;
     try {
