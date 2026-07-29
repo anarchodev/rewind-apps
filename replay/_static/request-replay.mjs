@@ -100,6 +100,27 @@ export function foldRequestReads(entries) {
 ///
 /// Returns `{ ctx, activation, result, bodyBytes }`, all null/undefined
 /// when the record is a plain inbound.
+// The module paths prod probes for a tenant's middleware, in its own
+// order (`.mjs` then `.js` — dispatcher.zig's bytecode lookup), so a
+// `.js`-spelled middleware gates offline exactly as it does live.
+const MIDDLEWARE_PATHS = ["_middlewares/index.mjs", "_middlewares/index.js"];
+
+// Activation kinds that cross the trust boundary. The worker runs
+// `_middlewares` for these only — a continuation resume already ran
+// behind the gate, so replaying it must NOT re-run the gate.
+const TRUST_BOUNDARY = new Set(["inbound", "inbound_headers", "inbound_chunk", "ws_message"]);
+
+/// The middleware module this activation would have run, or null.
+/// Resolvable = present in the bundle's own sources, since a replay can
+/// only compile what the capture shipped.
+export function resolveMiddleware(moduleSources, activation = "inbound") {
+    if (!TRUST_BOUNDARY.has(activation)) return null;
+    for (const p of MIDDLEWARE_PATHS) {
+        if (moduleSources && moduleSources[p] !== undefined) return p;
+    }
+    return null;
+}
+
 // Activation source → the `kind` string prod puts on the bag. Mirrors the
 // switch in `src/js/globals_request.zig` — note `kv_wake` surfaces as
 // "kv", not "kv_wake"; the rest are identity.
@@ -213,7 +234,7 @@ export function deriveActivationSurface({ activation = "inbound", tapes = {}, ac
 ///                  Uint8Array of arbitrary bytes (the chunk IS the
 ///                  Msg, always recorded — never read-elided), so the
 ///                  replay body must be byte-exact binary too.
-export function buildRequestEpilogue({ record = {}, requestReads = null, bodyBytes = null, exportName = "default", binaryBody = false, activation = "inbound", ctx = undefined, activationBag = undefined, result = null } = {}) {
+export function buildRequestEpilogue({ record = {}, requestReads = null, bodyBytes = null, exportName = "default", binaryBody = false, activation = "inbound", ctx = undefined, activationBag = undefined, result = null, middlewarePath = null } = {}) {
     const reads = foldRequestReads(requestReads);
 
     const rawPath = record.path || "/";
@@ -255,6 +276,13 @@ export function buildRequestEpilogue({ record = {}, requestReads = null, bodyByt
         .replace(/\u2029/g, "\\u2029");
 
     return (
+        // The real middleware, imported as a namespace. STATIC and hoisted,
+        // so it loads before the entry module body — the order production
+        // loaded it in, and therefore the order the module tape recorded.
+        // Skipping it does not merely lose the gate's effect: the replay's
+        // first import lands on the middleware's tape entry and the run
+        // dies with "module tape diverged".
+        (middlewarePath ? "import * as __rove_mw from " + JSON.stringify(middlewarePath) + ";\n" : "") +
         "\n;(() => {\n" +
         "  const D = " + json + ";\n" +
         // Per-run state the base prelude's `_system.*` recorders read
@@ -359,8 +387,28 @@ export function buildRequestEpilogue({ record = {}, requestReads = null, bodyByt
         "  globalThis.request = request;\n" +
         "  globalThis.response = { status: 200, headers: {}, cookies: [] };\n" +
         "  const ns = __arena_entry_ns();\n" +
-        "  if (typeof ns[D.fn] !== \"function\") throw new Error(\"replay: entry module has no '\" + D.fn + \"' export\");\n" +
-        "  globalThis.__replay_result = ns[D.fn]();\n" +
+        // `_middlewares`' `before` runs FIRST at the trust boundary: it sees
+        // globalThis.request/response, may MUTATE the request (request.auth
+        // = {…}) and may SHORT-CIRCUIT by returning a response, in which
+        // case the handler never runs. `typeof` guards the undeclared case.
+        // Mirrors src/replay/epilogue.zig, which mirrors
+        // module_execution.runMiddleware — a malformed middleware is a loud
+        // 500, not a skipped gate.
+        "  let __short = false;\n" +
+        "  if (typeof __rove_mw !== \"undefined\" && __rove_mw) {\n" +
+        "    if (typeof __rove_mw.before !== \"function\") {\n" +
+        "      globalThis.response = { status: 500, headers: {}, cookies: [] };\n" +
+        "      globalThis.__replay_result = \"_middlewares/index.mjs must export a `before` function\\n\";\n" +
+        "      __short = true;\n" +
+        "    } else {\n" +
+        "      const __mwr = __rove_mw.before();\n" +
+        "      if (__mwr !== undefined && __mwr !== null) { globalThis.__replay_result = __mwr; __short = true; }\n" +
+        "    }\n" +
+        "  }\n" +
+        "  if (!__short) {\n" +
+        "    if (typeof ns[D.fn] !== \"function\") throw new Error(\"replay: entry module has no '\" + D.fn + \"' export\");\n" +
+        "    globalThis.__replay_result = ns[D.fn]();\n" +
+        "  }\n" +
         // Park the RE-EXECUTED outcome on the host's kv side channel: kv.set
         // writes into the shell's overlay, never the tape, so the host can
         // read back what THIS run produced and compare it against what the
