@@ -216,7 +216,7 @@ function resolveEntry(bundle) {
     // handlers, so it names index.mjs regardless. Prefer what actually ran
     // (rove#236); without this the shell compiled the wrong module and the
     // module tape diverged on the first import.
-    const sys = systemEntryFor(bundle);
+    const sys = activationEntryFor(bundle);
     if (sys) return sys;
     if (bundle.entry_path) return bundle.entry_path;
     const idx = (bundle.modules || []).find(m => m.path === "index.mjs");
@@ -235,14 +235,23 @@ function buildModuleSources(bundle) {
     return out;
 }
 
-// The `__system/…` module a callback activation ran, if that is what this
-// record is. The log record carries the module path in `path` for these
-// activations (the dashboard's Path column shows it), and the resolver
+// The module a CALLBACK activation ran. For these the log record's `path`
+// is the module it dispatched to, not a URL — the discriminator is the
+// leading slash, which every inbound URL has and no module path does
+// (`__system/webhook_onresult`, `v1/deploy/cut/index`). The resolver
 // appends `.mjs` exactly as it does for tenant modules.
-function systemEntryFor(bundle) {
+//
+// Inbound records are NOT covered and cannot be: production resolves the
+// entry from its router (`route.module_base`), and the resolved module is
+// recorded nowhere, so a route-modular tenant's inbound records replay
+// against the wrong module. See rove#249 surface S4.
+const INBOUND_KINDS = new Set(["inbound", "inbound_headers", "inbound_chunk"]);
+
+function activationEntryFor(bundle) {
     const p = bundle.request?.path || "";
-    if (!p.startsWith("__system/")) return null;
-    return p.endsWith(".mjs") ? p : p + ".mjs";
+    if (!p || p.startsWith("/")) return null;          // a URL, not a module
+    if (INBOUND_KINDS.has(bundle.activation)) return null;
+    return p.endsWith(".mjs") || p.endsWith(".js") ? p : p + ".mjs";
 }
 
 // Rewrite bare `@scope/pkg` import specifiers to their package-virtual
@@ -1440,6 +1449,10 @@ async function main() {
     // the non-inbound surface.
     window.__replay_surface__ = surface;
     window.__replay_bundle_activation__ = bundle.activation;
+    // Diagnostic hook: the composed bundle itself, so a "nothing to
+    // replay" failure can be read as composition-vs-shell without a
+    // rebuild (rove#249 surface S4).
+    window.__replay_bundle__ = bundle;
 
     const epilogue = buildRequestEpilogue({
         record: bundle.request || {},
