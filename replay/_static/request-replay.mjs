@@ -55,6 +55,14 @@ export function exportForActivation(activation) {
         case "ws_message":      return "onMessage";
         case "inbound_headers": return "onHeaders";
         case "inbound_chunk":   return "onChunk";
+        // `fetch_chunk` deliberately falls to `default`, matching prod's
+        // defaultExportForKind. The native driver maps it to
+        // `onFetchResult` instead, which is right for an AUTHORED world
+        // (the author named no export) and WRONG for a captured one: the
+        // engine's baked callbacks — `__system/webhook_onresult` and
+        // friends — are dispatched at their default export, so preferring
+        // onFetchResult 404s them. A named `{on}` rides the record's
+        // recorded export and never reaches this fallback.
         default:                return "default";
     }
 }
@@ -435,9 +443,24 @@ export function buildRequestEpilogue({ record = {}, requestReads = null, bodyByt
         "      if (__mwr !== undefined && __mwr !== null) { globalThis.__replay_result = __mwr; __short = true; }\n" +
         "    }\n" +
         "  }\n" +
+        // A missing export has THREE dispositions in prod
+        // (module_execution.zig), none of them a throw: disconnect is a
+        // no-op because cleanup is optional; the inbound_headers /
+        // inbound_chunk probes fall back to the buffered default
+        // dispatch; anything else is a 404. Throwing instead stops the
+        // timeline where production carried on.
         "  if (!__short) {\n" +
-        "    if (typeof ns[D.fn] !== \"function\") throw new Error(\"replay: entry module has no '\" + D.fn + \"' export\");\n" +
-        "    globalThis.__replay_result = ns[D.fn]();\n" +
+        "    const __fn = ns[D.fn];\n" +
+        "    if (typeof __fn === \"function\") {\n" +
+        "      globalThis.__replay_result = __fn();\n" +
+        "    } else if (D.kind === \"disconnect\") {\n" +
+        "      /* prod: optional cleanup, no response */\n" +
+        "    } else if ((D.kind === \"inbound_headers\" || D.kind === \"inbound_chunk\") && typeof ns[\"default\"] === \"function\") {\n" +
+        "      globalThis.__replay_result = ns[\"default\"]();\n" +
+        "    } else {\n" +
+        "      globalThis.response = { status: 404, headers: {}, cookies: [] };\n" +
+        "      globalThis.__replay_result = 'module export \"' + D.fn + '\" not found or not a function\\n';\n" +
+        "    }\n" +
         "  }\n" +
         // Park the RE-EXECUTED outcome on the host's kv side channel: kv.set
         // writes into the shell's overlay, never the tape, so the host can
