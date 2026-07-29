@@ -1385,6 +1385,11 @@ async function main() {
         return;
     }
 
+    // Diagnostic hook (like __mat_varSnapshots_count__): the decoded tapes,
+    // so a divergence can be read against what was actually recorded
+    // without rebuilding the shell.
+    window.__replay_tapes__ = tapes;
+
     const moduleSources = rewriteImportSpecifiers(buildModuleSources(bundle), bundle);
     reorderModuleTape(tapes, moduleSources, entryPath);
     const entrySrc = moduleSources[entryPath];
@@ -1410,6 +1415,8 @@ async function main() {
         // carry one (a plain inbound `default`, or a pre-export capture).
         exportName: bundle.entry_fn || exportForActivation(bundle.activation),
         binaryBody: bundle.activation === "inbound_chunk" || bundle.activation === "fetch_chunk",
+        // Gates the per-run recorder state (blob.receive is onHeaders-only).
+        activation: bundle.activation || "inbound",
     });
     const entrySrcWithEpilogue = entrySrc + epilogue;
 

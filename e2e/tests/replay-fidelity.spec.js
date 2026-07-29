@@ -39,11 +39,6 @@ const KNOWN = [
     match: (f) => f.verdict === "mismatch" && /no session context/.test(String(f.replayedResult ?? "")),
   },
   {
-    issue: "rove#235",
-    what: "the browser arena has no effect verbs, so a handler touching one dies mid-run (rc≠0, no THROW)",
-    match: (f) => f.verdict === "incomplete" && !f.threw && !f.run?.oom && f.run?.rc !== 0,
-  },
-  {
     issue: "rove#236",
     what: "the bundle omits baked __system/* entry modules, so send_callback records cannot load",
     match: (_f, label) => /__system\//.test(label),
