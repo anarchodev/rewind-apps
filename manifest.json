@@ -55,7 +55,8 @@
       "kind": "operator",
       "provision": true,
       "generate": [
-        ["python3", "$ROVE_REPO/scripts/ops/gen_replay_prelude.py", "--apps-dir", "."]
+        ["python3", "$ROVE_REPO/scripts/ops/gen_replay_prelude.py", "--apps-dir", "."],
+        ["python3", "$ROVE_REPO/scripts/ops/gen_replay_system_modules.py", "--apps-dir", "."]
       ]
     },
     {
