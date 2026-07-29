@@ -31,6 +31,7 @@
 
 import { buildTapesFromBlobs } from "./rtap.mjs";
 import { buildRequestEpilogue, exportForActivation, REPLAY_OUTPUT_KEY } from "./request-replay.mjs";
+import { SYSTEM_MODULES } from "./arena-system-modules.js";
 import { CursorEngine } from "./cursor.mjs";
 import getArenaJs from "./qjs_arena_wasm.js";
 
@@ -210,6 +211,13 @@ function awaitBundle() {
 // ── Bundle helpers ───────────────────────────────────────────────────
 
 function resolveEntry(bundle) {
+    // A callback activation ran a baked builtin, NOT the tenant's entry —
+    // and the bundle's `entry_path` is composed from the tenant's deployed
+    // handlers, so it names index.mjs regardless. Prefer what actually ran
+    // (rove#236); without this the shell compiled the wrong module and the
+    // module tape diverged on the first import.
+    const sys = systemEntryFor(bundle);
+    if (sys) return sys;
     if (bundle.entry_path) return bundle.entry_path;
     const idx = (bundle.modules || []).find(m => m.path === "index.mjs");
     if (idx) return idx.path;
@@ -217,9 +225,24 @@ function resolveEntry(bundle) {
 }
 
 function buildModuleSources(bundle) {
-    const out = {};
+    // The engine's baked `__system/*` handlers underlie everything the
+    // bundle carries: they live in the worker binary, so no tenant's
+    // deployment sources can supply them (rove#236). They go in FIRST so a
+    // tenant file of the same name would win — a tenant cannot actually
+    // own that namespace, but source-of-truth should follow the bundle.
+    const out = { ...SYSTEM_MODULES };
     for (const m of (bundle.modules || [])) out[m.path] = m.source;
     return out;
+}
+
+// The `__system/…` module a callback activation ran, if that is what this
+// record is. The log record carries the module path in `path` for these
+// activations (the dashboard's Path column shows it), and the resolver
+// appends `.mjs` exactly as it does for tenant modules.
+function systemEntryFor(bundle) {
+    const p = bundle.request?.path || "";
+    if (!p.startsWith("__system/")) return null;
+    return p.endsWith(".mjs") ? p : p + ".mjs";
 }
 
 // Rewrite bare `@scope/pkg` import specifiers to their package-virtual

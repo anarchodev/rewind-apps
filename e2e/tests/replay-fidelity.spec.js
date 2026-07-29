@@ -38,11 +38,6 @@ const KNOWN = [
     what: "request.session is not reconstructed, so session-gated handlers take their no-session branch",
     match: (f) => f.verdict === "mismatch" && /no session context/.test(String(f.replayedResult ?? "")),
   },
-  {
-    issue: "rove#236",
-    what: "the bundle omits baked __system/* entry modules, so send_callback records cannot load",
-    match: (_f, label) => /__system\//.test(label),
-  },
 ];
 
 function knownFor(fidelity, label) {
