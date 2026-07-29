@@ -1462,6 +1462,8 @@ async function main() {
         // module-tape entries come first — a replay that skips it diverges
         // on its very first import, never mind losing the gate's effect.
         middlewarePath: resolveMiddleware(moduleSources, bundle.activation || "inbound"),
+        tenant: bundle.tenant_id ?? null,
+        correlationId: bundle.correlation_id ?? null,
     });
     const entrySrcWithEpilogue = entrySrc + epilogue;
 

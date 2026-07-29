@@ -234,7 +234,7 @@ export function deriveActivationSurface({ activation = "inbound", tapes = {}, ac
 ///                  Uint8Array of arbitrary bytes (the chunk IS the
 ///                  Msg, always recorded — never read-elided), so the
 ///                  replay body must be byte-exact binary too.
-export function buildRequestEpilogue({ record = {}, requestReads = null, bodyBytes = null, exportName = "default", binaryBody = false, activation = "inbound", ctx = undefined, activationBag = undefined, result = null, middlewarePath = null } = {}) {
+export function buildRequestEpilogue({ record = {}, requestReads = null, bodyBytes = null, exportName = "default", binaryBody = false, activation = "inbound", ctx = undefined, activationBag = undefined, result = null, middlewarePath = null, tenant = null, correlationId = null } = {}) {
     const reads = foldRequestReads(requestReads);
 
     const rawPath = record.path || "/";
@@ -268,6 +268,11 @@ export function buildRequestEpilogue({ record = {}, requestReads = null, bodyByt
         ctx: ctx === undefined ? null : ctx,
         activationBag: activationBag ?? null,
         result: result ?? null,
+        // Identity prod pins on EVERY activation (replay-and-sim.md §3),
+        // carried per record by the log API (`tenant_id`,
+        // `correlation_id`) — the bundle just has to forward it.
+        tenant: tenant ?? null,
+        correlationId: correlationId ?? null,
     };
 
     // JSON is JS-literal-safe except the two line separators.
@@ -379,6 +384,31 @@ export function buildRequestEpilogue({ record = {}, requestReads = null, bodyByt
         // does live rather than a fabricated null.
         "  if (D.hasCtx) request.ctx = D.ctx;\n" +
         "  request.activation = D.activationBag;\n" +
+        "  if (D.tenant !== null) request.tenant = D.tenant;\n" +
+        "  if (D.correlationId !== null) request.correlation_id = D.correlationId;\n" +
+        // request.tag(key, value) — prod's validation verbatim
+        // (globals.zig jsRequestTag), mirrored from the native epilogue:
+        // two strings; key 1..32 BYTES of [a-z0-9_] with no leading '_';
+        // value 1..64 BYTES, no control characters; at most 4 distinct
+        // keys per activation, re-tagging updates in place. It is a
+        // FUNCTION, so its absence is not a missing value — a handler
+        // that tags its request dies on the call.
+        "  const __tags = [];\n" +
+        "  request.tag = function (k, v) {\n" +
+        "    if (arguments.length < 2 || typeof k !== \"string\" || typeof v !== \"string\") throw new TypeError(\"request.tag(key, value) requires two string arguments\");\n" +
+        "    const __enc = new TextEncoder();\n" +
+        "    const kb = __enc.encode(k).length, vb = __enc.encode(v).length;\n" +
+        "    if (kb < 1 || kb > 32) throw new TypeError(\"request.tag: key length must be 1..32 bytes\");\n" +
+        "    if (k[0] === \"_\") throw new TypeError(\"request.tag: keys starting with '_' are reserved\");\n" +
+        "    if (!/^[a-z0-9_]+$/.test(k)) throw new TypeError(\"request.tag: key must match [a-z0-9_]\");\n" +
+        "    if (vb < 1 || vb > 64) throw new TypeError(\"request.tag: value length must be 1..64 bytes\");\n" +
+        "    for (let i = 0; i < v.length; i++) if (v.charCodeAt(i) < 0x20) throw new TypeError(\"request.tag: value must not contain control characters\");\n" +
+        "    const hit = __tags.find((t) => t.key === k);\n" +
+        "    if (hit) { hit.value = v; return undefined; }\n" +
+        "    if (__tags.length >= 4) throw new TypeError(\"request.tag: at most 4 tags per activation\");\n" +
+        "    __tags.push({ key: k, value: v });\n" +
+        "    return undefined;\n" +
+        "  };\n" +
         "  if (D.result) {\n" +
         "    for (const k of [\"status\", \"done\", \"fetchId\", \"chunkSeq\", \"bodyTruncated\"]) {\n" +
         "      if (D.result[k] !== null && D.result[k] !== undefined) request[k] = D.result[k];\n" +

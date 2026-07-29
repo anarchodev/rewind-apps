@@ -480,6 +480,10 @@ export const api = {
     return {
       request_id: record.request_id,
       deployment_id: record.deployment_id,
+      // Identity prod pins on every activation (request.tenant /
+      // request.correlation_id) — recorded per row, so forward it.
+      tenant_id: record.tenant_id,
+      correlation_id: record.correlation_id,
       received_ns: record.received_ns,
       duration_ns: record.duration_ns,
       request: {
