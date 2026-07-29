@@ -30,7 +30,7 @@
 //   ✗ variables drawer (needs engine.inspectAt — wired in phase C)
 
 import { buildTapesFromBlobs } from "./rtap.mjs";
-import { buildRequestEpilogue, exportForActivation, deriveActivationSurface, REPLAY_OUTPUT_KEY } from "./request-replay.mjs";
+import { buildRequestEpilogue, exportForActivation, deriveActivationSurface, resolveMiddleware, REPLAY_OUTPUT_KEY } from "./request-replay.mjs";
 import { SYSTEM_MODULES } from "./arena-system-modules.js";
 import { CursorEngine } from "./cursor.mjs";
 import getArenaJs from "./qjs_arena_wasm.js";
@@ -1457,6 +1457,11 @@ async function main() {
         binaryBody: bundle.activation === "inbound_chunk" || bundle.activation === "fetch_chunk",
         // Gates the per-run recorder state (blob.receive is onHeaders-only).
         activation: bundle.activation || "inbound",
+        // The tenant's `_middlewares`, when this activation crosses the
+        // trust boundary. Production loads it before the handler, so its
+        // module-tape entries come first — a replay that skips it diverges
+        // on its very first import, never mind losing the gate's effect.
+        middlewarePath: resolveMiddleware(moduleSources, bundle.activation || "inbound"),
     });
     const entrySrcWithEpilogue = entrySrc + epilogue;
 
