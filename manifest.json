@@ -53,7 +53,10 @@
       "dir": "replay",
       "hosts": ["replay.rewindjs.com"],
       "kind": "operator",
-      "provision": true
+      "provision": true,
+      "generate": [
+        ["python3", "$ROVE_REPO/scripts/ops/gen_replay_prelude.py", "--apps-dir", "."]
+      ]
     },
     {
       "tenant": "__auth__",
