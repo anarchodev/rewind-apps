@@ -30,7 +30,7 @@
 //   ✗ variables drawer (needs engine.inspectAt — wired in phase C)
 
 import { buildTapesFromBlobs } from "./rtap.mjs";
-import { buildRequestEpilogue, exportForActivation } from "./request-replay.mjs";
+import { buildRequestEpilogue, exportForActivation, REPLAY_OUTPUT_KEY } from "./request-replay.mjs";
 import { CursorEngine } from "./cursor.mjs";
 import getArenaJs from "./qjs_arena_wasm.js";
 
@@ -1242,6 +1242,72 @@ function selectModule(path) {
     renderSourceView(state.bundle, path, lineForView);
 }
 
+// Compare the re-executed outcome against the recorded one. The verdict
+// is what makes a replay trustworthy: a timeline that renders beautifully
+// while ending on a different status than production is worse than no
+// replay, because it looks authoritative.
+//
+// `verdict`:
+//   "match"      — re-ran and produced the capture's status
+//   "mismatch"   — re-ran and produced a DIFFERENT status (the capture is
+//                  fine; the replay's inputs or environment are not)
+//   "incomplete" — the run never reached the end (threw, or was stopped),
+//                  so there is nothing to compare
+//   "unknown"    — the capture carries no status to compare against
+function readFidelity(bundle, mat) {
+    const capturedStatus = bundle.response?.status ?? null;
+    const threw = (mat.events || []).some(e => e.kind === "THROW");
+    // Harvested by the engine at the end of its one complete pass — the
+    // overlay itself is reset by every later pass (cursor.mjs).
+    const replayed = mat.outcome ?? null;
+
+    let verdict;
+    if (replayed == null) verdict = "incomplete";
+    else if (capturedStatus == null) verdict = "unknown";
+    else verdict = Number(replayed.status) === Number(capturedStatus) ? "match" : "mismatch";
+
+    return {
+        verdict,
+        threw,
+        capturedStatus,
+        replayedStatus: replayed ? replayed.status : null,
+        replayedResult: replayed ? replayed.result : null,
+        // How the run ended. An "incomplete" verdict is only actionable
+        // with this: rc 0 means the handler simply never reached the end,
+        // a nonzero rc without a throw means the engine cut it short, and
+        // `oom` names the commonest such cut (an exhausted request arena
+        // emits no throw event, so the timeline looks complete).
+        run: mat.runStatus ?? null,
+    };
+}
+
+function renderFidelity(f) {
+    if (!f || !$.meta) return;
+    // Only speak up when the replay is NOT a clean reproduction — a
+    // matching run needs no badge, the existing status already says it.
+    if (f.verdict === "match") return;
+    const label =
+        f.verdict === "mismatch" ? `replayed ${f.replayedStatus} ≠ captured ${f.capturedStatus}` :
+        f.verdict === "incomplete" ? (
+            f.run?.oom ? `did not complete — arena exhausted (${f.run.oomUsed}/${f.run.oomLimit} bytes)` :
+            f.threw ? "did not complete (threw)" :
+            f.run?.rc ? `did not complete (engine rc=${f.run.rc})` :
+            "did not complete") :
+        "no captured status to compare";
+    $.meta.appendChild(el("span", { className: "t-mute", text: "·" }));
+    // Deliberately NOT `badge--error`: that class is the shell's
+    // load-failure signal (and the captured 5xx status badge), and a
+    // divergent replay is a different fact from a shell that failed to
+    // load. `#fidelity[data-verdict]` is the stable hook for both a
+    // reader and the e2e fidelity gate.
+    $.meta.appendChild(el("span", {
+        className: "badge " + (f.verdict === "mismatch" ? "badge--diverged" : "badge--warn"),
+        text: label,
+        title: "the replay did not reproduce the recorded response",
+        attrs: { id: "fidelity", "data-verdict": f.verdict },
+    }));
+}
+
 async function main() {
     let bundle;
     try {
@@ -1400,7 +1466,7 @@ async function main() {
     let mat;
     try {
         mat = await state.engine.materialise(
-            { entry: { name: entryPath, src: entrySrcWithEpilogue }, tapes, module_sources: moduleSources, seed, timestamp_ns, js_engine_version: engineWord },
+            { entry: { name: entryPath, src: entrySrcWithEpilogue }, tapes, module_sources: moduleSources, seed, timestamp_ns, js_engine_version: engineWord, outputKey: REPLAY_OUTPUT_KEY },
             { targetSnapshots },
         );
     } catch (err) {
@@ -1416,12 +1482,20 @@ async function main() {
     // expose `state.mat` itself on window.
     window.__mat_varSnapshots_count__ = mat.varSnapshots ? mat.varSnapshots.length : 0;
 
+    // Fidelity: did re-running the handler reproduce what the capture
+    // recorded? Read the epilogue's outcome off the kv overlay NOW —
+    // every later engine call (inspectAt) re-runs the module and resets
+    // the overlay, and a stopped run leaves no outcome at all.
+    state.fidelity = readFidelity(bundle, mat);
+    window.__replay_fidelity__ = state.fidelity;
+
     // Park the playhead at the throw if there is one, else at the
     // end. The user can step / scrub from anywhere.
     const throwIdx = mat.events.findIndex(e => e.kind === "THROW");
     state.playhead = throwIdx >= 0 ? throwIdx : Math.max(0, mat.events.length - 1);
     wireTransport();
     renderAll();
+    renderFidelity(state.fidelity);
     inspectAndRenderVars(state.playhead);
 
     $.sourceState.textContent = `completed · ${mat.events.length} event(s)`;
