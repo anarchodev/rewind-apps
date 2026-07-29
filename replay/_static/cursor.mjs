@@ -315,9 +315,21 @@ export class CursorEngine {
         };
 
         this._setMode(TRACE_DRILL);
-        this._run(replay.entry.name, replay.entry.src);
+        const rc = this._run(replay.entry.name, replay.entry.src);
         this._setMode(TRACE_OFF);
         this.M.host_trace = null;
+
+        // A nonzero rc with events in hand is an uncaught handler throw —
+        // the THROW event carries it, so the timeline still renders. A
+        // nonzero rc with NO events means the run died before the handler
+        // ever traced (module load / compile / tape divergence) — that
+        // must surface as a load error, not "completed with 0 events".
+        if (rc !== 0 && events.length === 0) {
+            throw new Error(
+                `run failed before any trace event (rc=${rc}) — ` +
+                "module load/compile diverged from the capture " +
+                "(see the browser console for the engine exception)");
+        }
 
         const packedLineIndex = new Map();
         for (const [k, v] of lineIndex) packedLineIndex.set(k, Int32Array.from(v));
