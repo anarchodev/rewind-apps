@@ -30,7 +30,7 @@
 //   ✗ variables drawer (needs engine.inspectAt — wired in phase C)
 
 import { buildTapesFromBlobs } from "./rtap.mjs";
-import { buildRequestEpilogue, exportForActivation, REPLAY_OUTPUT_KEY } from "./request-replay.mjs";
+import { buildRequestEpilogue, exportForActivation, deriveActivationSurface, REPLAY_OUTPUT_KEY } from "./request-replay.mjs";
 import { SYSTEM_MODULES } from "./arena-system-modules.js";
 import { CursorEngine } from "./cursor.mjs";
 import getArenaJs from "./qjs_arena_wasm.js";
@@ -1427,10 +1427,27 @@ async function main() {
     // source's line numbers stay intact for the trace timeline.
     // Before this the shell only evaluated the module body and never
     // called the handler at all.
+    // Rebuild the non-inbound surface from the tapes before the epilogue
+    // is built: a callback activation's body is its RESULT's bytes, not
+    // the inbound request body (rove#230).
+    const surface = deriveActivationSurface({
+        activation: bundle.activation,
+        tapes,
+        activationBytes: bundle.activation_bytes ?? null,
+    });
+
+    // Diagnostic hook, like __replay_tapes__: what the tapes yielded for
+    // the non-inbound surface.
+    window.__replay_surface__ = surface;
+    window.__replay_bundle_activation__ = bundle.activation;
+
     const epilogue = buildRequestEpilogue({
         record: bundle.request || {},
         requestReads: tapes.request_reads,
-        bodyBytes: bundle.request?.body_bytes ?? null,
+        bodyBytes: surface.bodyBytes ?? bundle.request?.body_bytes ?? null,
+        ctx: surface.ctx,
+        activationBag: surface.activation,
+        result: surface.result,
         // Prefer the export the run ACTUALLY dispatched to, recorded on
         // the log record (`bundle.entry_fn`, from record.tapes.export —
         // the `{to}` override / onFetchResult|Chunk|Done). Fall back to

@@ -35,11 +35,6 @@ const CORPUS = Number(process.env.E2E_REPLAY_CORPUS || 4);
 const KNOWN = [
   {
     issue: "rove#230",
-    what: "request.activation is not reconstructed, so a callback handler's first read of it throws",
-    match: (f, label) => /__system\//.test(label) && f.verdict === "incomplete",
-  },
-  {
-    issue: "rove#230",
     what: "request.session is not reconstructed, so session-gated handlers take their no-session branch",
     match: (f) => f.verdict === "mismatch" && /no session context/.test(String(f.replayedResult ?? "")),
   },
