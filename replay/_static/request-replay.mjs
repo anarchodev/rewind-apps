@@ -111,7 +111,7 @@ export function foldRequestReads(entries) {
 ///                  Uint8Array of arbitrary bytes (the chunk IS the
 ///                  Msg, always recorded — never read-elided), so the
 ///                  replay body must be byte-exact binary too.
-export function buildRequestEpilogue({ record = {}, requestReads = null, bodyBytes = null, exportName = "default", binaryBody = false } = {}) {
+export function buildRequestEpilogue({ record = {}, requestReads = null, bodyBytes = null, exportName = "default", binaryBody = false, activation = "inbound" } = {}) {
     const reads = foldRequestReads(requestReads);
 
     const rawPath = record.path || "/";
@@ -136,6 +136,7 @@ export function buildRequestEpilogue({ record = {}, requestReads = null, bodyByt
         ipMasked: reads.ipMasked,
         ipRaw: reads.ipRaw,
         fn: exportName,
+        kind: activation,
     };
 
     // JSON is JS-literal-safe except the two line separators.
@@ -146,6 +147,36 @@ export function buildRequestEpilogue({ record = {}, requestReads = null, bodyByt
     return (
         "\n;(() => {\n" +
         "  const D = " + json + ";\n" +
+        // Per-run state the base prelude's `_system.*` recorders read
+        // (src/replay/js/system_recorders.js). The arena wipes
+        // request-arena globals between runs, but seed them explicitly so
+        // the recorders never depend on that: `activationKind` gates
+        // blob.receive to onHeaders, and `captured` stands down the
+        // checks that need harness-seeded state a real capture never has
+        // (platform.scope's instance-exists marker — the tape already
+        // proves the instance resolved live).
+        "  globalThis.__rove_effects = [];\n" +
+        "  globalThis.__rove_fetch_seq = 0;\n" +
+        "  globalThis.__rove_stream_bytes = 0;\n" +
+        "  globalThis.__rove_blob_receive_used = false;\n" +
+        "  globalThis.__rove_email_sends = 0;\n" +
+        "  globalThis.__rove_activation_kind = D.kind;\n" +
+        "  globalThis.__rove_captured = true;\n" +
+        // The recorders make private bookkeeping reads under
+        // `__rove_store/` — an outbound-budget marker, the admin gate, the
+        // operator root token. No capture contains them (production has no
+        // such keys), and replay's kv is a STRICT ordered tape, so an
+        // unseeded read presents as a tape divergence and kills the run.
+        // Seed them through kv, which writes the host's overlay — and the
+        // overlay is consulted BEFORE the tape, so these never reach it.
+        // Absent (delete) reproduces the sim's defaults: unmetered
+        // outbound, no root token. `admin` is granted because the capture
+        // itself proves the live call was permitted — the same reasoning
+        // that lets `__rove_captured` stand down platform.scope's
+        // instance-exists check.
+        "  kv.delete(\"__rove_store/email_budget\");\n" +
+        "  kv.delete(\"__rove_store/auth/token\");\n" +
+        "  kv.set(\"__rove_store/admin\", \"1\");\n" +
         "  const miss = (what) => { throw new Error(\"REPLAY DIVERGENCE: \" + what + \" was read by the handler but is not on the capture tape — the handler observed an input the original run never read\"); };\n" +
         // The bare arena has no console; handlers that log would
         // ReferenceError. Live console output is already on the
@@ -217,7 +248,7 @@ export function buildRequestEpilogue({ record = {}, requestReads = null, bodyByt
         // "did not complete" rather than as a bogus match.
         "  const __res = globalThis.response || {};\n" +
         "  const __ser = (v) => { if (v === undefined || v === null) return null; if (typeof v === \"string\") return v; try { return JSON.stringify(v); } catch (_) { return String(v); } };\n" +
-        "  kv.set(" + JSON.stringify(REPLAY_OUTPUT_KEY) + ", JSON.stringify({ status: __res.status === undefined ? null : __res.status, result: __ser(globalThis.__replay_result) }));\n" +
+        "  kv.set(" + JSON.stringify(REPLAY_OUTPUT_KEY) + ", JSON.stringify({ status: __res.status === undefined ? null : __res.status, result: __ser(globalThis.__replay_result), effects: (globalThis.__rove_effects || []) }));\n" +
         "})();\n"
     );
 }
