@@ -65,6 +65,11 @@ test("captured records replay faithfully", async ({ page }) => {
 
   const failures = [];
   const known = [];
+  // Records whose capture predates the interaction digest. NOT a pass: the
+  // replay of such a record is unchecked beyond its status, and counting it as
+  // agreement would report confidence nothing has established. Reported every
+  // run so the number visibly falls to zero as digest-carrying records age in.
+  const unverified = [];
   const checked = [];
 
   for (let i = 0; i < n; i++) {
@@ -117,6 +122,17 @@ test("captured records replay faithfully", async ({ page }) => {
           `${label}: replay did not complete${fidelity.threw ? " (threw where the live run did not)" : ""}` +
           (fidelity.run ? ` [rc=${fidelity.run.rc}${fidelity.run.oom ? ", arena exhausted" : ""}]` : ""));
       }
+      // The digest is the stronger claim: the status says the run ENDED the
+      // same, the digest says it DID the same. A mismatch here with a
+      // matching status is exactly the case this gate could not see before.
+      if (fidelity?.digestVerdict === "mismatch" && !hit) {
+        failures.push(
+          `${label}: same response but a DIFFERENT interaction digest ` +
+          `(captured ${fidelity.capturedDigest}, replayed ${fidelity.replayedDigest}) — ` +
+          `the handler did something different on the way to the same answer`);
+      }
+      if (fidelity?.digestVerdict === "unverified") unverified.push(label);
+
       // "unknown" (capture carries no status) is not a failure — there is
       // nothing to compare, and saying otherwise would make the gate lie.
 
@@ -145,6 +161,12 @@ test("captured records replay faithfully", async ({ page }) => {
     console.log(
       `\n${known.length}/${n} replayed records diverged in a KNOWN, filed way:\n` +
         known.map((k) => "  · " + k).join("\n"));
+  }
+
+  if (unverified.length) {
+    console.log(
+      `\n${unverified.length}/${n} replayed records could not be digest-verified ` +
+      `(captured before the worker recorded digests — status-only, not agreement)`);
   }
 
   if (failures.length) {
