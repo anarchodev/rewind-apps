@@ -484,6 +484,10 @@ export const api = {
       // request.correlation_id) — recorded per row, so forward it.
       tenant_id: record.tenant_id,
       correlation_id: record.correlation_id,
+      // The digest the worker recorded for this run. The shell recomputes it
+      // during replay and compares — null means the capture predates digests,
+      // which the shell must report as unverified rather than as agreement.
+      interaction_digest: tapesField.interaction_digest ?? null,
       received_ns: record.received_ns,
       duration_ns: record.duration_ns,
       request: {

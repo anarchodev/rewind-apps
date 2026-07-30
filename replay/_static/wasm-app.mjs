@@ -1237,12 +1237,30 @@ function readFidelity(bundle, mat) {
     else if (capturedStatus == null) verdict = "unknown";
     else verdict = Number(replayed.status) === Number(capturedStatus) ? "match" : "mismatch";
 
+    // The interaction digest is the stronger claim: the status says the run
+    // ENDED the same, the digest says it DID the same — same reads served,
+    // same writes and effects emitted, in the same order.
+    //
+    // `unverified` is a first-class outcome, not a pass. A record captured
+    // before the worker computed digests carries none, and treating that as
+    // agreement would report confidence about every historical record that
+    // nothing has actually checked.
+    const capturedDigest = bundle.interaction_digest ?? null;
+    const replayedDigest = replayed?.digest ?? null;
+    let digestVerdict;
+    if (!capturedDigest) digestVerdict = "unverified";        // capture predates digests
+    else if (!replayedDigest) digestVerdict = "unverified";   // run did not finish
+    else digestVerdict = capturedDigest === replayedDigest ? "match" : "mismatch";
+
     return {
         verdict,
         threw,
         capturedStatus,
         replayedStatus: replayed ? replayed.status : null,
         replayedResult: replayed ? replayed.result : null,
+        digestVerdict,
+        capturedDigest,
+        replayedDigest,
         // How the run ended. An "incomplete" verdict is only actionable
         // with this: rc 0 means the handler simply never reached the end,
         // a nonzero rc without a throw means the engine cut it short, and
@@ -1256,8 +1274,12 @@ function renderFidelity(f) {
     if (!f || !$.meta) return;
     // Only speak up when the replay is NOT a clean reproduction — a
     // matching run needs no badge, the existing status already says it.
-    if (f.verdict === "match") return;
-    const label =
+    // A digest mismatch is worth saying even when the status matched — that is
+    // exactly the case a status check cannot see.
+    if (f.verdict === "match" && f.digestVerdict !== "mismatch") return;
+    const label = f.digestVerdict === "mismatch" && f.verdict === "match"
+        ? "same response, different behaviour (digest)"
+        :
         f.verdict === "mismatch" ? `replayed ${f.replayedStatus} ≠ captured ${f.capturedStatus}` :
         f.verdict === "incomplete" ? (
             f.run?.oom ? `did not complete — arena exhausted (${f.run.oomUsed}/${f.run.oomLimit} bytes)` :

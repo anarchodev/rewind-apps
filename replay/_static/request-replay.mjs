@@ -306,7 +306,40 @@ export function buildRequestEpilogue({ record = {}, requestReads = null, bodyByt
         // checks that need harness-seeded state a real capture never has
         // (platform.scope's instance-exists marker — the tape already
         // proves the instance resolved live).
-        "  globalThis.__rove_effects = [];\n" +
+        // One ordered interaction log, folded into the digest AS entries
+        // arrive. Order matters and cannot be recovered afterwards, so the
+        // push is patched rather than the array walked at the end: the base
+        // prelude's `_system.*` recorders push here, and the kv wrapper below
+        // pushes reads/writes/deletes into the same list, so the sequence is
+        // exactly what the handler did, in order.
+        //
+        // The digest mirrors the worker's grammar
+        // (rove src/tape/interaction_digest.zig). Entry kinds outside that
+        // grammar — logs, platform and blob calls — are recorded for the
+        // timeline but NOT folded, because the worker does not fold them
+        // either and a digest is only useful if both sides hash the same set.
+        "  const __DG = globalThis.__interactionDigest;\n" +
+        "  const __dg = __DG ? new __DG.Digest() : null;\n" +
+        "  const __foldEffect = (e) => {\n" +
+        "    if (!__dg || !e) return;\n" +
+        "    switch (e.kind) {\n" +
+        "      case \"read\":\n" +
+        "        if (e.op === \"prefix\") __dg.kvPrefix(e.key, true, e.count ?? 0, BigInt(\"0x\" + (e.rowsFold ?? \"0\")));\n" +
+        "        else __dg.kvRead(e.key, !!e.present, e.value ?? \"\");\n" +
+        "        break;\n" +
+        "      case \"write\":  __dg.kvWrite(e.key, e.value ?? \"\"); break;\n" +
+        "      case \"delete\": __dg.kvDelete(e.key); break;\n" +
+        "      case \"fetch\":  __dg.fetch(e.method || \"GET\", e.url || \"\", e.body ?? \"\"); break;\n" +
+        "      case \"timer\":  __dg.wakeArm(\"t\", String(e.ms), e.on ?? \"\"); break;\n" +
+        "      case \"kv-wake\": __dg.wakeArm(\"k\", e.prefix, e.on ?? \"\"); break;\n" +
+        "      case \"stream\": __dg.streamWrite(e.data ?? \"\"); break;\n" +
+        "      default: break;\n" +
+        "    }\n" +
+        "  };\n" +
+        "  const __effectLog = [];\n" +
+        "  const __rawPush = __effectLog.push.bind(__effectLog);\n" +
+        "  __effectLog.push = (e) => { __foldEffect(e); return __rawPush(e); };\n" +
+        "  globalThis.__rove_effects = __effectLog;\n" +
         "  globalThis.__rove_fetch_seq = 0;\n" +
         "  globalThis.__rove_stream_bytes = 0;\n" +
         "  globalThis.__rove_blob_receive_used = false;\n" +
@@ -328,6 +361,41 @@ export function buildRequestEpilogue({ record = {}, requestReads = null, bodyByt
         "  kv.delete(\"__rove_store/email_budget\");\n" +
         "  kv.delete(\"__rove_store/auth/token\");\n" +
         "  kv.set(\"__rove_store/admin\", \"1\");\n" +
+        // Installed AFTER the seeding writes above: those are host bookkeeping
+        // the worker never performed, and folding them would put three
+        // elements in the replay's digest that the capture's does not have —
+        // which is precisely what the cross-engine check caught.
+        //
+        // Wrap kv so reads and writes land in the SAME ordered log as the
+        // effects — the worker folds them into one sequence, so a replay that
+        // folded them separately would hash a different order and diverge on
+        // every run that interleaves them. The native binding still does the
+        // work; this only observes.
+        //
+        // The output-key write below is issued through the NATIVE binding, not
+        // this wrapper: it is the host's side channel, not something the
+        // handler did, and folding it would put an element in the replay's
+        // digest that the worker never had.
+        "  const __kvNative = kv;\n" +
+        "  globalThis.kv = {\n" +
+        "    get(k) {\n" +
+        "      const v = __kvNative.get(k);\n" +
+        "      const present = v !== undefined && v !== null;\n" +
+        "      globalThis.__rove_effects.push({ kind: \"read\", key: k, present, value: present ? v : \"\" });\n" +
+        "      return v;\n" +
+        "    },\n" +
+        "    set(k, v) { globalThis.__rove_effects.push({ kind: \"write\", key: k, value: v }); return __kvNative.set(k, v); },\n" +
+        "    delete(k) { globalThis.__rove_effects.push({ kind: \"delete\", key: k }); return __kvNative.delete(k); },\n" +
+        "    prefix(p, cursor, limit) {\n" +
+        "      const rows = __kvNative.prefix(p, cursor, limit) || [];\n" +
+        "      const enc = globalThis.__interactionDigest;\n" +
+        "      let fold = \"0\";\n" +
+        "      if (enc) { let acc = \"\"; for (const r of rows) acc += r.key + \"=\" + enc.foldValue(r.value) + \";\"; fold = enc.foldValue(acc); }\n" +
+        "      globalThis.__rove_effects.push({ kind: \"read\", op: \"prefix\", key: p, count: rows.length, rowsFold: fold });\n" +
+        "      return rows;\n" +
+        "    },\n" +
+        "  };\n" +
+
         "  const miss = (what) => { throw new Error(\"REPLAY DIVERGENCE: \" + what + \" was read by the handler but is not on the capture tape — the handler observed an input the original run never read\"); };\n" +
         // The bare arena has no console; handlers that log would
         // ReferenceError. Live console output is already on the
@@ -470,7 +538,11 @@ export function buildRequestEpilogue({ record = {}, requestReads = null, bodyByt
         // "did not complete" rather than as a bogus match.
         "  const __res = globalThis.response || {};\n" +
         "  const __ser = (v) => { if (v === undefined || v === null) return null; if (typeof v === \"string\") return v; try { return JSON.stringify(v); } catch (_) { return String(v); } };\n" +
-        "  kv.set(" + JSON.stringify(REPLAY_OUTPUT_KEY) + ", JSON.stringify({ status: __res.status === undefined ? null : __res.status, result: __ser(globalThis.__replay_result), effects: (globalThis.__rove_effects || []) }));\n" +
+        // Close the digest with the run's own result, exactly as the worker
+        // does at finishResponse — it is the last element, and folding it here
+        // keeps the two sequences identical end to end.
+        "  if (__dg) __dg.response(__res.status === undefined ? 200 : __res.status, __ser(globalThis.__replay_result) ?? \"\");\n" +
+        "  __kvNative.set(" + JSON.stringify(REPLAY_OUTPUT_KEY) + ", JSON.stringify({ status: __res.status === undefined ? null : __res.status, result: __ser(globalThis.__replay_result), effects: __effectLog, digest: __dg ? __dg.hex() : null }));\n" +
         "})();\n"
     );
 }
