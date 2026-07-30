@@ -30,7 +30,7 @@
 //   ✗ variables drawer (needs engine.inspectAt — wired in phase C)
 
 import { buildTapesFromBlobs } from "./rtap.mjs";
-import { buildRequestEpilogue, exportForActivation, deriveActivationSurface, resolveMiddleware, REPLAY_OUTPUT_KEY } from "./request-replay.mjs";
+import { buildRequestEpilogue, exportForActivation, deriveActivationSurface, resolveMiddleware, MIDDLEWARE_PATHS, REPLAY_OUTPUT_KEY } from "./request-replay.mjs";
 import { SYSTEM_MODULES } from "./arena-system-modules.js";
 import { CursorEngine } from "./cursor.mjs";
 import getArenaJs from "./qjs_arena_wasm.js";
@@ -252,67 +252,6 @@ function activationEntryFor(bundle) {
     if (!p || p.startsWith("/")) return null;          // a URL, not a module
     if (INBOUND_KINDS.has(bundle.activation)) return null;
     return p.endsWith(".mjs") || p.endsWith(".js") ? p : p + ".mjs";
-}
-
-// Rewrite bare `@scope/pkg` import specifiers to their package-virtual
-// keys (`/pkg/<pkg_hash>/index.mjs`) — the SAME normalization the live
-// engine's module loader applies, and therefore the name the captured
-// module tape recorded. Without this the replay compile requests the
-// raw specifier and the tape check fails with "module tape diverged".
-// The importer decides the map: app modules resolve via
-// `bundle.app_imports`; a `/pkg/<hash>/…` module resolves via that
-// package's own `imports`. Plain textual replacement of the QUOTED
-// specifier — same-line, so the trace's line numbers are unaffected.
-// (A string literal that coincidentally equals a mapped specifier
-// would also rewrite; accepted — the drill shows source, it doesn't
-// re-serve it.)
-// The live capture appends a module-tape entry AFTER the module's
-// bytecode read completes, so a dependency's entry lands BEFORE its
-// importer's (post-order: jwt, oidc, email). The replay compiles from
-// SOURCE, and the engine requests each module BEFORE compiling it —
-// pre-order (oidc, jwt, email) — so a nested package graph always
-// tripped the sequential tape check ("module tape diverged"). The
-// entry SET is identical; only the order differs. Reorder the tape
-// into the replay's request order: a pre-order DFS over the static
-// imports of the (already specifier-rewritten) sources, resolving
-// relative specifiers the way the engine's normalize does. Entries the
-// graph walk doesn't reach keep their relative order at the tail.
-function reorderModuleTape(tapes, moduleSources, entryPath) {
-    const t = tapes.module;
-    if (!t || t.length < 2) return;
-    const IMPORT_RE = /(?:^|\n)\s*(?:import|export)[^\n]*?from\s*(["'])([^"'\n]+)\1|(?:^|\n)\s*import\s*(["'])([^"'\n]+)\3/g;
-    const resolve = (spec, importer) => {
-        if (!spec.startsWith("./") && !spec.startsWith("../")) return spec;
-        const dir = importer.slice(0, importer.lastIndexOf("/") + 1);
-        const out = [];
-        for (const part of (dir + spec).split("/")) {
-            if (part === "." || part === "") continue;
-            if (part === "..") out.pop();
-            else out.push(part);
-        }
-        return (importer.startsWith("/") ? "/" : "") + out.join("/");
-    };
-    const order = [];
-    const seen = new Set([entryPath]);
-    const visit = (path) => {
-        const src = moduleSources[path];
-        if (src == null) return;
-        for (const m of src.matchAll(IMPORT_RE)) {
-            const spec = resolve(m[2] ?? m[4], path);
-            if (seen.has(spec)) continue;
-            seen.add(spec);
-            order.push(spec);
-            visit(spec);
-        }
-    };
-    visit(entryPath);
-    const pool = t.slice();
-    const out = [];
-    for (const spec of order) {
-        const i = pool.findIndex((e) => e.specifier === spec);
-        if (i >= 0) out.push(pool.splice(i, 1)[0]);
-    }
-    tapes.module = out.concat(pool);
 }
 
 function rewriteImportSpecifiers(moduleSources, bundle) {
@@ -1423,7 +1362,7 @@ async function main() {
     window.__replay_tapes__ = tapes;
 
     const moduleSources = rewriteImportSpecifiers(buildModuleSources(bundle), bundle);
-    reorderModuleTape(tapes, moduleSources, entryPath);
+    const middlewarePath = resolveMiddleware(moduleSources, bundle.activation || "inbound");
     const entrySrc = moduleSources[entryPath];
     if (!entrySrc) {
         renderError(new Error("entry source not in bundle: " + entryPath));
@@ -1474,7 +1413,7 @@ async function main() {
         // trust boundary. Production loads it before the handler, so its
         // module-tape entries come first — a replay that skips it diverges
         // on its very first import, never mind losing the gate's effect.
-        middlewarePath: resolveMiddleware(moduleSources, bundle.activation || "inbound"),
+        middlewarePath,
         tenant: bundle.tenant_id ?? null,
         correlationId: bundle.correlation_id ?? null,
     });
