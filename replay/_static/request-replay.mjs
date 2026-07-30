@@ -111,7 +111,7 @@ export function foldRequestReads(entries) {
 // The module paths prod probes for a tenant's middleware, in its own
 // order (`.mjs` then `.js` — dispatcher.zig's bytecode lookup), so a
 // `.js`-spelled middleware gates offline exactly as it does live.
-const MIDDLEWARE_PATHS = ["_middlewares/index.mjs", "_middlewares/index.js"];
+export const MIDDLEWARE_PATHS = ["_middlewares/index.mjs", "_middlewares/index.js"];
 
 // Activation kinds that cross the trust boundary. The worker runs
 // `_middlewares` for these only — a continuation resume already ran
