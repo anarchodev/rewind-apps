@@ -1392,10 +1392,13 @@ function handleSourcesPath(path) {
 // `_rp/jwks.mjs`), the streamed `v1/upload` module, and the `on*` continuation
 // exports above are invoked by callback dispatch — NOT routed here.
 export default function() {
-    const fullPath = request.path;
-    const qi = fullPath.indexOf("?");
-    const path = qi === -1 ? fullPath : fullPath.slice(0, qi);
-    const qs = qi === -1 ? "" : fullPath.slice(qi + 1);
+    // `request.path` NEVER carries the query string — it lives only on
+    // `request.query` (handler-shape.md, the default-activation surface).
+    // Splitting `path` on "?" always produced an empty query, so every routed
+    // read that needs one (`/v1/cp/route?host=`, `/v1/logs/*?…`) reached its
+    // door with the parameter missing.
+    const path = request.path;
+    const qs = request.query || "";
     const m = matchRoute(request.method, path);
     if (!m) { response.status = 404; return { error: "not found" }; }
     const denied = routeAuthz(m.authz, m.params);

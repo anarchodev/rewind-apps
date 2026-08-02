@@ -45,9 +45,9 @@ const PRE_AUTH_PATHS = [
 const M2M_PATHS = ["/v1/deploy/reset", "/v1/deploy/file", "/v1/deploy/pkgfile", "/v1/deploy/cut"];
 
 export function before() {
-    const fullPath = request.path;
-    const q = fullPath.indexOf("?");
-    const path = q === -1 ? fullPath : fullPath.slice(0, q);
+    // `request.path` is already query-free (handler-shape.md) — the split it
+    // used to do here was a no-op that only obscured that.
+    const path = request.path;
 
     if (PRE_AUTH_PATHS.indexOf(path) !== -1) return; // continue
 
