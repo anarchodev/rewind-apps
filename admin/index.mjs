@@ -22,7 +22,11 @@ export function getInstance(id) {
     if (!validId(id)) { response.status = 400; return { error: "invalid id" }; }
     const v = platform.root.get("instance/" + id);
     if (v === null) { response.status = 404; return { error: "not found" }; }
-    return { id: id };
+    // `host` is what the control plane reported when the instance was placed
+    // (recorded at provision time). Null for an instance provisioned before
+    // that was recorded, or one the platform has no wildcard zone for — the UI
+    // then shows no link rather than guessing a URL that may 404.
+    return { id: id, host: kv.get("instance/" + id + "/host") };
 }
 
 export function createInstance(id) {
@@ -199,22 +203,11 @@ export function publishRelease(instance_id, dep_id) {
 // — those were deleted with Fork B. `/_system/*` keeps its own
 // independent root-token M2M gate (unaffected).
 
-// Same RESERVED_INSTANCE_NAMES as worker.zig — admin's JS owns the
-// list so operators can adjust without a Zig recompile.
-const RESERVED_NAMES = [
-    "__admin__","admin","api","app","www",
-    "auth","login","signup","logout","dashboard",
-    "static","system","public","root","mail",
-    "__replay__","replay",
-];
-
-function isReserved(name) {
-    const lower = name.toLowerCase();
-    for (let i = 0; i < RESERVED_NAMES.length; i++) {
-        if (RESERVED_NAMES[i] === lower) return true;
-    }
-    return false;
-}
+// Instance-name rules (DNS-label spec + reserved platform labels) are NOT
+// duplicated here. They live in the engine's `rove-instance-id` and are
+// enforced by the CP at provisioning time, because a name must be one the
+// worker's `{name}.{suffix}` wildcard can resolve — a copy in this file would
+// drift from the thing that actually routes, and did.
 
 function jsonError(status, message) {
     response.status = status;
@@ -523,15 +516,27 @@ export function leaveAccount(aid) {
 // tenant under `account` (defaults to the caller's personal account); any active
 // member of that account may provision, counting against THAT account's plan.
 // All account/* rows are __admin__-home kv.
+// A tenant is REAL only once the CP has formed its raft group across the
+// cluster and written its placement — front-door routing is placement-driven
+// and a miss is a terminal 404. So provisioning goes through the same
+// `/_control/provision` the operator CLI uses (rove#291): the local
+// `platform.instances.create` it used to call did node-local bookkeeping only,
+// which left a dashboard-provisioned tenant unreachable in a multi-node
+// cluster while reporting success.
+//
+// This handler owns AUTHZ (session, membership, plan limit); the CP owns
+// EXISTENCE (name spec, group, placement). Neither duplicates the other — in
+// particular the name rules live in `rove-instance-id`, because an id has to be
+// one the worker's `{id}.{suffix}` wildcard can resolve, and a second copy here
+// would drift out of agreement with the thing that actually routes.
+//
+// The CP call is a buffered `after.fetch` at the privileged door, so the reply
+// is stamped by `onProvisioned` — the bookkeeping writes live there too, so a
+// refused provision leaves no rows behind.
 export function provisionInstance(name, account) {
     const auth = request.auth;
     const sub = auth && auth.sub;
     if (!sub) return jsonError(401, "unauthenticated");
-    if (!validId(name))   return jsonError(400, "invalid name");
-    if (isReserved(name)) return jsonError(409, "name unavailable");
-    if (platform.root.get("instance/" + name) !== null) {
-        return jsonError(409, "name unavailable");
-    }
 
     const caller = accountHashFor(sub);
     backfillSelf(caller, sub);
@@ -549,24 +554,73 @@ export function provisionInstance(name, account) {
             owned: owned.length,
         };
     }
+
+    // No `cluster`: a customer has no basis to choose one, and the CP defaults
+    // to the sole configured cluster. No `host` either — the tenant answers on
+    // `{name}.{publicSuffix}` through the wildcard, so there is no host row to
+    // write and none to leave dangling if this fails.
+    after.fetch(CP_DOOR + "provision", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ tenant: name }),
+        on: "onProvisioned",
+        ctx: { name: name, account: aid },
+    });
+    return next();
+}
+
+// The CP's answer to `provisionInstance`. Runs as a continuation, so
+// `request.auth` is absent (middleware does not re-run) — everything this needs
+// was decided before the fetch and travels in `request.ctx`, which the engine
+// carries and a client cannot touch.
+export function onProvisioned() {
+    const ctx = request.ctx || {};
+    const name = ctx.name;
+    const aid = ctx.account;
+    if (!name || !aid) return jsonError(500, "provision continuation lost its context");
+
+    if (request.status !== 200 && request.status !== 204) {
+        // Relay the CP's own reason — it is the only party that knows WHICH
+        // rule the name broke, and the customer is the one who has to fix it.
+        let reason = "provision failed";
+        try {
+            const body = request.json;
+            if (body && typeof body.error === "string") reason = body.error;
+        } catch (_) { /* not JSON — keep the generic reason */ }
+        // 4xx is the customer's to fix; anything else is ours, and a failed
+        // provision is a no-op cluster-side (the CP evicts what it formed).
+        response.status = (request.status >= 400 && request.status < 500)
+            ? request.status : 502;
+        return { error: reason };
+    }
+
+    // Placed. The CP's reply names where it answers — the dashboard carries no
+    // copy of the platform's zone, and deriving one here would be a second
+    // truth that drifts from the thing that actually routes.
+    let host = null;
+    try {
+        const body = request.json;
+        if (body && typeof body.host === "string" && body.host) host = body.host;
+    } catch (_) { /* older CP replies 204 with no body — host stays unknown */ }
+
+    // Record ownership, then seed the plan row — both only now, so a refusal
+    // above leaves the account exactly as it was.
     if (kv.get("account/" + aid + "/plan") === null) {
         kv.set("account/" + aid + "/plan", "free");
     }
-
-    // platform.instances.create is idempotent (retry-safe).
-    try { platform.instances.create(name); }
-    catch (e) {
-        response.status = 500;
-        return { error: "create failed: " + (e && e.message) };
-    }
-    // Starter content best-effort — the account is usable without it
-    // and the customer can push their own code via the files API.
-    try { platform.instances.deployStarter(name); } catch (_) {}
-
     kv.set("account/" + aid + "/instances/" + name, "");
     kv.set("instance/" + name + "/owner", aid); // reverse pointer for canAccess
+    // The instance's primary host, so the UI can link it later without asking
+    // the CP again. Absent when the platform has no wildcard zone — then the
+    // instance is placed but has no URL until an operator maps one.
+    if (host) kv.set("instance/" + name + "/host", host);
+
+    // Starter content best-effort — the instance is usable without it, and the
+    // customer's first deploy replaces it anyway.
+    try { platform.instances.deployStarter(name); } catch (_) {}
+
     response.status = 201;
-    return { ok: true, name: name, account: aid };
+    return { ok: true, name: name, account: aid, host: host };
 }
 
 // GET /v1/session — whoami. request.auth = {sub,is_root} (set by the RP guard in
@@ -749,15 +803,14 @@ function handleWsFile(body) {
     // which records their own workspace entry — only handlers come through here.
     if (b.kind !== "handler")
         return jsonError(400, "kind must be 'handler' (statics stream via PUT /v1/upload)");
-    const copts = {
+    // Stage the source; the bundle COMPILES at cut. Not here, because
+    // compilation resolves imports eagerly: a handler that imports a sibling
+    // could only be compiled once every sibling had been uploaded, and
+    // mid-upload the bundle is incomplete rather than wrong (rove#344).
+    platform.stage([{ path: b.path, source: b.source || "" }], {
         scope: b.tenant, on: "onFileStaged",
         ctx: { target: b.tenant, path: b.path, content_type: b.content_type || "" },
-    };
-    // A handler that imports @rewind/* compiles against the deploy's resolution
-    // — imports validate at compile (deploy fails loud here, not at first
-    // request). See docs/architecture/package-resolution.md.
-    if (b.resolution !== undefined) copts.resolution = b.resolution;
-    platform.compile([{ path: b.path, source: b.source || "" }], copts);
+    });
     return next();
 }
 
@@ -802,55 +855,118 @@ export function onFileStaged() {
     const ctx = request.ctx;
     if (!ctx || !ctx.ok) {
         response.status = 500;
-        return JSON.stringify({ stage: "compile", ctx: ctx || null });
+        return JSON.stringify({ stage: "stage", ctx: ctx || null });
     }
     const app = ctx.app || {};
     const r = ctx.results[0];
+    // No bytecode_hex yet — cut compiles the bundle and fills it in.
     platform.scope(app.target).kv.set(WS + app.path, JSON.stringify({
         kind: "handler", content_type: app.content_type || "",
-        source_hex: r.source_hex, bytecode_hex: r.bytecode_hex }));
+        source_hex: r.source_hex }));
     response.status = 200;
     return JSON.stringify({ ok: true, path: app.path, hash: r.source_hex });
 }
 
+// Cut: COMPILE the staged handlers as one bundle, then stamp the manifest.
+// Compiling here rather than per upload is what lets a handler import a
+// sibling — only now is the whole bundle present, and compilation resolves
+// every import eagerly (rove#344). It is also where a bad import fails, and
+// the compile error names the file.
 function handleWsCut(body) {
     const b = deployGate(body); if (!b) return null;
     const sk = platform.scope(b.tenant).kv;
     const rows = sk.prefix(WS, "", 1000);
     if (rows.length === 0) return jsonError(400, "workspace empty — nothing to cut");
+    const handlers = [];
+    for (let i = 0; i < rows.length; i++) {
+        const e = JSON.parse(rows[i].value);
+        if (e.kind === "handler")
+            handlers.push({ path: rows[i].key.slice(WS.length), source_hash: e.source_hex });
+    }
+    if (handlers.length === 0) return cutStamp(b, {});  // statics-only bundle
+    // Compile against the SERVER-authoritative resolution, not the client's
+    // lockfile: the engine needs each package file's staged bytecode hash to
+    // load it, and validating against anything but what the manifest will
+    // record would validate the wrong thing.
+    const cres = buildResolution(sk, b);
+    if (cres && cres.error) return jsonError(400, cres.error);
+    const copts = {
+        scope: b.tenant, on: "onBundleCompiled",
+        // The client's lockfile has to survive the compile hop to reach the stamp.
+        ctx: { target: b.tenant, resolution: b.resolution === undefined ? null : b.resolution },
+    };
+    if (cres) copts.resolution = cres;
+    platform.compile(handlers, copts);
+    return next();
+}
+
+// The bundle compiled: fold each handler's bytecode hash in, then stamp.
+export function onBundleCompiled() {
+    const ctx = request.ctx;
+    if (!ctx || !ctx.ok) {
+        // A compile failure here is the author's — a syntax error, or an
+        // import that resolves to nothing. Relay the engine's status so it
+        // reads as a bad bundle, not a broken deploy service.
+        response.status = (ctx && ctx.status) || 500;
+        return JSON.stringify({ stage: "compile", ctx: ctx || null });
+    }
+    const app = ctx.app || {};
+    const bc = {};
+    for (let i = 0; i < ctx.results.length; i++) bc[ctx.results[i].path] = ctx.results[i].bytecode_hex;
+    return cutStamp(
+        { tenant: app.target, resolution: app.resolution === null ? undefined : app.resolution },
+        bc,
+    );
+}
+
+// Assemble the manifest from the workspace + the just-compiled bytecode
+// hashes (`bc`, path → bytecode_hex) and stamp it.
+function cutStamp(b, bc) {
+    const sk = platform.scope(b.tenant).kv;
+    const rows = sk.prefix(WS, "", 1000);
     const entries = rows.map(function (row) {
         const e = JSON.parse(row.value);
-        return { path: row.key.slice(WS.length), kind: e.kind,
+        const path = row.key.slice(WS.length);
+        return { path: path, kind: e.kind,
                  content_type: e.content_type || "",
-                 source_hex: e.source_hex, bytecode_hex: e.bytecode_hex || "" };
+                 source_hex: e.source_hex, bytecode_hex: bc[path] || e.bytecode_hex || "" };
     });
     const sopts = { on: "onCut" };
-    // Join the client's lockfile (spec/version/pkg_hash/imports) with the
-    // server-staged package files — hashes stay server-authoritative (recorded
-    // by onPkgStaged) → manifest-v2 packages[]. See package-resolution.md.
-    if (b.resolution !== undefined) {
-        const res = { packages: [], app_imports: b.resolution.app_imports || {} };
-        const pkgs = b.resolution.packages || [];
-        for (let i = 0; i < pkgs.length; i++) {
-            const p = pkgs[i];
-            const staged = sk.prefix(WSPKG + p.pkg_hash + "/", "", 1000);
-            if (staged.length === 0)
-                return jsonError(400, "package " + p.spec + "@" + p.version + " has no staged files");
-            const files = staged.map(function (row) {
-                const f = JSON.parse(row.value);
-                return { path: row.key.slice((WSPKG + p.pkg_hash + "/").length),
-                         source_hash: f.source_hex, bytecode_hash: f.bytecode_hex };
-            });
-            res.packages.push({
-                spec: p.spec, version: p.version, pkg_hash: p.pkg_hash,
-                files: files, imports: p.imports || {},
-                capabilities: p.capabilities || [], private: !!p.private,
-            });
-        }
-        sopts.resolution = res;
-    }
+    const res = buildResolution(sk, b);
+    if (res && res.error) return jsonError(400, res.error);
+    if (res) sopts.resolution = res;
     platform.scope(b.tenant).deploy.stampManifest(entries, sopts);
     return next();
+}
+
+// Join the client's lockfile (spec/version/pkg_hash/imports) with the
+// server-staged package files — hashes stay server-authoritative (recorded by
+// onPkgStaged) → manifest-v2 packages[]. See package-resolution.md. The SAME
+// resolution feeds the cut compile and the manifest, so a handler's
+// `@scope/pkg` import validates against exactly the package files the
+// deployment will record. Null when the deploy has no packages; `{error}` when
+// a declared package was never staged.
+function buildResolution(sk, b) {
+    if (b.resolution === undefined) return null;
+    const res = { packages: [], app_imports: b.resolution.app_imports || {} };
+    const pkgs = b.resolution.packages || [];
+    for (let i = 0; i < pkgs.length; i++) {
+        const p = pkgs[i];
+        const staged = sk.prefix(WSPKG + p.pkg_hash + "/", "", 1000);
+        if (staged.length === 0)
+            return { error: "package " + p.spec + "@" + p.version + " has no staged files" };
+        const files = staged.map(function (row) {
+            const f = JSON.parse(row.value);
+            return { path: row.key.slice((WSPKG + p.pkg_hash + "/").length),
+                     source_hash: f.source_hex, bytecode_hash: f.bytecode_hex };
+        });
+        res.packages.push({
+            spec: p.spec, version: p.version, pkg_hash: p.pkg_hash,
+            files: files, imports: p.imports || {},
+            capabilities: p.capabilities || [], private: !!p.private,
+        });
+    }
+    return res;
 }
 
 // stampManifest barrier resume — the cut deployment is durable here.

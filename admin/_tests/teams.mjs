@@ -56,7 +56,6 @@ const s = scenario({
   now: "2026-07-01T00:00:00Z",
   seed: 7,
   kv: BASE,
-  root: { kv: { "instance/taken1": j({ created: true }) } }, // for provision name-taken
 });
 const call = (method, path, sid, body) =>
   s.inbound({ method, path, host: "app.rewindjs.com", body, session: sid ? { id: sid } : undefined });
@@ -95,14 +94,42 @@ expect(joined.kv("invite/" + uh(INV))).toBe(null);             // single-use
 expect(accept(INV_OLD, "ca").status).toBe(410);                // expired
 
 // ── provisionInstance: the provisioning gate (authed) ─────────────────────
+// A provision is a two-activation saga (rove#291): this handler checks AUTHZ
+// and then asks the control plane, which owns EXISTENCE — the name spec, the
+// raft group, the placement. So the refusals a customer sees for a bad NAME are
+// the CP's, delivered through the fetch resume; only the authz refusals are
+// answered here without ever reaching the door.
 const prov = (name, sid, account) => call("POST", "/v1/instances", sid, account ? { name, account } : { name });
 expect(prov("newapp", null).status).toBe(401);                  // unauthenticated
-expect(prov("admin", "al").status).toBe(409);                   // reserved name
-expect(prov("taken1", "al").status).toBe(409);                  // name already taken (root store)
 expect(prov("newapp", "ca", TEAM).status).toBe(403);            // carol isn't a member of team1
-const made = prov("newapp", "al");                              // alice's personal account → created
+// An authz refusal must not reach the control plane at all.
+expect(prov("newapp", "ca", TEAM).effects.some((e) => e.kind === "fetch")).toBe(false);
+
+// The CP's refusals reach the customer verbatim, with the CP's own status.
+const reserved = prov("admin", "al").fetch(/rewind-cp/).resolve({
+  status: 400, body: '{"error":"that name is reserved"}',
+});
+expect(reserved.status).toBe(400);
+expect(reserved.body.error).toBe("that name is reserved");
+const taken = prov("taken1", "al").fetch(/rewind-cp/).resolve({
+  status: 409, body: '{"error":"that name is taken"}',
+});
+expect(taken.status).toBe(409);
+
+// alice's personal account → placed. The reply carries the host the CP named,
+// and the ownership rows appear only on this success path.
+const made = prov("newapp", "al").fetch(/rewind-cp/).resolve({
+  status: 200,
+  body: '{"tenant":"newapp","cluster":"prod","host":"newapp.rewindjs.app"}',
+});
 expect(made.status).toBe(201);
-expect(made.effects.some((e) => e.kind === "platform" && e.op === "instances.create")).toBe(true);
+expect(made.body.host).toBe("newapp.rewindjs.app");
+expect(made.kv("instance/newapp/owner")).toBe(A);
+expect(made.kv("instance/newapp/host")).toBe("newapp.rewindjs.app");
+expect(made.effects.some((e) => e.kind === "platform" && e.op === "instances.deployStarter")).toBe(true);
+// The local create is GONE — it made a tenant on one node that nothing routed
+// to. Its presence here would mean the CP path had been bypassed again.
+expect(made.effects.some((e) => e.kind === "platform" && e.op === "instances.create")).toBe(false);
 // team1 is at its free-plan limit (1 instance) → refused
 const capped = scenario({
   admin: true, now: "2026-07-01T00:00:00Z", seed: 7,

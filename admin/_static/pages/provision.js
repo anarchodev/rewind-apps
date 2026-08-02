@@ -15,10 +15,12 @@ export function render(root, { goto, api }) {
       <label>
         <span>Instance name</span>
         <input type="text" name="name" autocomplete="off" required
-               minlength="1" maxlength="64"
-               pattern="[A-Za-z0-9_-]+"
-               title="letters, digits, dashes, underscores"
+               minlength="1" maxlength="63"
+               pattern="[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?"
+               title="lowercase letters, digits and hyphens"
                spellcheck="false">
+        <small class="hint">The name becomes your instance's subdomain —
+          lowercase letters, digits and hyphens.</small>
       </label>
       <button type="submit">Create instance</button>
       <p class="error" hidden></p>
@@ -43,19 +45,27 @@ export function render(root, { goto, api }) {
       return;
     }
     submit.disabled = true;
+    submit.textContent = "Creating…";
     try {
-      await api.provisionInstance(name);
-      goto("#/instances");
+      const created = await api.provisionInstance(name);
+      // Straight to the new instance — its Code tab is where the first
+      // deploy happens, and the header carries the URL it now answers on.
+      goto("#/instance/" + encodeURIComponent(created?.name || name));
     } catch (e) {
-      if (e instanceof ApiError) {
-        if (e.status === 409) showError("That name isn't available — try another.");
-        else if (e.status === 400) showError("Invalid name (letters, digits, dashes, underscores).");
-        else if (e.status === 403) showError("Account instance limit reached.");
-        else showError(`Provisioning failed (${e.status}).`);
-      } else {
-        showError(`Provisioning failed: ${e.message}`);
-      }
+      // Prefer the server's own sentence: the control plane is the only
+      // party that knows WHICH rule a name broke, and guessing here is how
+      // the form ended up advertising underscores it never accepted.
+      const reason = (e instanceof ApiError && e.body && typeof e.body.error === "string")
+        ? e.body.error
+        : null;
+      if (reason === "account_limit_reached") {
+        showError(`Your plan allows ${e.body.limit} instance${e.body.limit === 1 ? "" : "s"}, and you have ${e.body.owned}.`);
+      } else if (reason) {
+        showError(reason[0].toUpperCase() + reason.slice(1) + ".");
+      } else if (e instanceof ApiError) showError(`Provisioning failed (${e.status}).`);
+      else showError(`Provisioning failed: ${e.message}`);
       submit.disabled = false;
+      submit.textContent = "Create instance";
     }
   });
 

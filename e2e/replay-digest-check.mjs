@@ -11,6 +11,19 @@
 // supplies a record captured seconds earlier from a real local worker.
 //
 //   node replay-digest-check.mjs <record.json> <entry-source-file>
+//                                 [--entry-path=P] [path=file ...]
+//
+// Trailing `path=file` pairs add the rest of the bundle's modules, so a handler
+// that imports its own helpers can be replayed — a single-module check would
+// pass for the one shape real tenants never have.
+//
+// `--entry-path` is the module path the entry was DISPATCHED at (default
+// `index.mjs`). It has to be the real one: a relative import resolves against
+// the importing module's own directory, so a route module at `order/index.mjs`
+// reaching `../lib.mjs` only lands on the same module production loaded if the
+// entry is registered under its true name. Which module ran is the worker's
+// dispatch decision and is not in the record (rove#254), so the caller supplies
+// it.
 //
 // Prints one JSON line: {"replayed": "<hex>|null", "error": "<why>"|null}.
 import { readFileSync } from "node:fs";
@@ -20,7 +33,10 @@ import { dirname, join } from "node:path";
 const here = dirname(fileURLToPath(import.meta.url));
 const STATIC = join(here, "..", "replay", "_static");
 
-const [recordPath, entryPath] = process.argv.slice(2);
+const argv = process.argv.slice(2);
+const entryFlag = argv.find((a) => a.startsWith("--entry-path="));
+const entryName = entryFlag ? entryFlag.slice("--entry-path=".length) : "index.mjs";
+const [recordPath, entryPath, ...extraArgs] = argv.filter((a) => !a.startsWith("--"));
 const out = (o) => { console.log(JSON.stringify(o)); process.exit(o.error ? 1 : 0); };
 if (!recordPath || !entryPath) out({ replayed: null, error: "usage: <record.json> <entry.mjs>" });
 
@@ -70,7 +86,15 @@ setNow(Number(ms & 0xffffffffn), Number((ms >> 32n) & 0xffffffffn));
 
 Module._kvOverlay = new Map();
 Module.tapes = tapes;
-Module.module_sources = { "index.mjs": entrySrc };
+// The bundle the handler imports from, keyed by deploy path — what a relative
+// specifier resolves to. The entry is registered under the path it was
+// dispatched at, so its own relative imports resolve from the right directory.
+Module.module_sources = { [entryName]: entrySrc };
+for (const pair of extraArgs) {
+  const eq = pair.indexOf("=");
+  if (eq < 1) out({ replayed: null, error: `bad module arg ${pair} (want path=file)` });
+  Module.module_sources[pair.slice(0, eq)] = readFileSync(pair.slice(eq + 1), "utf-8");
+}
 
 const epilogue = buildRequestEpilogue({
   record: { method: record.method, path: record.path, host: record.host },
@@ -83,7 +107,7 @@ const epilogue = buildRequestEpilogue({
 let stderrCap = "";
 const origWrite = process.stderr.write.bind(process.stderr);
 process.stderr.write = (c) => { stderrCap += c.toString(); return true; };
-const rc = run_mod("index.mjs", entrySrc + epilogue);
+const rc = run_mod(entryName, entrySrc + epilogue);
 process.stderr.write = origWrite;
 
 const raw = Module._kvOverlay.get(REPLAY_OUTPUT_KEY);
