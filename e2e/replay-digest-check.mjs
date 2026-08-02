@@ -10,7 +10,11 @@
 // Driven by rove's `scripts/smoke/interaction_digest_smoke_v2.py`, which
 // supplies a record captured seconds earlier from a real local worker.
 //
-//   node replay-digest-check.mjs <record.json> <entry-source-file>
+//   node replay-digest-check.mjs <record.json> <entry-source-file> [path=file ...]
+//
+// Trailing `path=file` pairs add the rest of the bundle's modules, so a handler
+// that imports its own helpers can be replayed — a single-module check would
+// pass for the one shape real tenants never have.
 //
 // Prints one JSON line: {"replayed": "<hex>|null", "error": "<why>"|null}.
 import { readFileSync } from "node:fs";
@@ -20,7 +24,7 @@ import { dirname, join } from "node:path";
 const here = dirname(fileURLToPath(import.meta.url));
 const STATIC = join(here, "..", "replay", "_static");
 
-const [recordPath, entryPath] = process.argv.slice(2);
+const [recordPath, entryPath, ...extraArgs] = process.argv.slice(2);
 const out = (o) => { console.log(JSON.stringify(o)); process.exit(o.error ? 1 : 0); };
 if (!recordPath || !entryPath) out({ replayed: null, error: "usage: <record.json> <entry.mjs>" });
 
@@ -70,7 +74,15 @@ setNow(Number(ms & 0xffffffffn), Number((ms >> 32n) & 0xffffffffn));
 
 Module._kvOverlay = new Map();
 Module.tapes = tapes;
+// The bundle the handler imports from. The entry is keyed `index.mjs` because
+// that is the specifier the epilogue runs; siblings keep the paths they were
+// deployed under, since that is what an `import "./lib.mjs"` resolves to.
 Module.module_sources = { "index.mjs": entrySrc };
+for (const pair of extraArgs) {
+  const eq = pair.indexOf("=");
+  if (eq < 1) out({ replayed: null, error: `bad module arg ${pair} (want path=file)` });
+  Module.module_sources[pair.slice(0, eq)] = readFileSync(pair.slice(eq + 1), "utf-8");
+}
 
 const epilogue = buildRequestEpilogue({
   record: { method: record.method, path: record.path, host: record.host },
