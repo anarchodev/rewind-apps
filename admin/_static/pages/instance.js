@@ -6,6 +6,7 @@ const TABS = [
   { id: "logs", label: "Logs" },
   { id: "kv", label: "KV" },
   { id: "code", label: "Code" },
+  { id: "settings", label: "Settings" },
 ];
 
 export function render(root, { goto, api, params }) {
@@ -63,6 +64,7 @@ export function render(root, { goto, api, params }) {
     if (tabId === "logs") activeTeardown = renderLogs(tabBody, ctx) || null;
     else if (tabId === "kv") activeTeardown = renderKv(tabBody, ctx) || null;
     else if (tabId === "code") activeTeardown = renderCode(tabBody, ctx) || null;
+    else if (tabId === "settings") activeTeardown = renderSettings(tabBody, { ...ctx, goto }) || null;
   }
 
   for (const t of TABS) {
@@ -105,6 +107,68 @@ export function render(root, { goto, api, params }) {
     }
     activeTeardown = null;
   };
+}
+
+// ── Settings panel ─────────────────────────────────────────────────
+
+/// Instance settings — currently just the irreversible part. Deletion lives on
+/// its own tab rather than beside the routine controls: a destructive action
+/// should take a deliberate navigation to reach, not sit one mis-click away
+/// from Refresh.
+function renderSettings(root, { instanceId, api, showError, clearError, goto }) {
+  const el = document.createElement("div");
+  el.className = "settings-panel";
+  el.innerHTML = `
+    <section class="danger-zone">
+      <h3>Delete this instance</h3>
+      <p>Deletes <strong>${escapeHtml(instanceId)}</strong> permanently: its
+        handlers, its KV data, and its request history. It stops answering
+        immediately and the name becomes available to anyone again.
+        <strong>This cannot be undone.</strong></p>
+      <form class="delete-form">
+        <label>
+          <span>Type <code>${escapeHtml(instanceId)}</code> to confirm</span>
+          <input type="text" name="confirm" autocomplete="off" spellcheck="false"
+                 placeholder="${escapeHtml(instanceId)}">
+        </label>
+        <button type="submit" class="danger" disabled>Delete instance</button>
+      </form>
+    </section>
+  `;
+  root.appendChild(el);
+
+  const form = el.querySelector(".delete-form");
+  const input = form.querySelector("input[name=confirm]");
+  const btn = form.querySelector("button");
+
+  // The button stays inert until the typed name matches exactly — the guard is
+  // the server's, but there is no reason to let the click happen at all.
+  input.addEventListener("input", () => {
+    btn.disabled = input.value !== instanceId;
+  });
+
+  form.addEventListener("submit", async (ev) => {
+    ev.preventDefault();
+    if (input.value !== instanceId) return;
+    clearError();
+    btn.disabled = true;
+    btn.textContent = "Deleting…";
+    try {
+      await api.deleteInstance(instanceId, input.value);
+      goto("#/instances");
+    } catch (e) {
+      // The control plane's own words: a partial teardown asks for a retry,
+      // and saying so is more useful than a generic failure.
+      const reason = (e instanceof ApiError && e.body && typeof e.body.error === "string")
+        ? e.body.error
+        : (e && e.message) || "unknown error";
+      showError(`Delete failed: ${reason}`);
+      btn.disabled = false;
+      btn.textContent = "Delete instance";
+    }
+  });
+
+  return () => {};
 }
 
 // ── Logs panel ─────────────────────────────────────────────────────

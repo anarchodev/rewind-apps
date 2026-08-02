@@ -201,8 +201,11 @@ export const api = {
   getInstance(id) {
     return rest("GET", "/v1/instances/" + seg(id));
   },
-  deleteInstance(id) {
-    return rest("DELETE", "/v1/instances/" + seg(id));
+  /// Deprovision an instance. DESTRUCTIVE and not undoable: the server
+  /// requires `confirm` to equal the instance's own name, so a stray call
+  /// cannot destroy a tenant.
+  deleteInstance(id, confirm) {
+    return rest("DELETE", "/v1/instances/" + seg(id), { confirm });
   },
   listDomains() {
     return rest("GET", "/v1/domains");

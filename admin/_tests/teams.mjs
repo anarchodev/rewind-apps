@@ -130,6 +130,54 @@ expect(made.effects.some((e) => e.kind === "platform" && e.op === "instances.dep
 // The local create is GONE — it made a tenant on one node that nothing routed
 // to. Its presence here would mean the CP path had been bypassed again.
 expect(made.effects.some((e) => e.kind === "platform" && e.op === "instances.create")).toBe(false);
+// ── deleteInstance: deprovision (rove#294) ────────────────────────────────
+// Mirror of provisioning: authz here, EXISTENCE at the control plane. The
+// destructive guards are the point — everything below is what stands between a
+// mis-click and a destroyed tenant.
+// Its own scenario: the delete path needs an instance that EXISTS and is owned
+// by team1, which the shared BASE deliberately has none of.
+const owned = scenario({
+  admin: true, now: "2026-07-01T00:00:00Z", seed: 7,
+  kv: Object.assign({}, BASE, {
+    ["account/" + TEAM + "/instances/existing"]: "",
+    "instance/existing/owner": TEAM,
+  }),
+});
+const del = (id, sid, confirm) =>
+  owned.inbound({ method: "DELETE", path: "/v1/instances/" + id, host: "app.rewindjs.com",
+                  body: confirm === undefined ? undefined : { confirm },
+                  session: sid ? { id: sid } : undefined });
+
+// Not yours → 403, and it never reaches the control plane.
+expect(del("existing", "ca", "existing").status).toBe(403);
+expect(del("existing", "ca", "existing").effects.some((e) => e.kind === "fetch")).toBe(false);
+
+// A platform singleton is refused locally — deleting __admin__ would destroy
+// the surface serving the request.
+expect(del("__admin__", "op", "__admin__").status).toBe(403);
+expect(del("__admin__", "op", "__admin__").effects.some((e) => e.kind === "fetch")).toBe(false);
+
+// No confirmation, or the WRONG name, must not delete anything.
+expect(del("taken1", "op").status).toBe(400);
+expect(del("taken1", "op", "").status).toBe(400);
+expect(del("taken1", "op", "wrongname").status).toBe(400);
+expect(del("taken1", "op", "wrongname").effects.some((e) => e.kind === "fetch")).toBe(false);
+
+// Confirmed + authorized → asks the CP, and on success frees the plan slot.
+const gone = del("existing", "al", "existing").fetch(/rewind-cp/).resolve({ status: 204, body: "" });
+expect(gone.status).toBe(204);
+expect(gone.kv("account/" + TEAM + "/instances/existing")).toBe(null);
+expect(gone.kv("instance/existing/owner")).toBe(null);
+
+// A CP refusal leaves the ownership rows ALONE — the tenant still exists, and
+// an account that lost its rows would own an instance it could no longer see.
+const refused = del("existing", "al", "existing").fetch(/rewind-cp/).resolve({
+  status: 502, body: '{"error":"tenant is unroutable, but its group was not fully torn down — retry"}',
+});
+expect(refused.status).toBe(502);
+expect(refused.body.error).toMatch(/retry/);
+expect(refused.kv("account/" + TEAM + "/instances/existing")).toBe("");
+
 // team1 is at its free-plan limit (1 instance) → refused
 const capped = scenario({
   admin: true, now: "2026-07-01T00:00:00Z", seed: 7,
