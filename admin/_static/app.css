@@ -235,6 +235,61 @@ label {
 }
 .instance .back-link:hover { color: var(--accent); }
 
+/* ── Settings tab: the irreversible corner ───────────────────────── */
+
+/* Bordered in danger colour and set apart, so it never reads as ordinary
+   configuration. */
+.danger-zone {
+  border: 1px solid var(--danger);
+  border-radius: 6px;
+  padding: 18px 20px;
+  background: var(--error-bg);
+  max-width: 620px;
+}
+.danger-zone h3 {
+  margin: 0 0 8px;
+  font-size: 15px;
+  color: var(--danger);
+}
+.danger-zone p {
+  margin: 0 0 16px;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text);
+}
+.danger-zone code {
+  background: var(--input-bg);
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-size: 12px;
+}
+.delete-form label { display: block; margin-bottom: 10px; }
+.delete-form label span {
+  display: block;
+  font-size: 12px;
+  color: var(--muted);
+  margin-bottom: 4px;
+}
+.delete-form input { width: 100%; max-width: 320px; }
+button.danger {
+  background: var(--danger);
+  border-color: var(--danger);
+  color: var(--panel);
+  font-weight: 600;
+}
+button.danger:hover:not(:disabled) {
+  background: var(--danger-hover);
+  border-color: var(--danger-hover);
+}
+/* Inert until the typed name matches — the affordance should look unavailable,
+   not merely refuse on click. */
+button.danger:disabled {
+  background: transparent;
+  border-color: var(--border);
+  color: var(--muted);
+  cursor: not-allowed;
+}
+
 /* The instance's public URL, under its name in the header. */
 .instance .instance-url {
   display: inline-block;

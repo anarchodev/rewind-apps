@@ -36,20 +36,67 @@ export function createInstance(id) {
     return { id: id };
 }
 
-export function deleteInstance(id) {
+// Deprovision an instance (rove#294). Authz is the route's `tenant` class:
+// an operator, or an active member of the owning account (canAccess).
+//
+// Like provisioning, this goes through the CONTROL PLANE — the same reasoning
+// as rove#291, in reverse. The old body did node-local bookkeeping only: it
+// dropped this node's root marker and domain rows while the placement and the
+// raft group survived on every node, so the tenant stayed routable and its name
+// stayed taken. The CP owns existence; this handler owns authz and the
+// account-level bookkeeping.
+//
+// DESTRUCTIVE and not undoable — the caller must confirm by sending the
+// instance's own name (`confirm`), so a stray DELETE cannot destroy a tenant.
+export function deleteInstance(id, confirm) {
     if (!validId(id)) { response.status = 400; return { error: "invalid id" }; }
-    // Clean up the ownership overlay before dropping the routing row, so we don't
-    // orphan the account marker / reverse pointer (a pre-teams leak too).
+    if (isPlatformInstance(id)) return jsonError(403, "that instance is part of the platform");
+    // Type-the-name: the one guard between a mis-click and a destroyed tenant.
+    if (confirm !== id) {
+        return jsonError(400, "to delete this instance, confirm with its name");
+    }
+    after.fetch(CP_DOOR + "delete", {
+        method: "POST",
+        body: JSON.stringify({ tenant: id }),
+        headers: { "content-type": "application/json" },
+        on: "onDeprovisioned",
+        ctx: { name: id },
+    });
+    return next();
+}
+
+// The CP's answer to `deleteInstance`. Ownership rows are cleared HERE — only
+// once the tenant is actually gone — so a refused delete leaves the account
+// exactly as it was.
+export function onDeprovisioned() {
+    const ctx = request.ctx || {};
+    const id = ctx.name;
+    if (!id) return jsonError(500, "delete continuation lost its context");
+
+    // 204 = gone. 502 = unroutable but not fully torn down: the CP wants a
+    // retry, and the tenant is already unreachable, so the account rows would
+    // be wrong to keep — but they are also what a retry needs to re-authorize.
+    // Keep them and report, so the customer can retry rather than owning an
+    // instance they can no longer see.
+    if (request.status !== 204) {
+        let reason = "delete failed";
+        try {
+            const body = request.json;
+            if (body && typeof body.error === "string") reason = body.error;
+        } catch (_) { /* not JSON — keep the generic reason */ }
+        response.status = (request.status >= 400 && request.status < 500)
+            ? request.status : 502;
+        return { error: reason };
+    }
+
+    // Free the plan slot + the ownership pointers. Idempotent: a retried
+    // delete after a partial failure converges instead of 500ing.
     const aid = kv.get("instance/" + id + "/owner");
     if (aid !== null) {
         kv.delete("account/" + aid + "/instances/" + id);
         kv.delete("instance/" + id + "/owner");
     }
-    platform.root.delete("instance/" + id);
-    const doms = platform.root.prefix("domain/", "", 1000);
-    for (let i = 0; i < doms.length; i++) {
-        if (doms[i].value === id) platform.root.delete(doms[i].key);
-    }
+    kv.delete("instance/" + id + "/host");
     response.status = 204;
     return null;
 }
@@ -208,6 +255,13 @@ export function publishRelease(instance_id, dep_id) {
 // enforced by the CP at provisioning time, because a name must be one the
 // worker's `{name}.{suffix}` wildcard can resolve — a copy in this file would
 // drift from the thing that actually routes, and did.
+
+// The platform's own singleton tenants. The CP refuses to delete these too
+// (it is the authority); this is the local check so the dashboard can say why
+// without a round trip, and so a UI never offers the button.
+function isPlatformInstance(id) {
+    return id === "__admin__" || id === "__auth__" || id === "__replay__";
+}
 
 function jsonError(status, message) {
     response.status = status;
@@ -1220,7 +1274,7 @@ const ROUTES = [
     ["POST",   "/v1/instances",                 "authed",        (c) => provisionInstance(c.body.name, c.body.account)],
     ["PUT",    "/v1/instances/:id",             "root",          (c) => createInstance(c.params.id)],  // operator raw
     ["GET",    "/v1/instances/:id",             "tenant",        (c) => getInstance(c.params.id)],
-    ["DELETE", "/v1/instances/:id",             "tenant",        (c) => deleteInstance(c.params.id)],
+    ["DELETE", "/v1/instances/:id",             "tenant",        (c) => deleteInstance(c.params.id, c.body && c.body.confirm)],
     ["POST",   "/v1/instances/:id/release",     "tenant",        (c) => publishRelease(c.params.id, c.body.dep_id)],
     ["GET",    "/v1/instances/:id/kv",          "tenantRead",    (c) => kvRead(c.params.id, c.query)],
     ["PUT",    "/v1/instances/:id/kv",          "tenantWrite",   (c) => kvSet(c.params.id, c.body.key, c.body.value)],
