@@ -1,11 +1,11 @@
-# rewind-apps — rewindjs first-party tenant content (PRIVATE)
+# rewind-apps — rewindjs first-party tenant content
 
 The application bundles for rewindjs's own tenants — the third concern, separate
 from the engine and from deploy/secrets:
 
 - **`rove`** (public) — the engine + the generic publish tooling.
 - **`rewind-infra`** (private) — deploy config + secrets.
-- **`rewind-apps`** (private, this) — first-party **application code**.
+- **`rewind-apps`** (public, this) — first-party **application code**.
 
 ## Contents
 
@@ -55,6 +55,24 @@ app / `rewind-ops kv-put` — not in this repo. See `rewind-infra/ROTATION.md` �
 ## Note: history
 
 This content was previously in the public `rove` repo (served live + in `rove`'s
-git history), so the *current* bundles are already public. This repo is the
-**forward home** — future first-party work (new marketing/positioning, new
-admin/auth logic — the control surface) stays private here.
+git history), so the *current* bundles were already public before the move. This
+repo is the **forward home** for first-party work — new marketing/positioning,
+new admin/auth logic, the control surface.
+
+## License
+
+Copyright (C) 2026 Loop46, Inc.
+
+This content is free software under the GNU Affero General Public License,
+version 3 or later — `SPDX-License-Identifier: AGPL-3.0-or-later`, the same
+license as the `rove` engine it runs on. The complete text is in
+[`LICENSE`](LICENSE), reproduced verbatim, because the AGPL requires conveying
+a copy along with the program.
+
+Distributed WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+
+These are working applications, not templates: they are the tenants that serve
+rewindjs.com, the docs, the dashboard, and the identity plane. Read them as
+worked examples of the handler contract — they use the same public surface any
+tenant does. Secrets are not here; they live in tenant KV.
