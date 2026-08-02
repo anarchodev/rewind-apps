@@ -34,7 +34,7 @@
 
     <a href="/showcase">Showcase</a>
     <a href="/depth">Depth</a>
-    <a href="https://github.com/rewind-js/rewind">Source</a>
+    <a href="https://github.com/anarchodev/rove">Source</a>
     <a href="/pricing">Pricing</a>
     <a href="/docs">Docs</a>
     <a href="/sign-in">Sign in</a>
@@ -52,6 +52,12 @@
       machine that records every request — all from one email.
     </p>
 
+    <!-- This form is inert, and the copy below it ("you land in the editor")
+         describes a path that does not complete yet: self-serve provisioning
+         does not produce a reachable tenant, so a signed-up stranger gets a
+         404 rather than a served subdomain. Do NOT wire this form up, and do
+         not enable a signup CTA, until that lands. The editor itself is real
+         — the dashboard's per-instance Code/Deploy/Logs/Replay/KV tabs. -->
     <form class="row" style="justify-content: center; gap: 8px; flex-wrap: wrap; max-width: 540px; margin: 0 auto 12px;"
           onsubmit="event.preventDefault()">
       <input type="email" placeholder="you@example.com" required
@@ -141,7 +147,7 @@
             You pay us to run it for you. That's the whole deal.
           </p>
           <div class="row" style="gap: 12px; flex-wrap: wrap;">
-            <a href="https://github.com/rewind-js/rewind" class="btn btn-open">
+            <a href="https://github.com/anarchodev/rove" class="btn btn-open">
               <i class="ti ti-brand-github"></i> Read the source
             </a>
             <a href="/self-host" class="btn btn-secondary">
@@ -151,17 +157,21 @@
         </div>
 
         <div class="stack" style="gap: 16px;">
+          <!-- Real commands only. There is no Dockerfile or compose file in
+               the repo; self-hosting builds the binaries and runs them under
+               systemd (docs/guides/self-host.md). If a one-command path ever
+               ships, change this block then — not before. -->
           <div class="code-block">
             <div class="code-block-head">
               <i class="ti ti-brand-github"></i>
-              <span class="filename">github.com/rewind-js/rewind</span>
+              <span class="filename">github.com/anarchodev/rove</span>
               <div class="nav-spacer"></div>
               <span class="c-open t-mono" style="font-size: 11px;"><i class="ti ti-license"></i> AGPL-3.0</span>
             </div>
-            <pre><span class="tok-com">$</span> <span style="color: var(--text-1);">git clone</span> <span class="tok-str">github.com/rewind-js/rewind</span>
-<span class="tok-com">$</span> <span style="color: var(--text-1);">cd</span> rewind
-<span class="tok-com">$</span> <span style="color: var(--text-1);">docker compose up</span>
-<span class="tok-com">→</span> <span class="c-open">live at</span> localhost:8080</pre>
+            <pre><span class="tok-com">$</span> <span style="color: var(--text-1);">git clone</span> <span class="tok-str">github.com/anarchodev/rove</span>
+<span class="tok-com">$</span> <span style="color: var(--text-1);">cd</span> rove
+<span class="tok-com">$</span> <span style="color: var(--text-1);">zig build</span> rewind-worker rewind-cp rewind-front
+<span class="tok-com">→</span> <span class="c-open">four processes,</span> your hardware</pre>
           </div>
 
           <div class="card-callout is-open">
@@ -255,42 +265,50 @@
   <section class="page" style="padding: 36px 80px 24px; text-align: center;">
     <p class="t-mono t-caption" style="margin: 0 auto; max-width: 680px;">
       <i class="ti ti-cpu c-brand"></i>
-      Replays run on the same QuickJS engine that recorded them, compiled to WebAssembly.
+      Replays run the same QuickJS engine that recorded them — the same sources, built for
+      WebAssembly with tracing on.
       <span style="color: var(--text-2);">Deterministic execution, not approximation.</span>
     </p>
   </section>
 
-  <!-- ============ TRUST STRIP ============ -->
+  <!-- ============ TRUST STRIP ============
+       Every card here states a property the engine actually has, and each
+       one is checkable against a code path. Recording is the product: the
+       request body, its headers, and every outbound effect result are
+       captured so the request can be replayed. Do NOT add a card implying
+       otherwise (there is no field-level redaction surface today), and do
+       not restate data locations without re-reading the deploy config —
+       they are named here because a privacy policy makes them binding. -->
   <section class="page" style="padding-bottom: 64px;">
     <div class="card" style="padding: 28px 32px;">
       <div class="grid-4" style="gap: 28px;">
         <div>
           <div class="row" style="margin-bottom: 6px;">
             <i class="ti ti-shield-lock c-open" style="font-size: 18px;"></i>
-            <h4 class="t-h4" style="font-size: 14px;">Secrets stay secret</h4>
+            <h4 class="t-h4" style="font-size: 14px;">Caller IPs are masked</h4>
           </div>
-          <p class="t-caption" style="margin: 0;">Mark any variable as private. Masked at record time, never stored.</p>
+          <p class="t-caption" style="margin: 0;">Before anything is recorded: IPv4 drops its last octet, IPv6 keeps only the /48.</p>
         </div>
         <div>
           <div class="row" style="margin-bottom: 6px;">
             <i class="ti ti-globe c-info" style="font-size: 18px;"></i>
             <h4 class="t-h4" style="font-size: 14px;">Your subdomain is yours</h4>
           </div>
-          <p class="t-caption" style="margin: 0;">Free forever as long as it's active. Bring your own domain anytime.</p>
+          <p class="t-caption" style="margin: 0;">Free, with TLS issued and renewed for you. Custom domains are operator-assisted today.</p>
         </div>
         <div>
           <div class="row" style="margin-bottom: 6px;">
-            <i class="ti ti-download c-write" style="font-size: 18px;"></i>
-            <h4 class="t-h4" style="font-size: 14px;">Export anytime</h4>
+            <i class="ti ti-license c-write" style="font-size: 18px;"></i>
+            <h4 class="t-h4" style="font-size: 14px;">No lock-in by license</h4>
           </div>
-          <p class="t-caption" style="margin: 0;">Your code, your data, your recordings. Download or self-host whenever.</p>
+          <p class="t-caption" style="margin: 0;">The whole engine is AGPL-3.0. Run the same stack yourself, on your own hardware.</p>
         </div>
         <div>
           <div class="row" style="margin-bottom: 6px;">
             <i class="ti ti-server c-learn" style="font-size: 18px;"></i>
-            <h4 class="t-h4" style="font-size: 14px;">Stored in Europe</h4>
+            <h4 class="t-h4" style="font-size: 14px;">Where your data lives</h4>
           </div>
-          <p class="t-caption" style="margin: 0;">Recordings live on OVH-backed S3 storage, not a US hyperscaler.</p>
+          <p class="t-caption" style="margin: 0;">Handlers run in Beauharnois, Canada. Recordings are stored in Virginia, USA. Both on OVHcloud.</p>
         </div>
       </div>
     </div>
@@ -305,7 +323,7 @@
     <a href="/privacy">Privacy</a>
     <a href="/terms">Terms</a>
     <a href="/status">Status</a>
-    <a href="https://github.com/rewind-js/rewind"><i class="ti ti-brand-github"></i> GitHub</a>
+    <a href="https://github.com/anarchodev/rove"><i class="ti ti-brand-github"></i> GitHub</a>
   </footer>
 
 </body>
