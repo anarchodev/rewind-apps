@@ -22,7 +22,11 @@ export function getInstance(id) {
     if (!validId(id)) { response.status = 400; return { error: "invalid id" }; }
     const v = platform.root.get("instance/" + id);
     if (v === null) { response.status = 404; return { error: "not found" }; }
-    return { id: id };
+    // `host` is what the control plane reported when the instance was placed
+    // (recorded at provision time). Null for an instance provisioned before
+    // that was recorded, or one the platform has no wildcard zone for — the UI
+    // then shows no link rather than guessing a URL that may 404.
+    return { id: id, host: kv.get("instance/" + id + "/host") };
 }
 
 export function createInstance(id) {
@@ -199,22 +203,11 @@ export function publishRelease(instance_id, dep_id) {
 // — those were deleted with Fork B. `/_system/*` keeps its own
 // independent root-token M2M gate (unaffected).
 
-// Same RESERVED_INSTANCE_NAMES as worker.zig — admin's JS owns the
-// list so operators can adjust without a Zig recompile.
-const RESERVED_NAMES = [
-    "__admin__","admin","api","app","www",
-    "auth","login","signup","logout","dashboard",
-    "static","system","public","root","mail",
-    "__replay__","replay",
-];
-
-function isReserved(name) {
-    const lower = name.toLowerCase();
-    for (let i = 0; i < RESERVED_NAMES.length; i++) {
-        if (RESERVED_NAMES[i] === lower) return true;
-    }
-    return false;
-}
+// Instance-name rules (DNS-label spec + reserved platform labels) are NOT
+// duplicated here. They live in the engine's `rove-instance-id` and are
+// enforced by the CP at provisioning time, because a name must be one the
+// worker's `{name}.{suffix}` wildcard can resolve — a copy in this file would
+// drift from the thing that actually routes, and did.
 
 function jsonError(status, message) {
     response.status = status;
@@ -523,15 +516,27 @@ export function leaveAccount(aid) {
 // tenant under `account` (defaults to the caller's personal account); any active
 // member of that account may provision, counting against THAT account's plan.
 // All account/* rows are __admin__-home kv.
+// A tenant is REAL only once the CP has formed its raft group across the
+// cluster and written its placement — front-door routing is placement-driven
+// and a miss is a terminal 404. So provisioning goes through the same
+// `/_control/provision` the operator CLI uses (rove#291): the local
+// `platform.instances.create` it used to call did node-local bookkeeping only,
+// which left a dashboard-provisioned tenant unreachable in a multi-node
+// cluster while reporting success.
+//
+// This handler owns AUTHZ (session, membership, plan limit); the CP owns
+// EXISTENCE (name spec, group, placement). Neither duplicates the other — in
+// particular the name rules live in `rove-instance-id`, because an id has to be
+// one the worker's `{id}.{suffix}` wildcard can resolve, and a second copy here
+// would drift out of agreement with the thing that actually routes.
+//
+// The CP call is a buffered `after.fetch` at the privileged door, so the reply
+// is stamped by `onProvisioned` — the bookkeeping writes live there too, so a
+// refused provision leaves no rows behind.
 export function provisionInstance(name, account) {
     const auth = request.auth;
     const sub = auth && auth.sub;
     if (!sub) return jsonError(401, "unauthenticated");
-    if (!validId(name))   return jsonError(400, "invalid name");
-    if (isReserved(name)) return jsonError(409, "name unavailable");
-    if (platform.root.get("instance/" + name) !== null) {
-        return jsonError(409, "name unavailable");
-    }
 
     const caller = accountHashFor(sub);
     backfillSelf(caller, sub);
@@ -549,24 +554,73 @@ export function provisionInstance(name, account) {
             owned: owned.length,
         };
     }
+
+    // No `cluster`: a customer has no basis to choose one, and the CP defaults
+    // to the sole configured cluster. No `host` either — the tenant answers on
+    // `{name}.{publicSuffix}` through the wildcard, so there is no host row to
+    // write and none to leave dangling if this fails.
+    after.fetch(CP_DOOR + "provision", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ tenant: name }),
+        on: "onProvisioned",
+        ctx: { name: name, account: aid },
+    });
+    return next();
+}
+
+// The CP's answer to `provisionInstance`. Runs as a continuation, so
+// `request.auth` is absent (middleware does not re-run) — everything this needs
+// was decided before the fetch and travels in `request.ctx`, which the engine
+// carries and a client cannot touch.
+export function onProvisioned() {
+    const ctx = request.ctx || {};
+    const name = ctx.name;
+    const aid = ctx.account;
+    if (!name || !aid) return jsonError(500, "provision continuation lost its context");
+
+    if (request.status !== 200 && request.status !== 204) {
+        // Relay the CP's own reason — it is the only party that knows WHICH
+        // rule the name broke, and the customer is the one who has to fix it.
+        let reason = "provision failed";
+        try {
+            const body = request.json;
+            if (body && typeof body.error === "string") reason = body.error;
+        } catch (_) { /* not JSON — keep the generic reason */ }
+        // 4xx is the customer's to fix; anything else is ours, and a failed
+        // provision is a no-op cluster-side (the CP evicts what it formed).
+        response.status = (request.status >= 400 && request.status < 500)
+            ? request.status : 502;
+        return { error: reason };
+    }
+
+    // Placed. The CP's reply names where it answers — the dashboard carries no
+    // copy of the platform's zone, and deriving one here would be a second
+    // truth that drifts from the thing that actually routes.
+    let host = null;
+    try {
+        const body = request.json;
+        if (body && typeof body.host === "string" && body.host) host = body.host;
+    } catch (_) { /* older CP replies 204 with no body — host stays unknown */ }
+
+    // Record ownership, then seed the plan row — both only now, so a refusal
+    // above leaves the account exactly as it was.
     if (kv.get("account/" + aid + "/plan") === null) {
         kv.set("account/" + aid + "/plan", "free");
     }
-
-    // platform.instances.create is idempotent (retry-safe).
-    try { platform.instances.create(name); }
-    catch (e) {
-        response.status = 500;
-        return { error: "create failed: " + (e && e.message) };
-    }
-    // Starter content best-effort — the account is usable without it
-    // and the customer can push their own code via the files API.
-    try { platform.instances.deployStarter(name); } catch (_) {}
-
     kv.set("account/" + aid + "/instances/" + name, "");
     kv.set("instance/" + name + "/owner", aid); // reverse pointer for canAccess
+    // The instance's primary host, so the UI can link it later without asking
+    // the CP again. Absent when the platform has no wildcard zone — then the
+    // instance is placed but has no URL until an operator maps one.
+    if (host) kv.set("instance/" + name + "/host", host);
+
+    // Starter content best-effort — the instance is usable without it, and the
+    // customer's first deploy replaces it anyway.
+    try { platform.instances.deployStarter(name); } catch (_) {}
+
     response.status = 201;
-    return { ok: true, name: name, account: aid };
+    return { ok: true, name: name, account: aid, host: host };
 }
 
 // GET /v1/session — whoami. request.auth = {sub,is_root} (set by the RP guard in

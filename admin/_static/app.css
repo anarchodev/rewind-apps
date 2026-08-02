@@ -235,6 +235,25 @@ label {
 }
 .instance .back-link:hover { color: var(--accent); }
 
+/* The instance's public URL, under its name in the header. */
+.instance .instance-url {
+  display: inline-block;
+  font-size: 13px;
+  font-family: var(--mono, ui-monospace, monospace);
+  color: var(--muted);
+  text-decoration: none;
+  margin-top: 2px;
+}
+.instance .instance-url:hover { color: var(--accent); text-decoration: underline; }
+
+/* Field-level rule hint under a form input. */
+.provision-form .hint {
+  display: block;
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
 .tabs {
   display: flex;
   gap: 4px;

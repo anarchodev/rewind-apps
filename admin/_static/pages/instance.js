@@ -1,5 +1,4 @@
-// Per-instance dashboard. M3 slice 1: log viewer only. KV + code
-// tabs are stubbed and light up in later slices.
+// Per-instance dashboard: logs, KV, and the code editor.
 
 import { ApiError } from "../api.js";
 
@@ -19,6 +18,7 @@ export function render(root, { goto, api, params }) {
       <div>
         <a class="back-link" href="#/instances">← Instances</a>
         <h1>${escapeHtml(instanceId)}</h1>
+        <a class="instance-url" hidden></a>
       </div>
       <button type="button" class="logout">Sign out</button>
     </header>
@@ -81,6 +81,20 @@ export function render(root, { goto, api, params }) {
   logoutBtn.addEventListener("click", () => {
     window.location.assign("/_rp/logout?return_to=" + encodeURIComponent("/#/login"));
   });
+
+  // The instance's public URL, as the control plane reported it at provision
+  // time. Fetched rather than derived: the dashboard holds no copy of the
+  // platform's zone, and an instance provisioned before that was recorded (or
+  // on a platform with no wildcard zone) genuinely has no URL to show.
+  const urlLink = wrap.querySelector(".instance-url");
+  api.getInstance(instanceId).then((inst) => {
+    if (!inst || !inst.host) return;
+    urlLink.href = `https://${inst.host}`;
+    urlLink.target = "_blank";
+    urlLink.rel = "noopener";
+    urlLink.textContent = `${inst.host} ↗`;
+    urlLink.hidden = false;
+  }).catch(() => { /* the tabs carry the real work; a missing link is cosmetic */ });
 
   root.appendChild(wrap);
   selectTab("logs");
