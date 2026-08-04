@@ -27,10 +27,18 @@ export const RTAP_MAGIC   = 0x52544150;
 // channel — `Date.now()` / `new Date()` (no args) are pinned
 // per-request via `arena_set_date_now`), 4 → 5 by the read-taped
 // request surface (new `request_reads` channel — the lazily
-// recorded header/body/ip reads that rebuild `request` on replay).
+// recorded header/body/ip reads that rebuild `request` on replay),
+// 5 → 6 by never-tape-blobs (rove#430/#391): `fetch_responses`
+// entries gained a trailing content-hash referencing bytes left in
+// content-addressed storage instead of copied onto the tape.
 // The readset header's `seed` + `timestamp_ns` scalars are the
 // entire input for the random + clock sources.
-export const RTAP_VERSION = 5;
+export const RTAP_VERSION = 6;
+// The oldest layout this reader still understands (mirrors
+// src/replay/tape_decode.zig MIN_VERSION): records already in S3
+// were written at v5, so the guard is a RANGE — a reader that
+// demanded equality would make every pre-bump tape undecodable.
+export const RTAP_MIN_VERSION = 5;
 
 export const CHANNEL_KV            = 0;
 export const CHANNEL_MODULE        = 1;
@@ -67,19 +75,20 @@ export function parseTapeBlob(bytes) {
     const magic   = view.getUint32(off); off += 4;
     if (magic !== RTAP_MAGIC) throw new Error("bad RTAP magic 0x" + magic.toString(16));
     const version = view.getUint16(off); off += 2;
-    if (version !== RTAP_VERSION) throw new Error("unsupported RTAP version " + version);
+    if (version < RTAP_MIN_VERSION || version > RTAP_VERSION)
+        throw new Error("unsupported RTAP version " + version);
     const channel = view.getUint16(off); off += 2;
     const count   = view.getUint32(off); off += 4;
     const entries = [];
     for (let i = 0; i < count; i++) {
         const elen = view.getUint32(off); off += 4;
         const ebytes = bytes.subarray(off, off + elen); off += elen;
-        entries.push(decodeEntry(channel, ebytes));
+        entries.push(decodeEntry(channel, ebytes, version));
     }
     return { channel, entries };
 }
 
-function decodeEntry(channel, bytes) {
+function decodeEntry(channel, bytes, version) {
     const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
     let off = 0;
     const readLenPrefixed = () => {
@@ -132,9 +141,17 @@ function decodeEntry(channel, bytes) {
             const body_truncated = bytes[off++] !== 0;
             const headers = readUtf8();
             const inline_bytes = readLenPrefixed();
+            // v6 appended a content hash: sha256 hex of the object the
+            // chunk is a slice of when the bytes were LEFT in
+            // content-addressed storage rather than copied onto the tape
+            // (never-tape-blobs, rove#430). Empty on a v5 tape, and on a
+            // v6 entry that carried its bytes the old way — the field is
+            // trailing, so its absence is the same as empty.
+            const content_hash = (version >= 6 && off < bytes.length)
+                ? readUtf8() : "";
             return { fetch_id, seq, byte_offset, batch_id, final,
                      terminal_status, terminal_ok, body_truncated,
-                     headers, inline_bytes };
+                     headers, inline_bytes, content_hash };
         }
         // The activation's Msg: the request body for an inbound, or a
         // synthesized `{"ctx": …}` envelope for a continuation resume
