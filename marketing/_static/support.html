@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Support — rewind.js</title>
+  <meta name="description" content="How to reach us: support, security disclosure, and privacy requests.">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' rx='4' fill='%2311111b'/%3E%3Crect x='1.5' y='3' width='13' height='10' rx='5' fill='%23cba6f7'/%3E%3Cpolygon points='7,5 7,11 4.3,8' fill='%2311111b'/%3E%3Cpolygon points='11,5 11,11 8.3,8' fill='%2311111b'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="rewind.css">
+  <!-- Self-contained styling, matching privacy.html. Deliberately no external
+       stylesheet or font. When a third contact-style page appears, lift this
+       block into a shared doc.css rather than copying it again. -->
+  <style>
+    .doc { max-width: 720px; margin: 0 auto; padding: 56px 24px 96px; }
+    .doc h1 { font-size: 38px; line-height: 1.15; letter-spacing: -1px; margin: 0 0 10px; color: var(--text-0); }
+    .doc h2 { font-size: 21px; margin: 44px 0 12px; color: var(--text-0); letter-spacing: -0.3px; }
+    .doc p, .doc li { font-size: 15.5px; line-height: 1.65; color: var(--text-2); }
+    .doc ul { padding-left: 22px; margin: 10px 0; }
+    .doc li { margin-bottom: 7px; }
+    .doc a { color: var(--c-brand); }
+    .doc code { font-family: var(--font-mono); font-size: 13.5px; color: var(--text-1); }
+    .doc table { width: 100%; border-collapse: collapse; margin: 14px 0; font-size: 14.5px; }
+    .doc th, .doc td { text-align: left; padding: 11px 12px; border-bottom: 1px solid var(--surface-0); color: var(--text-2); vertical-align: top; }
+    .doc th { color: var(--text-1); font-weight: 600; }
+    .updated { font-family: var(--font-mono); font-size: 13px; color: var(--text-3); margin: 0 0 34px; }
+    .callout { border: 1px solid var(--surface-0); border-left: 3px solid var(--c-brand);
+               background: var(--mantle); padding: 16px 18px; margin: 20px 0; border-radius: 0 8px 8px 0; }
+    .callout p { margin: 0; font-size: 14.5px; }
+    .doc footer { margin-top: 56px; padding-top: 20px; border-top: 1px solid var(--surface-0);
+                  font-size: 13px; color: var(--text-3); }
+  </style>
+</head>
+<body>
+<div class="doc">
+
+  <p class="updated"><a href="/">&larr; rewind.js</a></p>
+
+  <h1>Support</h1>
+  <p class="updated">Last updated 2 August 2026</p>
+
+  <p>rewind.js is early and small. There is no support queue behind a chat
+     widget — there is an inbox, and a person reading it. The upside of that is
+     you will not be triaged by a bot; the downside is the response times below
+     are real, not aspirational.</p>
+
+  <h2>Where to write</h2>
+  <table>
+    <tr><th>Address</th><th>For</th><th>Response</th></tr>
+    <tr>
+      <td><a href="mailto:support@rewindjs.com">support@rewindjs.com</a></td>
+      <td>Anything about using the platform — a handler behaving oddly, a deploy
+          that will not take, a question the docs do not answer.</td>
+      <td>2 working days</td>
+    </tr>
+    <tr>
+      <td><a href="mailto:security@rewindjs.com">security@rewindjs.com</a></td>
+      <td>Suspected vulnerabilities. See below before you write.</td>
+      <td>2 working days to acknowledge</td>
+    </tr>
+    <tr>
+      <td><a href="mailto:privacy@rewindjs.com">privacy@rewindjs.com</a></td>
+      <td>Access, correction, deletion, export, or anything else in the
+          <a href="/privacy">privacy policy</a>.</td>
+      <td>5 working days to acknowledge, 30 to complete</td>
+    </tr>
+  </table>
+
+  <h2>Reporting a security issue</h2>
+  <p>Please report privately to
+     <a href="mailto:security@rewindjs.com">security@rewindjs.com</a> rather
+     than opening a public issue, and give us a reasonable window to fix it
+     before disclosing.</p>
+  <p>We run untrusted JavaScript from many tenants on shared infrastructure, so
+     anything crossing a tenant boundary — reading another tenant's data,
+     escaping the execution sandbox, reaching the control plane — is the class
+     of report we care most about. We do not run a bug bounty and cannot pay
+     for reports; we will credit you if you would like to be credited.</p>
+
+  <h2>Bugs in the engine</h2>
+  <p>rewind.js runs on an open-source engine. If you have found a bug in it and
+     it is not a security issue, an issue on
+     <a href="https://github.com/anarchodev/rove">github.com/anarchodev/rove</a>
+     is the most useful place to put it — it goes straight to the people who
+     would fix it, and other people can find it.</p>
+
+  <h2>What we cannot help with</h2>
+  <p>We can tell you what the platform did, and we can usually show you the
+     recording of it. We cannot debug your application logic for you, and we
+     will not read your tenant's data to investigate something unless you ask us
+     to and tell us what to look at.</p>
+
+  <div class="callout">
+    <p>rewind.js is pre-launch. There is no paid support, no service level
+       agreement, and no guaranteed availability. If you are weighing whether to
+       put something important on it, that is the honest answer.</p>
+  </div>
+
+  <footer>© 2026 Loop46, Inc. · <a href="/">rewind.js</a></footer>
+
+</div>
+</body>
+</html>
