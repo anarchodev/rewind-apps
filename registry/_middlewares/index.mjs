@@ -15,8 +15,10 @@
 //
 // ── operator (genesis-seed / CI) publish path ────────────────────────────
 //
-// The registry is a NORMAL tenant with no platform.auth.checkRootToken (that
-// native is admin-only), and at genesis there is no OIDC IdP to mint a session
+// The registry is a NORMAL tenant, not platform-bound — so it has no
+// `request.rewind.isRoot` (the operator-root verdict is admin-only) and its own
+// `authorization` header stays readable, which is what the hash check below
+// uses. At genesis there is no OIDC IdP to mint a session
 // yet — so the genesis seed (rove-side) cannot log in to publish the first
 // @rewind packages. Instead it authenticates a Bearer against a hash the
 // operator seeds into this tenant's own kv via platform kv-put:
