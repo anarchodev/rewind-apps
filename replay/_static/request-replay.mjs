@@ -319,9 +319,25 @@ export function buildRequestEpilogue({ record = {}, requestReads = null, bodyByt
         // timeline but NOT folded, because the worker does not fold them
         // either and a digest is only useful if both sides hash the same set.
         "  const __DG = globalThis.__interactionDigest;\n" +
+        // Canonical 16-hex for a dep_id given as either a hex string or a
+        // number — the worker folds the resolved u64's canonical spelling.
+        "  const __depHex = (v) => { try { const n = typeof v === \"number\" ? BigInt(Math.trunc(v)) : BigInt(\"0x\" + String(v)); return n.toString(16).padStart(16, \"0\"); } catch (_) { return String(v ?? \"\"); } };\n" +
         "  const __dg = __DG ? new __DG.Digest() : null;\n" +
         "  const __foldEffect = (e) => {\n" +
         "    if (!__dg || !e) return;\n" +
+        // A store-tagged entry (`store: \"r\"` / `\"i/{id}\"`) is the facade's
+        // TIMELINE twin of a cross-store op whose underlying namespaced
+        // `kv.get/set/delete` already went through the wrapper below and was
+        // folded there — with the `__rove_store/…` key the worker folds. Folding
+        // this one too would put a SECOND element in the replay's digest, keyed
+        // bare, that the capture's digest does not have. (rove #413)
+        "    if (e.store !== undefined) return;\n" +
+        // `__rove_store/exists/…` is harness bookkeeping, not a handler write.
+        // The facade seeds it when `platform.instances.create` runs so a later
+        // `scope(name)` resolves; production has no such key and folds nothing
+        // for it. It cannot use the pre-wrapper seeding trick the other hidden
+        // keys use, because it is written mid-run — so it is skipped here.
+        "    if (e.key !== undefined && String(e.key).indexOf(\"__rove_store/exists/\") === 0) return;\n" +
         "    switch (e.kind) {\n" +
         "      case \"read\":\n" +
         "        if (e.op === \"prefix\") __dg.kvPrefix(e.key, true, e.count ?? 0, BigInt(\"0x\" + (e.rowsFold ?? \"0\")));\n" +
@@ -333,6 +349,18 @@ export function buildRequestEpilogue({ record = {}, requestReads = null, bodyByt
         "      case \"timer\":  __dg.wakeArm(\"t\", String(e.ms), e.on ?? \"\"); break;\n" +
         "      case \"kv-wake\": __dg.wakeArm(\"k\", e.prefix, e.on ?? \"\"); break;\n" +
         "      case \"stream\": __dg.streamWrite(e.data ?? \"\"); break;\n" +
+        // Privileged lifecycle ops. `scope` is deliberately not folded — the id
+        // it resolved is already carried by every namespaced read/write the
+        // handle performs, so folding the resolve distinguishes nothing the
+        // rest of the sequence does not. `releases.publish` normalizes dep_id
+        // to canonical 16-hex, matching the worker: the native accepts a hex
+        // string or a number for the same deployment.
+        "      case \"platform\":\n" +
+        "        if (e.op === \"instances.create\" || e.op === \"instances.deployStarter\")\n" +
+        "          __dg.platformOp(e.op, String(e.name ?? \"\"), \"\");\n" +
+        "        else if (e.op === \"releases.publish\")\n" +
+        "          __dg.platformOp(e.op, String(e.tenant ?? \"\"), __depHex(e.depId));\n" +
+        "        break;\n" +
         "      default: break;\n" +
         "    }\n" +
         "  };\n" +

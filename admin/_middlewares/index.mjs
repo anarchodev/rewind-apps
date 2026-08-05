@@ -63,9 +63,11 @@ export function before() {
     // M2M root-token bearer (operator/bootstrap). Only honored on M2M_PATHS;
     // everywhere else the dashboard is a pure OIDC relying party.
     if (isM2MPath(path)) {
-        const hdr = request.headers["authorization"] || "";
-        const tok = hdr.indexOf("Bearer ") === 0 ? hdr.slice(7) : "";
-        if (tok && platform.auth.checkRootToken(tok)) {
+        // Operator root: the engine-computed verdict. The bearer is stripped
+        // from `request.headers` on a platform-bound handler — reading it
+        // would tape a platform-wide credential (rove
+        // docs/architecture/privileged-surface.md).
+        if (request.rewind.isRoot) {
             request.auth = { sub: null, is_root: true, root: true };
             return; // continue → handler
         }
