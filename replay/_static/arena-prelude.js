@@ -7,7 +7,9 @@
 // handler sees the same pure compute globals a live handler does.
 
 // ── src/replay/js/textcodec_pure.js ──
-;// Pure-JS UTF-8 `TextEncoder` / `TextDecoder` — the codec for arenas that
+;// SPDX-FileCopyrightText: 2026 Loop46, Inc.
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Pure-JS UTF-8 `TextEncoder` / `TextDecoder` — the codec for arenas that
 // have no native textcodec binding: the CLI sim/replay epilogue splices this
 // file into its per-run script, and the browser WASM replay prelude
 // (scripts/ops/gen_replay_prelude.py) evals it into the arena base. Prod is
@@ -34,7 +36,9 @@
 })();
 
 // ── src/tape/js_interaction_digest.js ──
-;// The interaction digest, JS side — the mirror of
+;// SPDX-FileCopyrightText: 2026 Loop46, Inc.
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// The interaction digest, JS side — the mirror of
 // src/tape/interaction_digest.zig. Read that file for what the digest is
 // for and, more importantly, for what is deliberately excluded from it.
 //
@@ -54,7 +58,7 @@
   const OFFSET = 0xcbf29ce484222325n;
   const PRIME = 0x100000001b3n;
   const MASK = (1n << 64n) - 1n;
-  const VERSION = 1;
+  const VERSION = 2;
   // Must equal MAX_INLINE_KEY in interaction_digest.zig, and be measured in
   // BYTES — a char-length check diverges on any non-ASCII key.
   const MAX_INLINE_KEY = 320;
@@ -113,6 +117,12 @@
       const b = typeof bytes === "string" ? enc.encode(bytes) : bytes;
       this.line(`s ${b.length} ${foldValue(b).toString(16)}`);
     }
+    // A privileged lifecycle op. Cross-store READS have no method here: they
+    // fold as ordinary kv elements under the `__rove_store/…` key, which is
+    // exactly what the offline facade already produces.
+    platformOp(op, a1, a2) {
+      this.line(`o ${op} ${foldValue(a1 ?? "").toString(16)} ${foldValue(a2 ?? "").toString(16)}`);
+    }
     response(status, body) {
       this.line(`x ${status} ${foldValue(body ?? "").toString(16)}`);
     }
@@ -132,7 +142,9 @@
 })();
 
 // ── src/replay/js/system_recorders.js ──
-;// The `_system.*` primitive layer the offline runtimes compose over — ONE
+;// SPDX-FileCopyrightText: 2026 Loop46, Inc.
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// The `_system.*` primitive layer the offline runtimes compose over — ONE
 // source shared by the CLI sim (src/replay/sim_globals.zig embeds it into
 // the reactor base) and the browser replay arena
 // (scripts/ops/gen_replay_prelude.py folds it into arena-prelude.js).
@@ -394,12 +406,20 @@
     };
   };
   // platform.* is admin-only (prod: throws off the `__admin__` handler). Fail
-  // closed — every sync method is gated unless the run is flagged admin
-  // (`scenario({ admin: true })` → the hidden `__rove_store/admin` key). Note
+  // closed for AUTHORED worlds — every sync method is gated unless the run opts
+  // in (`scenario({ admin: true })` → the hidden `__rove_store/admin` key). Note
   // `platform.compile` is NOT gated here: it lowers to a bound fetch (via the
   // real platform.js over `_system.after`), admin-checked door-side in prod.
+  //
+  // A CAPTURED world skips the gate for the same reason it skips `scope`'s
+  // resolve check below: the recording is proof the call was admitted live.
+  // Fail-closed is a harness affordance for worlds an author wrote, not a
+  // security boundary — the real gate is `state.platform` in the worker — and
+  // applying it to a capture turned every admin replay into a spurious
+  // "platform is only available on the admin handler" (docs/architecture/
+  // replay-and-sim.md, the privileged-surface section).
   var GATE_MSG = "platform is only available on the admin handler";
-  var gate = function(fn){ return function(){ if (globalThis.kv.get(NS_STORE + "admin") !== "1") throw new TypeError(GATE_MSG); return fn.apply(null, arguments); }; };
+  var gate = function(fn){ return function(){ if (!globalThis.__rove_captured && globalThis.kv.get(NS_STORE + "admin") !== "1") throw new TypeError(GATE_MSG); return fn.apply(null, arguments); }; };
   var rootStore_r = storeKv(NS_STORE + "r/", "r");
   // Fetch/subscribe recorder. Ids are unique per run (`ftch_<seq>` — the
   // epilogue resets the counter each activation), NOT prod's ftch_<64hex>:
@@ -619,16 +639,18 @@
       // the exists marker keyed by name so a later platform.scope(name) folds.
       instances: { create: gate(function(name){ push({ kind: "platform", op: "instances.create", name: name }); push({ kind: "write", store: "exists", key: "i/" + name, value: "1" }); globalThis.kv.set(NS_STORE + "exists/i/" + name, "1"); }), deployStarter: gate(function(name){ push({ kind: "platform", op: "instances.deployStarter", name: name }); }) },
       releases: { publish: gate(function(tenant, depId){ push({ kind: "platform", op: "releases.publish", tenant: tenant, depId: depId }); }) },
-      // checkRootToken(token) → true iff it matches the operator root token
-      // (env-supplied in prod); the sim carries it as a hidden reserved kv key
-      // seeded by `scenario({ rootToken })`. Unconfigured → nothing is root.
-      auth: { checkRootToken: gate(function(token){ var rt = globalThis.kv.get(NS_STORE + "auth/token"); var ok = (typeof rt === "string" && rt.length > 0 && token === rt); push({ kind: "platform", op: "auth.checkRootToken", ok: ok }); return ok; }) },
+      // No `auth` verb: the operator-root verdict is `request.rewind.isRoot`,
+      // supplied by the world (scenario({ isRoot })) and folded from the
+      // root_verdict tape entry — never a call taking the bearer. A token the
+      // handler holds is a token the request surface records.
     },
   };
 })();
 
 // ── src/js/globals/crypto.js ──
-;// Public `crypto` surface — the documentation source of truth for
+;// SPDX-FileCopyrightText: 2026 Loop46, Inc.
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Public `crypto` surface — the documentation source of truth for
 // handler cryptography (docs/architecture/builtin-libs.md Phase A).
 //
 // Thin shim over the native `_system.crypto` binding. Top-level
@@ -943,7 +965,9 @@
 })();
 
 // ── src/js/globals/http.js ──
-;// Public `http` surface — the documentation source of truth for the
+;// SPDX-FileCopyrightText: 2026 Loop46, Inc.
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Public `http` surface — the documentation source of truth for the
 // outbound HTTP primitive (docs/architecture/builtin-libs.md Phase A,
 // the reified primitives in docs/architecture/effects-and-handlers.md).
 //
@@ -1049,7 +1073,9 @@
 })();
 
 // ── src/js/globals/base64.js ──
-;// Base64 + base64url encoding/decoding + hex byte helpers.
+;// SPDX-FileCopyrightText: 2026 Loop46, Inc.
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Base64 + base64url encoding/decoding + hex byte helpers.
 //
 // `atob` / `btoa` are the standard browser-shaped APIs (binary
 // string on either side, padded standard base64). `base64url`
@@ -1308,7 +1334,9 @@ function _hexNibble(code) {
 }
 
 // ── src/js/globals/urlsearchparams.js ──
-;// `URLSearchParams` polyfill — spec-compliant subset for parsing
+;// SPDX-FileCopyrightText: 2026 Loop46, Inc.
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// `URLSearchParams` polyfill — spec-compliant subset for parsing
 // + building query strings without depending on the full URL class.
 //
 // Construct with:
@@ -1612,7 +1640,9 @@ function _hexCh(code) {
 globalThis.URLSearchParams = URLSearchParams;
 
 // ── src/js/globals/platform.js ──
-;// Public `platform` surface — the documentation source of truth for
+;// SPDX-FileCopyrightText: 2026 Loop46, Inc.
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Public `platform` surface — the documentation source of truth for
 // the admin control plane (docs/architecture/builtin-libs.md Phase A;
 // auth-domain-plan.md for the admin handler context).
 //
@@ -1634,6 +1664,17 @@ globalThis.URLSearchParams = URLSearchParams;
   // `blob.receive` native — `platform.scope(t).blob.receive` lowers to a
   // cross-tenant streamed upload (extra target + ctx args, admin-gated).
   const sysBlobReceive = _system.blob.receive;
+
+  // Fail loud on a retired option spelling. Each shim keeps its own copy —
+  // the helper in after.js is inside that file's IIFE. Silence here is worse
+  // than a break: an ignored resume-export key ran the call anyway and
+  // resumed at the DEFAULT export, surfacing as a 404 somewhere unrelated.
+  function _rejectRenamed(verb, opts, renames) {
+    if (!opts || typeof opts !== "object") return;
+    for (const k in renames) {
+      if (k in opts) throw new TypeError(verb + ": option `" + k + "` was renamed — use `" + renames[k] + "`");
+    }
+  }
 
   /**
    * Admin control plane: cross-tenant kv access, the platform root
@@ -1711,6 +1752,7 @@ globalThis.URLSearchParams = URLSearchParams;
       s.deploy = {
         stampManifest(entries, opts) {
           opts = opts || {};
+          _rejectRenamed("deploy.stampManifest", opts, { name: "on", to: "on" });
           const req = { scope: id, entries };
           // PM P1: `opts.resolution` bakes the deploy's `{packages,
           // app_imports}` sections into the manifest (and its dep_id).
@@ -1756,7 +1798,14 @@ globalThis.URLSearchParams = URLSearchParams;
      * hashes + your statics and stamp it there. Stage/activate is still a
      * separate `platform.releases.publish`.
      *
-     * @param {Array<{path:string, source:string}>} files - Handler sources.
+     * Imports resolve — and are therefore VALIDATED — across the whole
+     * batch: a handler may import a sibling in the same call, and a
+     * specifier that resolves to nothing fails the compile.
+     *
+     * @param {Array<{path:string, source?:string, source_hash?:string}>} files
+     *   Handler sources, inline or by the `source_hex` a prior
+     *   {@link platform.stage} returned (the engine reads those back from
+     *   `scope`'s blobs — they never travel through JS twice).
      * @param {object} opts
      * @param {string} opts.scope - Target instance id (where blobs stage).
      * @param {string} [opts.on="onFetchResult"] - Resume export.
@@ -1769,8 +1818,46 @@ globalThis.URLSearchParams = URLSearchParams;
      * //   const { results } = request.ctx; ...stamp manifest...
      * // }
      */
+    /**
+     * Content-address handler sources into `scope`'s blobs WITHOUT
+     * compiling them, resuming with `{ok, results:[{path, source_hex}]}`.
+     *
+     * The staging half of a deploy. Compilation resolves every import
+     * eagerly, so a module can only be compiled once everything it imports
+     * exists — which, for a deploy that uploads files one at a time, is not
+     * true until the last file lands. Stage each file as it arrives, then
+     * {@link platform.compile} the finished bundle, where a sibling import
+     * resolves.
+     *
+     * **Bound, like {@link platform.compile}:** `return next()` after it.
+     *
+     * @param {Array<{path:string, source:string}>} files - Handler sources.
+     * @param {object} opts
+     * @param {string} opts.scope - Target instance id (where blobs land).
+     * @param {string} [opts.on="onFetchResult"] - Resume export.
+     * @param {*} [opts.ctx] - Threaded to the resume as `request.ctx.app`.
+     * @returns {string} The bound fetch id (`ftch_…`).
+     *
+     * @example
+     * platform.stage([{ path, source }], { scope: tenant, on: "onStaged" });
+     * return next();
+     */
+    stage(files, opts) {
+      opts = opts || {};
+      _rejectRenamed("platform.stage", opts, { name: "on", to: "on" });
+      const body = JSON.stringify({ scope: opts.scope, files, stage: true });
+      return sysOn.fetch(
+        "http://rove-compile.internal/",
+        { method: "POST", body, ctx: opts.ctx, on: opts.on || "onFetchResult" },
+      );
+    },
+
     compile(files, opts) {
       opts = opts || {};
+      // The resume export is `on` everywhere. A retired spelling used to be
+      // ignored in silence, so the call ran, resumed at the DEFAULT export,
+      // and 404'd somewhere else entirely.
+      _rejectRenamed("platform.compile", opts, { name: "on", to: "on" });
       const req = { scope: opts.scope, files };
       // PM P1: `opts.resolution` = the deploy's `{packages, app_imports}`
       // lockfile sections (manifest v2 shapes). The engine fetches the
@@ -1898,30 +1985,22 @@ globalThis.URLSearchParams = URLSearchParams;
       },
     },
 
-    /**
-     * Root-token auth.
-     *
-     * @namespace platform.auth
-     */
-    auth: {
-      /**
-       * Validate a platform root token.
-       *
-       * @param {string} token - The bearer token to check.
-       * @returns {boolean} `true` if the token authenticates.
-       * @example
-       * if (!platform.auth.checkRootToken(bearer))
-       *   return new Response("forbidden", { status: 403 });
-       */
-      checkRootToken(token) {
-        return sys.auth.checkRootToken(token);
-      },
-    },
+    // Root-token auth is NOT here. The operator-root verdict is
+    // `request.rewind.isRoot` — computed by the engine, which holds both the
+    // wire `authorization` header and the secret, and taped as the verdict
+    // alone. There is no verb taking the bearer, because a token the handler
+    // holds is a token `request.headers` recorded onto the tape; the header is
+    // stripped on this handler for the same reason. See
+    // `docs/architecture/privileged-surface.md`.
+    //
+    //   if (!request.rewind.isRoot) { response.status = 403; return { error: "forbidden" }; }
   };
 })();
 
 // ── src/js/globals/after.js ──
-;// Public `after` surface — connection wake triggers (docs/handler-shape.md
+;// SPDX-FileCopyrightText: 2026 Loop46, Inc.
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Public `after` surface — connection wake triggers (docs/handler-shape.md
 // §2.3; decisions.md §4.11). Thin shim over the native
 // `_system.after` binding.
 //
@@ -2042,6 +2121,11 @@ function _rejectRenamed(verb, opts, renames) {
      * @param {*} [opts.ctx] - Threaded to each wake as `request.ctx`.
      * @param {string} [opts.on] - Export the result wakes; overrides the
      *   per-event-shape defaults for every event of this fetch.
+     * @param {boolean} [opts.relay=false] - CAS→connection relay
+     *   (platform-internal; today only the `__system/static` streamer's
+     *   door engages it): intermediate chunks are spliced straight onto
+     *   the held stream — `{on}` fires only for the first event and the
+     *   terminal. Inert on any other fetch.
      * @returns {string} The fetch id (`ftch_…`, opaque — compare to
      *   `request.fetchId`).
      * @throws {Error} `code:"rate_limited"` when the per-tenant outbound
@@ -2064,6 +2148,7 @@ function _rejectRenamed(verb, opts, renames) {
         headers: opts.headers,
         body: opts.body,
         stream: opts.stream,
+        relay: opts.relay,
         ctx: opts.ctx,
       };
       if (typeof opts.on === "string") native.on = opts.on;
@@ -2093,7 +2178,9 @@ function _rejectRenamed(verb, opts, renames) {
 })();
 
 // ── src/js/globals/stream.js ──
-;// Public `stream` surface — connection output effects
+;// SPDX-FileCopyrightText: 2026 Loop46, Inc.
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Public `stream` surface — connection output effects
 // (docs/handler-shape.md §2.2). Thin shim over the native
 // `_system.stream` binding.
 //
@@ -2162,7 +2249,9 @@ function _rejectRenamed(verb, opts, renames) {
 })();
 
 // ── src/js/globals/next.js ──
-;// Public `next` disposition verb (docs/handler-shape.md §2.1). Thin shim
+;// SPDX-FileCopyrightText: 2026 Loop46, Inc.
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Public `next` disposition verb (docs/handler-shape.md §2.1). Thin shim
 // over the `_system.continuation.next` native, captured once at
 // base-eval (before `delete globalThis._system`) — the same closure-
 // capture pattern as kv.js/webhook.js. Baked `__system/` modules that
@@ -2230,7 +2319,9 @@ function _rejectRenamed(verb, opts, renames) {
 })();
 
 // ── src/js/globals/time.js ──
-;// Time coercion helpers — the single home for turning human time inputs
+;// SPDX-FileCopyrightText: 2026 Loop46, Inc.
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Time coercion helpers — the single home for turning human time inputs
 // (durations, ms-since-epoch, Date, ISO-8601) into the BigInt
 // nanoseconds-since-epoch the scheduler verbs work in. `cron`,
 // `schedule`, and `webhook.send` all coerce through here so the edge
@@ -2356,7 +2447,9 @@ globalThis.time = {
 })();
 
 // ── src/js/globals/schedule.js ──
-;// The durable one-shot scheduler core — installed as the PRIVATE
+;// SPDX-FileCopyrightText: 2026 Loop46, Inc.
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// The durable one-shot scheduler core — installed as the PRIVATE
 // `_system.sched` (deleted from customer scope by `_harden.js`, like
 // every other `_system.*` capability). The customer-facing verb is the
 // `@rewind/schedule` package; this ambient core exists only so the
@@ -2632,6 +2725,8 @@ globalThis.time = {
 
 // ── src/js/globals/webhook.js ──
 ;(function () {
+// SPDX-FileCopyrightText: 2026 Loop46, Inc.
+// SPDX-License-Identifier: AGPL-3.0-or-later
 // `webhook.send` — durable outbound HTTP, composed in JS on top of
 // the reified primitives: `kv.set` (durable marker), `http.fetch`
 // (transient transport), `__system/webhook_onresult` (the baked
@@ -2950,7 +3045,9 @@ globalThis.webhook = {
 
 })();
 // ── src/js/globals/blob.js ──
-;// blob.* — tenant object storage (blob-storage-plan P1; `docs/architecture/routing-and-ingress.md`).
+;// SPDX-FileCopyrightText: 2026 Loop46, Inc.
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// blob.* — tenant object storage (blob-storage-plan P1; `docs/architecture/routing-and-ingress.md`).
 //
 // The storage doctrine in one line: kv is for state you mutate; the
 // object store is for facts you accumulate. Every object is
