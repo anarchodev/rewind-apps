@@ -43,6 +43,15 @@ const PRE_AUTH_PATHS = [
 // A valid root token grants operator authority (is_root) with no `sub`;
 // the deploy handler gates on is_root OR session-ownership of the target.
 const M2M_PATHS = ["/v1/deploy/reset", "/v1/deploy/file", "/v1/deploy/pkgfile", "/v1/deploy/cut"];
+// Control-plane ops the operator CLI drives through this chokepoint rather than
+// by holding the move-secret on a shell (rove#414). A PREFIX, not an exact
+// path, because the op is the last segment (`/v1/cp/provision`, `/v1/cp/move`,
+// …) and the CP door already restricts what an op may be. `handleCpPost` still
+// gates on is_root, so the bearer only gets past this line — not past the
+// authority check.
+const M2M_PREFIXES = ["/v1/cp/"];
+const isM2MPath = (p) =>
+    M2M_PATHS.indexOf(p) !== -1 || M2M_PREFIXES.some((q) => p.indexOf(q) === 0);
 
 export function before() {
     // `request.path` is already query-free (handler-shape.md) — the split it
@@ -53,7 +62,7 @@ export function before() {
 
     // M2M root-token bearer (operator/bootstrap). Only honored on M2M_PATHS;
     // everywhere else the dashboard is a pure OIDC relying party.
-    if (M2M_PATHS.indexOf(path) !== -1) {
+    if (isM2MPath(path)) {
         const hdr = request.headers["authorization"] || "";
         const tok = hdr.indexOf("Bearer ") === 0 ? hdr.slice(7) : "";
         if (tok && platform.auth.checkRootToken(tok)) {
