@@ -639,10 +639,10 @@
       // the exists marker keyed by name so a later platform.scope(name) folds.
       instances: { create: gate(function(name){ push({ kind: "platform", op: "instances.create", name: name }); push({ kind: "write", store: "exists", key: "i/" + name, value: "1" }); globalThis.kv.set(NS_STORE + "exists/i/" + name, "1"); }), deployStarter: gate(function(name){ push({ kind: "platform", op: "instances.deployStarter", name: name }); }) },
       releases: { publish: gate(function(tenant, depId){ push({ kind: "platform", op: "releases.publish", tenant: tenant, depId: depId }); }) },
-      // checkRootToken(token) → true iff it matches the operator root token
-      // (env-supplied in prod); the sim carries it as a hidden reserved kv key
-      // seeded by `scenario({ rootToken })`. Unconfigured → nothing is root.
-      auth: { checkRootToken: gate(function(token){ var rt = globalThis.kv.get(NS_STORE + "auth/token"); var ok = (typeof rt === "string" && rt.length > 0 && token === rt); push({ kind: "platform", op: "auth.checkRootToken", ok: ok }); return ok; }) },
+      // No `auth` verb: the operator-root verdict is `request.rewind.isRoot`,
+      // supplied by the world (scenario({ isRoot })) and folded from the
+      // root_verdict tape entry — never a call taking the bearer. A token the
+      // handler holds is a token the request surface records.
     },
   };
 })();
@@ -1985,25 +1985,15 @@ globalThis.URLSearchParams = URLSearchParams;
       },
     },
 
-    /**
-     * Root-token auth.
-     *
-     * @namespace platform.auth
-     */
-    auth: {
-      /**
-       * Validate a platform root token.
-       *
-       * @param {string} token - The bearer token to check.
-       * @returns {boolean} `true` if the token authenticates.
-       * @example
-       * if (!platform.auth.checkRootToken(bearer))
-       *   return new Response("forbidden", { status: 403 });
-       */
-      checkRootToken(token) {
-        return sys.auth.checkRootToken(token);
-      },
-    },
+    // Root-token auth is NOT here. The operator-root verdict is
+    // `request.rewind.isRoot` — computed by the engine, which holds both the
+    // wire `authorization` header and the secret, and taped as the verdict
+    // alone. There is no verb taking the bearer, because a token the handler
+    // holds is a token `request.headers` recorded onto the tape; the header is
+    // stripped on this handler for the same reason. See
+    // `docs/architecture/privileged-surface.md`.
+    //
+    //   if (!request.rewind.isRoot) { response.status = 403; return { error: "forbidden" }; }
   };
 })();
 
@@ -2131,6 +2121,11 @@ function _rejectRenamed(verb, opts, renames) {
      * @param {*} [opts.ctx] - Threaded to each wake as `request.ctx`.
      * @param {string} [opts.on] - Export the result wakes; overrides the
      *   per-event-shape defaults for every event of this fetch.
+     * @param {boolean} [opts.relay=false] - CAS→connection relay
+     *   (platform-internal; today only the `__system/static` streamer's
+     *   door engages it): intermediate chunks are spliced straight onto
+     *   the held stream — `{on}` fires only for the first event and the
+     *   terminal. Inert on any other fetch.
      * @returns {string} The fetch id (`ftch_…`, opaque — compare to
      *   `request.fetchId`).
      * @throws {Error} `code:"rate_limited"` when the per-tenant outbound
@@ -2153,6 +2148,7 @@ function _rejectRenamed(verb, opts, renames) {
         headers: opts.headers,
         body: opts.body,
         stream: opts.stream,
+        relay: opts.relay,
         ctx: opts.ctx,
       };
       if (typeof opts.on === "string") native.on = opts.on;
