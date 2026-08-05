@@ -751,7 +751,11 @@ const CP_READ = "http://rewind-cp.internal/_cp/";
 
 function handleCpOp(cpPath, body) {
     const auth = request.auth || {};
-    if (!auth.sub) return jsonError(401, "unauthenticated");
+    // Operator AUTHORITY, not a session. The M2M root-token grant is
+    // deliberately `{sub: null, is_root: true}`, so requiring `sub` rejected
+    // exactly the caller this chokepoint exists to serve — the operator CLI
+    // (rove#414). Anything unauthenticated has already been 401'd by the
+    // middleware, so is_root is the whole gate here.
     if (!auth.is_root) return jsonError(403, "operator only");
     after.fetch(CP_DOOR + cpPath, {
         method: "POST",
@@ -767,7 +771,7 @@ function handleCpOp(cpPath, body) {
 // `rewind-ops status`).
 function handleCpRead(cpSub, qs) {
     const auth = request.auth || {};
-    if (!auth.sub) return jsonError(401, "unauthenticated");
+    // Operator authority, not a session — see handleCpOp.
     if (!auth.is_root) return jsonError(403, "operator only");
     after.fetch(CP_READ + cpSub + (qs ? "?" + qs : ""));
     return next();
