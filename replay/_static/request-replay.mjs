@@ -247,7 +247,7 @@ export function deriveActivationSurface({ activation = "inbound", tapes = {}, ac
 ///                  Uint8Array of arbitrary bytes (the chunk IS the
 ///                  Msg, always recorded — never read-elided), so the
 ///                  replay body must be byte-exact binary too.
-export function buildRequestEpilogue({ record = {}, requestReads = null, bodyBytes = null, exportName = "default", binaryBody = false, activation = "inbound", ctx = undefined, activationBag = undefined, result = null, middlewarePath = null, tenant = null, correlationId = null } = {}) {
+export function buildRequestEpilogue({ record = {}, requestReads = null, bodyBytes = null, exportName = "default", binaryBody = false, activation = "inbound", ctx = undefined, activationBag = undefined, result = null, middlewarePath = null, tenant = null, correlationId = null, captured = true } = {}) {
     const reads = foldRequestReads(requestReads);
 
     const rawPath = record.path || "/";
@@ -286,6 +286,20 @@ export function buildRequestEpilogue({ record = {}, requestReads = null, bodyByt
         // `correlation_id`) — the bundle just has to forward it.
         tenant: tenant ?? null,
         correlationId: correlationId ?? null,
+        // Was this world CAPTURED from a live run, or AUTHORED?
+        //
+        // Everything the replay posture assumes rests on the world having
+        // happened: a read the tape lacks is a divergence because the original
+        // run did not make it; admin is granted because the live call was
+        // permitted; the retired `request.body` alias exists because the
+        // capture predates its removal. None of those premises hold for a world
+        // someone wrote, and applying them anyway made an authored world die on
+        // an undeclared read, granted it admin it never asked for, and gave it a
+        // surface production does not have (rove#436).
+        //
+        // Defaults TRUE: the shell only ever replays captures, so this changes
+        // nothing there. The conformance suite passes false.
+        captured: captured !== false,
     };
 
     // JSON is JS-literal-safe except the two line separators.
@@ -378,7 +392,7 @@ export function buildRequestEpilogue({ record = {}, requestReads = null, bodyByt
         "  globalThis.__rove_blob_receive_used = false;\n" +
         "  globalThis.__rove_email_sends = 0;\n" +
         "  globalThis.__rove_activation_kind = D.kind;\n" +
-        "  globalThis.__rove_captured = true;\n" +
+        "  globalThis.__rove_captured = D.captured;\n" +
         // The recorders make private bookkeeping reads under
         // `__rove_store/` — an outbound-budget marker, the admin gate, the
         // operator root token. No capture contains them (production has no
@@ -393,7 +407,12 @@ export function buildRequestEpilogue({ record = {}, requestReads = null, bodyByt
         // instance-exists check.
         "  kv.delete(\"__rove_store/email_budget\");\n" +
         "  kv.delete(\"__rove_store/auth/token\");\n" +
-        "  kv.set(\"__rove_store/admin\", \"1\");\n" +
+        // Admin is granted only for a CAPTURE, where the live call having been
+        // permitted is evidence. An authored world is fail-closed like the sim
+        // and like production: granting it admin made every fail-closed
+        // assertion pass for the wrong reason — `platformadmin` exists to pin
+        // exactly that behaviour and could not test it here (rove#436).
+        "  if (D.captured) kv.set(\"__rove_store/admin\", \"1\");\n" +
         // Installed AFTER the seeding writes above: those are host bookkeeping
         // the worker never performed, and folding them would put three
         // elements in the replay's digest that the capture's does not have —
@@ -425,16 +444,33 @@ export function buildRequestEpilogue({ record = {}, requestReads = null, bodyByt
         "  const __NS = globalThis.__roveStorePrefix || \"__rove_store/\";\n" +
         "  const __harness = (k) => typeof k === \"string\" && k.startsWith(__NS);\n" +
         "  globalThis.kv = {\n" +
+        // A CAPTURED world is a strict read-your-tape world: a key in neither
+        // the overlay nor the tape means the original run never read it, and
+        // inventing a value would be replaying a different request. An AUTHORED
+        // world is a CLOSED world instead — `world.zig` defines a key not in
+        // the map as `not_found`, never a divergence, and the sim implements
+        // that. Applying the captured posture to an authored world killed the
+        // run on the ordinary shape of testing a not-found branch (rove#436).
         "    get(k) {\n" +
-        "      const v = __kvNative.get(k);\n" +
+        "      let v;\n" +
+        "      try { v = __kvNative.get(k); }\n" +
+        "      catch (e) { if (D.captured) throw e; v = undefined; }\n" +
         "      const present = v !== undefined && v !== null;\n" +
-        "      if (!__harness(k)) globalThis.__rove_effects.push({ kind: \"read\", key: k, present, value: present ? v : \"\" });\n" +
+        // A not-found read carries no value — the sim omits the field rather
+        // than spelling it `""`, and an entry that differs only in how it
+        // spells absence reads as a divergence while the digest (which folds
+        // `value ?? ""`) says the two runs did the same thing.
+        "      if (!__harness(k)) globalThis.__rove_effects.push(present\n" +
+        "        ? { kind: \"read\", key: k, present: true, value: v }\n" +
+        "        : { kind: \"read\", key: k, present: false });\n" +
         "      return v;\n" +
         "    },\n" +
         "    set(k, v) { if (!__harness(k)) globalThis.__rove_effects.push({ kind: \"write\", key: k, value: v }); return __kvNative.set(k, v); },\n" +
         "    delete(k) { if (!__harness(k)) globalThis.__rove_effects.push({ kind: \"delete\", key: k }); return __kvNative.delete(k); },\n" +
         "    prefix(p, cursor, limit) {\n" +
-        "      const raw = __kvNative.prefix(p, cursor, limit) || [];\n" +
+        "      let raw;\n" +
+        "      try { raw = __kvNative.prefix(p, cursor, limit) || []; }\n" +
+        "      catch (e) { if (D.captured) throw e; raw = []; }\n" +
         // A harness-namespace scan is the recorders' own, and is neither
         // recorded nor filtered. A TENANT scan must not see another store's
         // keys — prod has none to see — so they are stripped from the rows
@@ -488,7 +524,11 @@ export function buildRequestEpilogue({ record = {}, requestReads = null, bodyByt
         "  __defPayload(\"bytes\", () => __rawPayload());\n" +
         "  __defPayload(\"text\", () => { const u = __rawPayload(); try { return decodeURIComponent(escape(__b2s(u))); } catch (_) { return __b2s(u); } });\n" +
         "  __defPayload(\"json\", () => JSON.parse(request.text));\n" +
-        "  __defPayload(\"body\", () => (D.bodyB64 != null) ? __rawPayload() : (D.body ?? \"\"));\n" +
+        // `request.body` is a RETIRED surface kept for captured worlds, whose
+        // handlers predate its removal. An authored world mirrors the live
+        // surface, where the property does not exist — so `"body" in request`
+        // answers the same offline as in production.
+        "  if (D.captured) __defPayload(\"body\", () => (D.bodyB64 != null) ? __rawPayload() : (D.body ?? \"\"));\n" +
         "  Object.defineProperty(request, \"cookies\", { enumerable: true, configurable: true,\n" +
         "    get() {\n" +
         "      const out = {};\n" +
