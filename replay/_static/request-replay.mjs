@@ -111,7 +111,12 @@ export function foldRequestReads(entries) {
 // The module paths prod probes for a tenant's middleware, in its own
 // order (`.mjs` then `.js` — dispatcher.zig's bytecode lookup), so a
 // `.js`-spelled middleware gates offline exactly as it does live.
-export const MIDDLEWARE_PATHS = ["_middlewares/index.mjs", "_middlewares/index.js"];
+// `.mjs` ONLY. A `.js` is not a deployable handler source anywhere in the
+// pipeline — the CLI ships only `.mjs` and the compiler builds a `.js` as a
+// classic script — so honouring the spelling here ran a gate offline that
+// production does not have (rove#461). The worker and the offline sim both
+// dropped their `.js` fallback; this is the third engine.
+export const MIDDLEWARE_PATHS = ["_middlewares/index.mjs"];
 
 // Activation kinds that cross the trust boundary. The worker runs
 // `_middlewares` for these only — a continuation resume already ran
@@ -405,17 +410,37 @@ export function buildRequestEpilogue({ record = {}, requestReads = null, bodyByt
         // handler did, and folding it would put an element in the replay's
         // digest that the worker never had.
         "  const __kvNative = kv;\n" +
+        // `__rove_store/` is a HARNESS namespace: the recorders keep their own
+        // bookkeeping there (the outbound budget marker, the admin gate, the
+        // root token, instance-exists markers) and it exists nowhere in the
+        // worker. Recording those reads puts entries in the effect log that no
+        // production run performed — and because the log's push is patched to
+        // fold as entries arrive, straight into the interaction digest, where a
+        // read spliced mid-sequence shifts every later ordinal. The offline sim
+        // has always excluded them; this engine did not (rove#442).
+        //
+        // The prefix comes from the shared `_system.*` shim (rove's
+        // system_recorders.js, embedded in the generated prelude), so both
+        // offline engines test the same string.
+        "  const __NS = globalThis.__roveStorePrefix || \"__rove_store/\";\n" +
+        "  const __harness = (k) => typeof k === \"string\" && k.startsWith(__NS);\n" +
         "  globalThis.kv = {\n" +
         "    get(k) {\n" +
         "      const v = __kvNative.get(k);\n" +
         "      const present = v !== undefined && v !== null;\n" +
-        "      globalThis.__rove_effects.push({ kind: \"read\", key: k, present, value: present ? v : \"\" });\n" +
+        "      if (!__harness(k)) globalThis.__rove_effects.push({ kind: \"read\", key: k, present, value: present ? v : \"\" });\n" +
         "      return v;\n" +
         "    },\n" +
-        "    set(k, v) { globalThis.__rove_effects.push({ kind: \"write\", key: k, value: v }); return __kvNative.set(k, v); },\n" +
-        "    delete(k) { globalThis.__rove_effects.push({ kind: \"delete\", key: k }); return __kvNative.delete(k); },\n" +
+        "    set(k, v) { if (!__harness(k)) globalThis.__rove_effects.push({ kind: \"write\", key: k, value: v }); return __kvNative.set(k, v); },\n" +
+        "    delete(k) { if (!__harness(k)) globalThis.__rove_effects.push({ kind: \"delete\", key: k }); return __kvNative.delete(k); },\n" +
         "    prefix(p, cursor, limit) {\n" +
-        "      const rows = __kvNative.prefix(p, cursor, limit) || [];\n" +
+        "      const raw = __kvNative.prefix(p, cursor, limit) || [];\n" +
+        // A harness-namespace scan is the recorders' own, and is neither
+        // recorded nor filtered. A TENANT scan must not see another store's
+        // keys — prod has none to see — so they are stripped from the rows
+        // before the handler or the digest observes them.
+        "      if (__harness(p)) return raw;\n" +
+        "      const rows = raw.filter((r) => !__harness(r.key));\n" +
         "      const enc = globalThis.__interactionDigest;\n" +
         "      let fold = \"0\";\n" +
         "      if (enc) { let acc = \"\"; for (const r of rows) acc += r.key + \"=\" + enc.foldValue(r.value) + \";\"; fold = enc.foldValue(acc); }\n" +
@@ -566,10 +591,21 @@ export function buildRequestEpilogue({ record = {}, requestReads = null, bodyByt
         // "did not complete" rather than as a bogus match.
         "  const __res = globalThis.response || {};\n" +
         "  const __ser = (v) => { if (v === undefined || v === null) return null; if (typeof v === \"string\") return v; try { return JSON.stringify(v); } catch (_) { return String(v); } };\n" +
-        // Close the digest with the run's own result, exactly as the worker
-        // does at finishResponse — it is the last element, and folding it here
-        // keeps the two sequences identical end to end.
-        "  if (__dg) __dg.response(__res.status === undefined ? 200 : __res.status, __ser(globalThis.__replay_result) ?? \"\");\n" +
+        // Close the digest with the run's own result — the last element.
+        //
+        // NOT for a PARK. `next(...)` holds the connection and has no response
+        // yet, and the worker reflects that by returning `.continuation` /
+        // `.stream` from finishResponse BEFORE it folds anything; the offline
+        // sim skips it for the same reason. Folding one here closed every held
+        // activation with an element the other two engines do not have, so
+        // their digests disagreed on every parked hop even when the interaction
+        // logs were identical (rove#442).
+        //
+        // A held chain still gets a digest per activation — it just ends at the
+        // last interaction rather than at a response that has not happened.
+        "  const __parked = globalThis.__replay_result && typeof globalThis.__replay_result === \"object\" &&\n" +
+        "    globalThis.__replay_result.__rove_disposition === \"next\";\n" +
+        "  if (__dg && !__parked) __dg.response(__res.status === undefined ? 200 : __res.status, __ser(globalThis.__replay_result) ?? \"\");\n" +
         "  __kvNative.set(" + JSON.stringify(REPLAY_OUTPUT_KEY) + ", JSON.stringify({ status: __res.status === undefined ? null : __res.status, result: __ser(globalThis.__replay_result), effects: __effectLog, digest: __dg ? __dg.hex() : null }));\n" +
         "})();\n"
     );
