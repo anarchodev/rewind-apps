@@ -54,9 +54,13 @@ export function before() {
     // M2M root-token bearer (operator/bootstrap). Only honored on M2M_PATHS;
     // everywhere else the dashboard is a pure OIDC relying party.
     if (M2M_PATHS.indexOf(path) !== -1) {
-        const hdr = request.headers["authorization"] || "";
-        const tok = hdr.indexOf("Bearer ") === 0 ? hdr.slice(7) : "";
-        if (tok && platform.auth.checkRootToken(tok)) {
+        // The VERDICT, not the credential. The engine holds both the wire
+        // bearer and the secret, compares them itself, and exposes only this
+        // boolean — the token is stripped from `request.headers` and never
+        // becomes a JS string, because on a replay platform a handler-readable
+        // input is a RECORDED input (rove#432; `platform.auth.checkRootToken`
+        // is retired along with it).
+        if (request.rewind?.isRoot) {
             request.auth = { sub: null, is_root: true, root: true };
             return; // continue → handler
         }

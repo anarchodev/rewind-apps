@@ -39,9 +39,9 @@ function ownsTenant(sub, tenant) {
 // after stamping the error response. Root token → operator; else an OIDC
 // session that owns `tenant`.
 function authFor(tenant) {
-  const hdr = request.headers["authorization"] || "";
-  const tok = hdr.indexOf("Bearer ") === 0 ? hdr.slice(7) : "";
-  if (tok && platform.auth.checkRootToken(tok)) return { is_root: true };
+  // The engine's operator verdict — the bearer itself is stripped from
+  // `request.headers` and `platform.auth.checkRootToken` is retired (rove#432).
+  if (request.rewind?.isRoot) return { is_root: true };
   let sess = null;
   try { sess = oidc.rp("default").guard(); } catch (_) { sess = null; }
   if (sess && sess.sub) {
