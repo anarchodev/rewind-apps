@@ -484,9 +484,9 @@ export const api = {
       request_id: record.request_id,
       deployment_id: record.deployment_id,
       // Identity prod pins on every activation (request.tenant /
-      // request.correlation_id) — recorded per row, so forward it.
+      // request.sagaId) — recorded per row, so forward it.
       tenant_id: record.tenant_id,
-      correlation_id: record.correlation_id,
+      saga_id: record.saga_id,
       // The digest the worker recorded for this run. The shell recomputes it
       // during replay and compares — null means the capture predates digests,
       // which the shell must report as unverified rather than as agreement.

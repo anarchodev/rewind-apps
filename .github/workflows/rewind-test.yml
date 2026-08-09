@@ -33,7 +33,12 @@ concurrency:
 
 env:
   # The rove commit the `rewind` CLI is built from. Bump to pick up a harness fix.
-  ROVE_REF: 16626cd394c5ed159873a5a1a403df1ae1adba8a
+  # Must be >= rove ab76807d (the saga rename, rove#448): the embedded
+  # `rewind:test` harness gained `scenario({sagaId})`, and an older CLI
+  # silently ignores it — the identity goes unset and getReplay never
+  # builds its logs URL, which reads as a handler bug rather than a
+  # stale toolchain.
+  ROVE_REF: ab76807d3813b76aecb28a990d3aa6df02ccadf6
   ZIG_VERSION: 0.15.2
 
 jobs:
