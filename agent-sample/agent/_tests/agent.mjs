@@ -4,7 +4,7 @@
 // getReplay bounce. Every frame threads its ctx + kv writes forward.
 //
 // The LLM endpoint/key/model come from `_config/*`; a stub endpoint lets the fetch
-// be matched + resolved. tenant + correlationId are set so browser.getReplay can
+// be matched + resolved. tenant + sagaId are set so browser.getReplay can
 // issue its read-only replay fetch.
 //
 // The multi-turn legs (the frame the page sends AFTER an onLLM resume) work now
@@ -14,7 +14,7 @@ import { scenario, expect } from "rewind:test";
 const s = scenario({
   now: "2026-07-01T00:00:00Z",
   tenant: "agent-sample",
-  correlationId: "corr-1",
+  sagaId: "corr-1",
   kv: {
     "_config/llm_endpoint": "https://llm.stub/messages",
     "_config/anthropic_api_key": "sk-test",

@@ -247,7 +247,7 @@ export function deriveActivationSurface({ activation = "inbound", tapes = {}, ac
 ///                  Uint8Array of arbitrary bytes (the chunk IS the
 ///                  Msg, always recorded — never read-elided), so the
 ///                  replay body must be byte-exact binary too.
-export function buildRequestEpilogue({ record = {}, requestReads = null, bodyBytes = null, exportName = "default", binaryBody = false, activation = "inbound", ctx = undefined, activationBag = undefined, result = null, middlewarePath = null, tenant = null, correlationId = null, captured = true } = {}) {
+export function buildRequestEpilogue({ record = {}, requestReads = null, bodyBytes = null, exportName = "default", binaryBody = false, activation = "inbound", ctx = undefined, activationBag = undefined, result = null, middlewarePath = null, tenant = null, sagaId = null, captured = true } = {}) {
     const reads = foldRequestReads(requestReads);
 
     const rawPath = record.path || "/";
@@ -282,10 +282,10 @@ export function buildRequestEpilogue({ record = {}, requestReads = null, bodyByt
         activationBag: activationBag ?? null,
         result: result ?? null,
         // Identity prod pins on EVERY activation (replay-and-sim.md §3),
-        // carried per record by the log API (`tenant_id`,
-        // `correlation_id`) — the bundle just has to forward it.
+        // carried per record by the log API (`tenant_id`, `saga_id`) —
+        // the bundle just has to forward it.
         tenant: tenant ?? null,
-        correlationId: correlationId ?? null,
+        sagaId: sagaId ?? null,
         // Was this world CAPTURED from a live run, or AUTHORED?
         //
         // Everything the replay posture assumes rests on the world having
@@ -554,7 +554,7 @@ export function buildRequestEpilogue({ record = {}, requestReads = null, bodyByt
         "  if (D.hasCtx) request.ctx = D.ctx;\n" +
         "  request.activation = D.activationBag;\n" +
         "  if (D.tenant !== null) request.tenant = D.tenant;\n" +
-        "  if (D.correlationId !== null) request.correlation_id = D.correlationId;\n" +
+        "  if (D.sagaId !== null) request.sagaId = D.sagaId;\n" +
         // request.tag(key, value) — prod's validation verbatim
         // (globals.zig jsRequestTag), mirrored from the native epilogue:
         // two strings; key 1..32 BYTES of [a-z0-9_] with no leading '_';

@@ -42,7 +42,7 @@ export function onMessage() {
 
   // Tag every frame's activation with the session id so the durable
   // replay log can be filtered by `tag.session` (cross-reconnect).
-  // getReplay also works without this via the auto `_corr` tag, but
+  // getReplay also works without this via the auto `_saga` tag, but
   // tagging makes the session explicit + survives reconnects.
   const tagSid = frame.sid || ctx.sid;
   if (tagSid) request.tag("session", tagSid);

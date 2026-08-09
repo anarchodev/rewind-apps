@@ -1437,7 +1437,7 @@ async function main() {
         // on its very first import, never mind losing the gate's effect.
         middlewarePath,
         tenant: bundle.tenant_id ?? null,
-        correlationId: bundle.correlation_id ?? null,
+        sagaId: bundle.saga_id ?? null,
     });
     const entrySrcWithEpilogue = entrySrc + epilogue;
 
