@@ -344,26 +344,35 @@ export function buildRequestEpilogue({ record = {}, requestReads = null, bodyByt
         "  const __dg = __DG ? new __DG.Digest() : null;\n" +
         "  const __foldEffect = (e) => {\n" +
         "    if (!__dg || !e) return;\n" +
-        // A store-tagged entry (`store: \"r\"` / `\"i/{id}\"`) is the facade's
-        // TIMELINE twin of a cross-store op whose underlying namespaced
-        // `kv.get/set/delete` already went through the wrapper below and was
-        // folded there — with the `__rove_store/…` key the worker folds. Folding
-        // this one too would put a SECOND element in the replay's digest, keyed
-        // bare, that the capture's digest does not have. (rove #413)
-        "    if (e.store !== undefined) return;\n" +
-        // `__rove_store/exists/…` is harness bookkeeping, not a handler write.
-        // The facade seeds it when `platform.instances.create` runs so a later
-        // `scope(name)` resolves; production has no such key and folds nothing
-        // for it. It cannot use the pre-wrapper seeding trick the other hidden
-        // keys use, because it is written mid-run — so it is skipped here.
+        // A store-tagged entry (`store: \"r\"` / `\"i/{id}\"`) is the ONLY fold
+        // point for a cross-store op. The underlying namespaced
+        // `kv.get/set/delete` does NOT reach the digest: the wrapper below
+        // filters every `__rove_store/…` key out of the effect log via
+        // `__harness`. This used to `return` here on the theory that the
+        // wrapper had already folded it, which left cross-store ops folded
+        // NOWHERE while capture folds each one — rove#487.
+        //
+        // Fold it under the NAMESPACED key, which is what the worker folds:
+        // cross-store ops get no verb of their own, so the store is data in
+        // the key (globals_platform.zig namespacedKey). Keying it bare would
+        // also erase the store, hashing scope(\"a\").kv.get(k) the same as
+        // root.get(k) — a false agreement rather than a mismatch.
+        "    const __dgKey = (x) => (x.store === undefined || x.store === null)\n" +
+        "      ? x.key : \"__rove_store/\" + x.store + \"/\" + x.key;\n" +
+        // The `exists` store is harness bookkeeping, not a handler write. The
+        // facade seeds it when `platform.instances.create` runs so a later
+        // `scope(name)` resolves; production records instance creation in the
+        // ROOT WRITESET (raft) and folds nothing for it. Keyed on the store
+        // tag, since the entry carries the bare key.
+        "    if (e.store === \"exists\") return;\n" +
         "    if (e.key !== undefined && String(e.key).indexOf(\"__rove_store/exists/\") === 0) return;\n" +
         "    switch (e.kind) {\n" +
         "      case \"read\":\n" +
-        "        if (e.op === \"prefix\") __dg.kvPrefix(e.key, true, e.count ?? 0, BigInt(\"0x\" + (e.rowsFold ?? \"0\")));\n" +
-        "        else __dg.kvRead(e.key, !!e.present, e.value ?? \"\");\n" +
+        "        if (e.op === \"prefix\") __dg.kvPrefix(__dgKey(e), true, e.count ?? 0, BigInt(\"0x\" + (e.rowsFold ?? \"0\")));\n" +
+        "        else __dg.kvRead(__dgKey(e), !!e.present, e.value ?? \"\");\n" +
         "        break;\n" +
-        "      case \"write\":  __dg.kvWrite(e.key, e.value ?? \"\"); break;\n" +
-        "      case \"delete\": __dg.kvDelete(e.key); break;\n" +
+        "      case \"write\":  __dg.kvWrite(__dgKey(e), e.value ?? \"\"); break;\n" +
+        "      case \"delete\": __dg.kvDelete(__dgKey(e)); break;\n" +
         "      case \"fetch\":  __dg.fetch(e.method || \"GET\", e.url || \"\", e.body ?? \"\"); break;\n" +
         "      case \"timer\":  __dg.wakeArm(\"t\", String(e.ms), e.on ?? \"\"); break;\n" +
         "      case \"kv-wake\": __dg.wakeArm(\"k\", e.prefix, e.on ?? \"\"); break;\n" +
