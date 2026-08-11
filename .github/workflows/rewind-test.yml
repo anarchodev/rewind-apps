@@ -38,7 +38,7 @@ env:
   # silently ignores it — the identity goes unset and getReplay never
   # builds its logs URL, which reads as a handler bug rather than a
   # stale toolchain.
-  ROVE_REF: ab76807d3813b76aecb28a990d3aa6df02ccadf6
+  ROVE_REF: 6931ea0cc73c6e420232409388097d6dd7a6665d
   ZIG_VERSION: 0.15.2
 
 jobs:
