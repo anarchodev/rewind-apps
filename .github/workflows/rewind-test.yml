@@ -56,13 +56,29 @@ jobs:
           path: ~/.local/bin/rewind
           key: rewind-cli-${{ env.ROVE_REF }}-zig${{ env.ZIG_VERSION }}
 
+      # Unconditional: the CLI build needs this only on a cache miss, but the
+      # prelude freshness check below needs it every run. A shallow clone is
+      # cheaper than a check that silently stops running whenever the cache
+      # happens to hit.
       - name: Check out rove
-        if: steps.cache-rewind.outputs.cache-hit != 'true'
         uses: actions/checkout@v4
         with:
           repository: anarchodev/rove
           ref: ${{ env.ROVE_REF }}
           path: rove
+
+      # `replay/_static/arena-prelude.js` is GENERATED from rove's engine shim
+      # sources. It does not update itself, and a stale one means the browser
+      # replay engine runs older shim code than the worker — silently, which
+      # is how it has slipped through twice (rove#456).
+      #
+      # This is the rewind-apps half: the committed prelude must match the
+      # rove commit this repo pins. rove's own gate checks the other half —
+      # that its shim sources still match the digest recorded there — so a
+      # change is caught at its source too.
+      - name: Check the generated replay prelude is fresh
+        run: |
+          python3 rove/scripts/ops/gen_replay_prelude.py --check --apps-dir .
 
       - name: Install Zig
         if: steps.cache-rewind.outputs.cache-hit != 'true'
