@@ -54,7 +54,15 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.local/bin/rewind
-          key: rewind-cli-${{ env.ROVE_REF }}-zig${{ env.ZIG_VERSION }}
+          # ImageOS is part of the key because the cached artifact is a
+          # NATIVE BINARY. Without it, a runner-image roll leaves a stale
+          # binary being restored and executed on a host it was not built
+          # for — and because a cache hit also skips "Install system
+          # libraries", it runs somewhere its dependencies were never
+          # installed. That is how a commit green on 2026-08-09 started
+          # aborting in `arena_reactor_new` on 2026-08-11 with no code
+          # change: re-running the identical main run reproduced it.
+          key: rewind-cli-${{ env.ROVE_REF }}-zig${{ env.ZIG_VERSION }}-${{ env.ImageOS }}
 
       # Unconditional: the CLI build needs this only on a cache miss, but the
       # prelude freshness check below needs it every run. A shallow clone is
