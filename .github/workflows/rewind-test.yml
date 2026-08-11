@@ -54,15 +54,39 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.local/bin/rewind
-          key: rewind-cli-${{ env.ROVE_REF }}-zig${{ env.ZIG_VERSION }}
+          # ImageOS is part of the key because the cached artifact is a
+          # NATIVE BINARY. Without it, a runner-image roll leaves a stale
+          # binary being restored and executed on a host it was not built
+          # for — and because a cache hit also skips "Install system
+          # libraries", it runs somewhere its dependencies were never
+          # installed. That is how a commit green on 2026-08-09 started
+          # aborting in `arena_reactor_new` on 2026-08-11 with no code
+          # change: re-running the identical main run reproduced it.
+          key: rewind-cli-${{ env.ROVE_REF }}-zig${{ env.ZIG_VERSION }}-${{ env.ImageOS }}
 
+      # Unconditional: the CLI build needs this only on a cache miss, but the
+      # prelude freshness check below needs it every run. A shallow clone is
+      # cheaper than a check that silently stops running whenever the cache
+      # happens to hit.
       - name: Check out rove
-        if: steps.cache-rewind.outputs.cache-hit != 'true'
         uses: actions/checkout@v4
         with:
           repository: anarchodev/rove
           ref: ${{ env.ROVE_REF }}
           path: rove
+
+      # `replay/_static/arena-prelude.js` is GENERATED from rove's engine shim
+      # sources. It does not update itself, and a stale one means the browser
+      # replay engine runs older shim code than the worker — silently, which
+      # is how it has slipped through twice (rove#456).
+      #
+      # This is the rewind-apps half: the committed prelude must match the
+      # rove commit this repo pins. rove's own gate checks the other half —
+      # that its shim sources still match the digest recorded there — so a
+      # change is caught at its source too.
+      - name: Check the generated replay prelude is fresh
+        run: |
+          python3 rove/scripts/ops/gen_replay_prelude.py --check --apps-dir .
 
       - name: Install Zig
         if: steps.cache-rewind.outputs.cache-hit != 'true'
