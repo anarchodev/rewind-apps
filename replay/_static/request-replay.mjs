@@ -585,18 +585,22 @@ export function buildRequestEpilogue({ record = {}, requestReads = null, bodyByt
         // that tags its request dies on the call.
         "  const __tags = [];\n" +
         "  request.tag = function (k, v) {\n" +
-        "    if (arguments.length < 2 || typeof k !== \"string\" || typeof v !== \"string\") throw new TypeError(\"request.tag(key, value) requires two string arguments\");\n" +
-        "    const __enc = new TextEncoder();\n" +
-        "    const kb = __enc.encode(k).length, vb = __enc.encode(v).length;\n" +
-        "    if (kb < 1 || kb > 32) throw new TypeError(\"request.tag: key length must be 1..32 bytes\");\n" +
-        "    if (k[0] === \"_\") throw new TypeError(\"request.tag: keys starting with '_' are reserved\");\n" +
-        "    if (!/^[a-z0-9_]+$/.test(k)) throw new TypeError(\"request.tag: key must match [a-z0-9_]\");\n" +
-        "    if (vb < 1 || vb > 64) throw new TypeError(\"request.tag: value length must be 1..64 bytes\");\n" +
-        "    for (let i = 0; i < v.length; i++) if (v.charCodeAt(i) < 0x20) throw new TypeError(\"request.tag: value must not contain control characters\");\n" +
+        // The RULES come from the generated arena prelude, which splices
+        // rove's `src/replay/js/tag_guards.js` and the limits generated from
+        // the Zig (rove#505). They used to be hand-copied here, and had
+        // already drifted: this file said "at most 4 tags per activation"
+        // where prod and the sim say "too many tags (max 4 per request)", so
+        // a handler catching the error read different text depending on which
+        // engine ran it.
+        "    __tagGuardPair(k, v, arguments.length);\n" +
         "    const hit = __tags.find((t) => t.key === k);\n" +
-        "    if (hit) { hit.value = v; return undefined; }\n" +
-        "    if (__tags.length >= 4) throw new TypeError(\"request.tag: at most 4 tags per activation\");\n" +
+        "    if (hit) { hit.value = v; globalThis.__rove_effects.push({ kind: \"tag\", key: k, value: v }); return undefined; }\n" +
+        "    __tagGuardCapacity(__tags.length);\n" +
         "    __tags.push({ key: k, value: v });\n" +
+        // The sim records an accepted tag as an effect and this engine did
+        // not, so any world that tagged diverged on `effects` before the
+        // comparison ever reached a message.
+        "    globalThis.__rove_effects.push({ kind: \"tag\", key: k, value: v });\n" +
         "    return undefined;\n" +
         "  };\n" +
         "  if (D.result) {\n" +
