@@ -474,8 +474,20 @@ export function buildRequestEpilogue({ record = {}, requestReads = null, bodyByt
         "        : { kind: \"read\", key: k, present: false });\n" +
         "      return v;\n" +
         "    },\n" +
-        "    set(k, v) { if (!__harness(k)) globalThis.__rove_effects.push({ kind: \"write\", key: k, value: v }); return __kvNative.set(k, v); },\n" +
-        "    delete(k) { if (!__harness(k)) globalThis.__rove_effects.push({ kind: \"delete\", key: k }); return __kvNative.delete(k); },\n" +
+        // The kv write guardrails. The RULES are the engine's own, shared
+        // verbatim: `__kvGuardWrite` comes from the generated arena prelude,
+        // which splices rove's `src/replay/js/kv_guards.js` and the data it
+        // needs (rove#502). This arena had none of them, so a handler writing
+        // a platform-reserved key threw in prod and in the sim and succeeded
+        // here — replay more permissive than prod, which makes a run look
+        // successful where the real one refused.
+        //
+        // The guard runs BEFORE the effect is recorded: a refused write never
+        // happened, so it must not appear in the log the digest folds.
+        // `__harness` keys are the shell's own bookkeeping and skip it, which
+        // is the same carve-out the sim makes for its store namespace.
+        "    set(k, v) { if (__harness(k)) return __kvNative.set(k, v); const ks = __kvGuardWrite(k, true, v); globalThis.__rove_effects.push({ kind: \"write\", key: ks, value: v }); return __kvNative.set(ks, v); },\n" +
+        "    delete(k) { if (__harness(k)) return __kvNative.delete(k); const ks = __kvGuardWrite(k, false); globalThis.__rove_effects.push({ kind: \"delete\", key: ks }); return __kvNative.delete(ks); },\n" +
         "    prefix(p, cursor, limit) {\n" +
         "      let raw;\n" +
         "      try { raw = __kvNative.prefix(p, cursor, limit) || []; }\n" +
