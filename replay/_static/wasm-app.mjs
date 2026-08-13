@@ -1418,6 +1418,10 @@ async function main() {
     const epilogue = buildRequestEpilogue({
         record: bundle.request || {},
         requestReads: tapes.request_reads,
+        // Outcome-replay (rove#516): the capture's guard refusals ride the
+        // kv tape (outcome=refused, value=code); the wrapper throws them
+        // verbatim and decides nothing itself.
+        kvRefusals: tapes.kv,
         bodyBytes: surface.bodyBytes ?? bundle.request?.body_bytes ?? null,
         ctx: surface.ctx,
         activationBag: surface.activation,

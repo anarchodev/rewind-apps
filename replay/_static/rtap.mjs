@@ -33,7 +33,12 @@ export const RTAP_MAGIC   = 0x52544150;
 // content-addressed storage instead of copied onto the tape.
 // The readset header's `seed` + `timestamp_ns` scalars are the
 // entire input for the random + clock sources.
-export const RTAP_VERSION = 6;
+// 6 → 7 by outcome-replay (rove#516): kv `outcome` gained
+// `refused` (3) — a guard-refused write, `value` = the refusal
+// CODE — so captured replay throws the recorded verdict instead
+// of re-deciding the rules. Same entry width; the bump exists so
+// a stale reader rejects loudly rather than misreading.
+export const RTAP_VERSION = 7;
 // The oldest layout this reader still understands (mirrors
 // src/replay/tape_decode.zig MIN_VERSION): records already in S3
 // were written at v5, so the guard is a RANGE — a reader that
