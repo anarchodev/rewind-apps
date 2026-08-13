@@ -449,110 +449,22 @@ export function buildRequestEpilogue({ record = {}, requestReads = null, bodyByt
         // assertion pass for the wrong reason — `platformadmin` exists to pin
         // exactly that behaviour and could not test it here (rove#436).
         "  if (D.captured) kv.set(\"__rove_store/admin\", \"1\");\n" +
-        // Installed AFTER the seeding writes above: those are host bookkeeping
-        // the worker never performed, and folding them would put three
-        // elements in the replay's digest that the capture's does not have —
-        // which is precisely what the cross-engine check caught.
-        //
-        // Wrap kv so reads and writes land in the SAME ordered log as the
-        // effects — the worker folds them into one sequence, so a replay that
-        // folded them separately would hash a different order and diverge on
-        // every run that interleaves them. The native binding still does the
-        // work; this only observes.
-        //
-        // The output-key write below is issued through the NATIVE binding, not
-        // this wrapper: it is the host's side channel, not something the
-        // handler did, and folding it would put an element in the replay's
-        // digest that the worker never had.
-        "  const __kvNative = kv;\n" +
-        // `__rove_store/` is a HARNESS namespace: the recorders keep their own
-        // bookkeeping there (the outbound budget marker, the admin gate, the
-        // root token, instance-exists markers) and it exists nowhere in the
-        // worker. Recording those reads puts entries in the effect log that no
-        // production run performed — and because the log's push is patched to
-        // fold as entries arrive, straight into the interaction digest, where a
-        // read spliced mid-sequence shifts every later ordinal. The offline sim
-        // has always excluded them; this engine did not (rove#442).
-        //
-        // The prefix comes from the shared `_system.*` shim (rove's
-        // system_recorders.js, embedded in the generated prelude), so both
-        // offline engines test the same string.
-        "  const __NS = globalThis.__roveStorePrefix || \"__rove_store/\";\n" +
-        "  const __harness = (k) => typeof k === \"string\" && k.startsWith(__NS);\n" +
-        "  const __refuse = (code, ks) => {\n" +
-        "    if (code === \"reserved_key\") throw __kvErr(\"kv: '\" + ks + \"' is in a platform-reserved prefix\", code);\n" +
-        "    if (code === \"key_too_large\") throw __kvErr(\"kv: key exceeds the \" + __KV_KEY_MAX + \"-byte limit\", code);\n" +
-        "    if (code === \"value_too_large\") throw __kvErr(\"kv: value exceeds the \" + __KV_VAL_MAX + \"-byte limit\", code);\n" +
-        "    throw __kvErr(\"kv: '\" + ks + \"' was refused at capture\", code);\n" +
-        "  };\n" +
-        "  globalThis.kv = {\n" +
-        // A CAPTURED world is a strict read-your-tape world: a key in neither
-        // the overlay nor the tape means the original run never read it, and
-        // inventing a value would be replaying a different request. An AUTHORED
-        // world is a CLOSED world instead — `world.zig` defines a key not in
-        // the map as `not_found`, never a divergence, and the sim implements
-        // that. Applying the captured posture to an authored world killed the
-        // run on the ordinary shape of testing a not-found branch (rove#436).
-        "    get(k) {\n" +
-        "      let v;\n" +
-        "      try { v = __kvNative.get(k); }\n" +
-        "      catch (e) { if (String(e && e.message).includes(\"recording has no entry\")) { if (D.captured) miss(\"kv '\" + k + \"'\"); v = null; } else { throw e; } }\n" +
-        "      const present = v !== undefined && v !== null;\n" +
-        // A not-found read carries no value — the sim omits the field rather
-        // than spelling it `""`, and an entry that differs only in how it
-        // spells absence reads as a divergence while the digest (which folds
-        // `value ?? ""`) says the two runs did the same thing.
-        "      if (!__harness(k)) globalThis.__rove_effects.push(present\n" +
-        "        ? { kind: \"read\", key: k, present: true, value: v }\n" +
-        "        : { kind: \"read\", key: k, present: false });\n" +
-        "      return v;\n" +
-        "    },\n" +
-        // The kv write guardrails. The RULES are the engine's own, shared
-        // verbatim: `__kvGuardWrite` comes from the generated arena prelude,
-        // which splices rove's `src/replay/js/kv_guards.js` and the data it
-        // needs (rove#502). This arena had none of them, so a handler writing
-        // a platform-reserved key threw in prod and in the sim and succeeded
-        // here — replay more permissive than prod, which makes a run look
-        // successful where the real one refused.
-        //
-        // The guard runs BEFORE the effect is recorded: a refused write never
-        // happened, so it must not appear in the log the digest folds.
-        // `__harness` keys are the shell's own bookkeeping and skip it, which
-        // is the same carve-out the sim makes for its store namespace.
-        // Outcome-replay on a captured world: coercion still decides (it is
-        // value-shape, reproduced by re-execution) but the RULES never run —
-        // a taped refusal throws the recorded code verbatim, and a write
-        // with no entry succeeded at capture and proceeds unguarded, so rule
-        // evolution cannot manufacture a false divergence (rove#516). An
-        // authored world decides live via the shared rules, exactly the
-        // native engines' decides() split.
-        "    set(k, v) { if (__harness(k)) return __kvNative.set(k, v); let ks; if (D.captured) { ks = __kvCoerce(k, \"key\"); __kvCoerce(v, \"value\"); const r = D.refusals[\"s\" + ks]; if (r !== undefined) __refuse(r, ks); } else { ks = __kvGuardWrite(k, true, v); } globalThis.__rove_effects.push({ kind: \"write\", key: ks, value: v }); return __kvNative.set(ks, v); },\n" +
-        "    delete(k) { if (__harness(k)) return __kvNative.delete(k); let ks; if (D.captured) { ks = __kvCoerce(k, \"key\"); const r = D.refusals[\"d\" + ks]; if (r !== undefined) __refuse(r, ks); } else { ks = __kvGuardWrite(k, false); } globalThis.__rove_effects.push({ kind: \"delete\", key: ks }); return __kvNative.delete(ks); },\n" +
-        "    prefix(p, cursor, limit) {\n" +
-        "      let raw;\n" +
-        "      try { raw = __kvNative.prefix(p, cursor, limit) || []; }\n" +
-        "      catch (e) { if (String(e && e.message).includes(\"recording has no entry\")) { if (D.captured) miss(\"kv.prefix '\" + p + \"'\"); raw = []; } else { throw e; } }\n" +
-        // A harness-namespace scan is the recorders' own, and is neither
-        // recorded nor filtered. A TENANT scan must not see another store's
-        // keys — prod has none to see — so they are stripped from the rows
-        // before the handler or the digest observes them.
-        "      if (__harness(p)) return raw;\n" +
-        "      const rows = raw.filter((r) => !__harness(r.key));\n" +
-        "      const enc = globalThis.__interactionDigest;\n" +
-        "      let fold = \"0\";\n" +
-        "      if (enc) { let acc = \"\"; for (const r of rows) acc += r.key + \"=\" + enc.foldValue(r.value) + \";\"; fold = enc.foldValue(acc); }\n" +
-        "      globalThis.__rove_effects.push({ kind: \"read\", op: \"prefix\", key: p, count: rows.length, rowsFold: fold });\n" +
-        "      return rows;\n" +
-        "    },\n" +
-        "  };\n" +
+        // `kv` IS the native common binding — rove's Zig, compiled into this
+        // wasm (rove#508): coercion, guards, refusal shapes, effect entries,
+        // the harness carve-out, outcome-replay and the host-side poison all
+        // run in-module, identical bytes to the worker and the sim. The
+        // epilogue's only job is handing the delegate its per-run knobs:
+        // `__rove_captured` (set above) and the taped-refusal map.
+        "  globalThis.__rove_refusals = D.refusals;\n" +
 
         // An off-tape read POISONS the run and returns absent — nothing is
         // thrown, so nothing a handler can catch to keep running on fiction
-        // invisibly (rove#510). The verdict rides the parked output
-        // (post-run); the first divergence wins, like the native host's.
-        // Until the in-tree wasm the flag lives in VM JS — a handler could
-        // clear it, which only deceives its own debugging tool.
-        "  const miss = (what) => { if (!globalThis.__rove_diverged) globalThis.__rove_diverged = \"REPLAY DIVERGENCE: \" + what + \" was read by the handler but is not on the capture tape — the handler observed an input the original run never read\"; return undefined; };\n" +
+        // invisibly (rove#510). The verdict is HOST-SIDE now (`__rove_poison`
+        // → module linear memory, unreachable from VM JS), the interrupt
+        // brakes on it, and the parked output carries it post-run via
+        // `__rove_divergence()`. First divergence wins, like the native
+        // host's.
+        "  const miss = (what) => { __rove_poison(what); return undefined; };\n" +
         // The bare arena has no console; handlers that log would
         // ReferenceError. Live console output is already on the
         // LogRecord, so replay's console is a no-op sink.
@@ -622,33 +534,13 @@ export function buildRequestEpilogue({ record = {}, requestReads = null, bodyByt
         "  request.activation = D.activationBag;\n" +
         "  if (D.tenant !== null) request.tenant = D.tenant;\n" +
         "  if (D.sagaId !== null) request.sagaId = D.sagaId;\n" +
-        // request.tag(key, value) — prod's validation verbatim
-        // (globals.zig jsRequestTag), mirrored from the native epilogue:
-        // two strings; key 1..32 BYTES of [a-z0-9_] with no leading '_';
-        // value 1..64 BYTES, no control characters; at most 4 distinct
-        // keys per activation, re-tagging updates in place. It is a
-        // FUNCTION, so its absence is not a missing value — a handler
-        // that tags its request dies on the call.
-        "  const __tags = [];\n" +
-        "  request.tag = function (k, v) {\n" +
-        // The RULES come from the generated arena prelude, which splices
-        // rove's `src/replay/js/tag_guards.js` and the limits generated from
-        // the Zig (rove#505). They used to be hand-copied here, and had
-        // already drifted: this file said "at most 4 tags per activation"
-        // where prod and the sim say "too many tags (max 4 per request)", so
-        // a handler catching the error read different text depending on which
-        // engine ran it.
-        "    __tagGuardPair(k, v, arguments.length);\n" +
-        "    const hit = __tags.find((t) => t.key === k);\n" +
-        "    if (hit) { hit.value = v; globalThis.__rove_effects.push({ kind: \"tag\", key: k, value: v }); return undefined; }\n" +
-        "    __tagGuardCapacity(__tags.length);\n" +
-        "    __tags.push({ key: k, value: v });\n" +
-        // The sim records an accepted tag as an effect and this engine did
-        // not, so any world that tagged diverged on `effects` before the
-        // comparison ever reached a message.
-        "    globalThis.__rove_effects.push({ kind: \"tag\", key: k, value: v });\n" +
-        "    return undefined;\n" +
-        "  };\n" +
+        // request.tag — the native common binding (rove-binding.Tag over the
+        // arena delegate, compiled into this wasm): arity gate, pair rules,
+        // capacity and refusal shapes are ONE implementation with the worker
+        // and the sim; each accepted call lands a {kind:"tag"} effect. It is
+        // a FUNCTION, so its absence is not a missing value — a handler that
+        // tags its request dies on the call.
+        "  request.tag = __rove_request_tag;\n" +
         "  if (D.result) {\n" +
         "    for (const k of [\"status\", \"done\", \"fetchId\", \"chunkSeq\", \"bodyTruncated\"]) {\n" +
         "      if (D.result[k] !== null && D.result[k] !== undefined) request[k] = D.result[k];\n" +
@@ -717,7 +609,10 @@ export function buildRequestEpilogue({ record = {}, requestReads = null, bodyByt
         "  const __parked = globalThis.__replay_result && typeof globalThis.__replay_result === \"object\" &&\n" +
         "    globalThis.__replay_result.__rove_disposition === \"next\";\n" +
         "  if (__dg && !__parked) __dg.response(__res.status === undefined ? 200 : __res.status, __ser(globalThis.__replay_result) ?? \"\");\n" +
-        "  __kvNative.set(" + JSON.stringify(REPLAY_OUTPUT_KEY) + ", JSON.stringify({ status: __res.status === undefined ? null : __res.status, result: __ser(globalThis.__replay_result), effects: __effectLog, digest: __dg ? __dg.hex() : null, divergence: globalThis.__rove_diverged || null }));\n" +
+        // Parks through the native door (the guarded binding refuses the
+        // sentinel key exactly as prod does); the divergence verdict comes
+        // from module memory, where nothing in the run could touch it.
+        "  __rove_park_output(JSON.stringify({ status: __res.status === undefined ? null : __res.status, result: __ser(globalThis.__replay_result), effects: __effectLog, digest: __dg ? __dg.hex() : null, divergence: __rove_divergence() }));\n" +
         "})();\n"
     );
 }
