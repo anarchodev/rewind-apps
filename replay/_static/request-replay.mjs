@@ -496,7 +496,7 @@ export function buildRequestEpilogue({ record = {}, requestReads = null, bodyByt
         "    get(k) {\n" +
         "      let v;\n" +
         "      try { v = __kvNative.get(k); }\n" +
-        "      catch (e) { if (D.captured) throw e; v = undefined; }\n" +
+        "      catch (e) { if (String(e && e.message).includes(\"recording has no entry\")) { if (D.captured) miss(\"kv '\" + k + \"'\"); v = null; } else { throw e; } }\n" +
         "      const present = v !== undefined && v !== null;\n" +
         // A not-found read carries no value — the sim omits the field rather
         // than spelling it `""`, and an entry that differs only in how it
@@ -531,7 +531,7 @@ export function buildRequestEpilogue({ record = {}, requestReads = null, bodyByt
         "    prefix(p, cursor, limit) {\n" +
         "      let raw;\n" +
         "      try { raw = __kvNative.prefix(p, cursor, limit) || []; }\n" +
-        "      catch (e) { if (D.captured) throw e; raw = []; }\n" +
+        "      catch (e) { if (String(e && e.message).includes(\"recording has no entry\")) { if (D.captured) miss(\"kv.prefix '\" + p + \"'\"); raw = []; } else { throw e; } }\n" +
         // A harness-namespace scan is the recorders' own, and is neither
         // recorded nor filtered. A TENANT scan must not see another store's
         // keys — prod has none to see — so they are stripped from the rows
@@ -546,7 +546,13 @@ export function buildRequestEpilogue({ record = {}, requestReads = null, bodyByt
         "    },\n" +
         "  };\n" +
 
-        "  const miss = (what) => { throw new Error(\"REPLAY DIVERGENCE: \" + what + \" was read by the handler but is not on the capture tape — the handler observed an input the original run never read\"); };\n" +
+        // An off-tape read POISONS the run and returns absent — nothing is
+        // thrown, so nothing a handler can catch to keep running on fiction
+        // invisibly (rove#510). The verdict rides the parked output
+        // (post-run); the first divergence wins, like the native host's.
+        // Until the in-tree wasm the flag lives in VM JS — a handler could
+        // clear it, which only deceives its own debugging tool.
+        "  const miss = (what) => { if (!globalThis.__rove_diverged) globalThis.__rove_diverged = \"REPLAY DIVERGENCE: \" + what + \" was read by the handler but is not on the capture tape — the handler observed an input the original run never read\"; return undefined; };\n" +
         // The bare arena has no console; handlers that log would
         // ReferenceError. Live console output is already on the
         // LogRecord, so replay's console is a no-op sink.
@@ -606,8 +612,8 @@ export function buildRequestEpilogue({ record = {}, requestReads = null, bodyByt
         "      return out;\n" +
         "    } });\n" +
         "  Object.defineProperty(request, \"ip\", { enumerable: true, configurable: true,\n" +
-        "    get() { if (!D.ipMasked) miss(\"request.ip\"); return D.ipMasked.value || null; } });\n" +
-        "  request.unmaskedIp = function () { if (!D.ipRaw) miss(\"request.unmaskedIp()\"); return D.ipRaw.value || null; };\n" +
+        "    get() { if (!D.ipMasked) { miss(\"request.ip\"); return null; } return D.ipMasked.value || null; } });\n" +
+        "  request.unmaskedIp = function () { if (!D.ipRaw) { miss(\"request.unmaskedIp()\"); return null; } return D.ipRaw.value || null; };\n" +
         // The non-inbound surface: threaded ctx, the activation metadata
         // bag, and the flattened callback/fetch result. Defined only when
         // recorded, so a payload-less kind reads `undefined` exactly as it
@@ -711,7 +717,7 @@ export function buildRequestEpilogue({ record = {}, requestReads = null, bodyByt
         "  const __parked = globalThis.__replay_result && typeof globalThis.__replay_result === \"object\" &&\n" +
         "    globalThis.__replay_result.__rove_disposition === \"next\";\n" +
         "  if (__dg && !__parked) __dg.response(__res.status === undefined ? 200 : __res.status, __ser(globalThis.__replay_result) ?? \"\");\n" +
-        "  __kvNative.set(" + JSON.stringify(REPLAY_OUTPUT_KEY) + ", JSON.stringify({ status: __res.status === undefined ? null : __res.status, result: __ser(globalThis.__replay_result), effects: __effectLog, digest: __dg ? __dg.hex() : null }));\n" +
+        "  __kvNative.set(" + JSON.stringify(REPLAY_OUTPUT_KEY) + ", JSON.stringify({ status: __res.status === undefined ? null : __res.status, result: __ser(globalThis.__replay_result), effects: __effectLog, digest: __dg ? __dg.hex() : null, divergence: globalThis.__rove_diverged || null }));\n" +
         "})();\n"
     );
 }
