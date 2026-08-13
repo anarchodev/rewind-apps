@@ -247,7 +247,28 @@ export function deriveActivationSurface({ activation = "inbound", tapes = {}, ac
 ///                  Uint8Array of arbitrary bytes (the chunk IS the
 ///                  Msg, always recorded — never read-elided), so the
 ///                  replay body must be byte-exact binary too.
-export function buildRequestEpilogue({ record = {}, requestReads = null, bodyBytes = null, exportName = "default", binaryBody = false, activation = "inbound", ctx = undefined, activationBag = undefined, result = null, middlewarePath = null, tenant = null, sagaId = null, captured = true } = {}) {
+const KV_OUTCOME_REFUSED = 3; // rtap.mjs kv entry outcome byte (v7)
+
+function foldKvRefusals(entries) {
+    const out = {};
+    if (!entries) return out;
+    const dec = new TextDecoder();
+    for (const e of entries) {
+        if (typeof e.code === "string") {
+            // Pre-shaped {op, key, code}.
+            out[(e.op === "delete" ? "d" : "s") + e.key] = e.code;
+            continue;
+        }
+        if (e.outcome !== KV_OUTCOME_REFUSED) continue;
+        const key = typeof e.key === "string" ? e.key : dec.decode(e.key);
+        const code = typeof e.value === "string" ? e.value : dec.decode(e.value);
+        // rtap KvOp: get 0, set 1, delete 2.
+        out[(e.op === 2 ? "d" : "s") + key] = code;
+    }
+    return out;
+}
+
+export function buildRequestEpilogue({ record = {}, requestReads = null, bodyBytes = null, exportName = "default", binaryBody = false, activation = "inbound", ctx = undefined, activationBag = undefined, result = null, middlewarePath = null, tenant = null, sagaId = null, captured = true, kvRefusals = null } = {}) {
     const reads = foldRequestReads(requestReads);
 
     const rawPath = record.path || "/";
@@ -300,6 +321,12 @@ export function buildRequestEpilogue({ record = {}, requestReads = null, bodyByt
         // Defaults TRUE: the shell only ever replays captures, so this changes
         // nothing there. The conformance suite passes false.
         captured: captured !== false,
+        // Outcome-replay (rove#516): guard refusals the capture recorded,
+        // keyed "s"/"d" + key → the refusal CODE. On a captured world the
+        // kv wrapper throws these verbatim and decides NOTHING itself — a
+        // write with no entry succeeded at capture and proceeds unguarded,
+        // so rule evolution cannot manufacture a false divergence.
+        refusals: foldKvRefusals(kvRefusals),
     };
 
     // JSON is JS-literal-safe except the two line separators.
@@ -452,6 +479,12 @@ export function buildRequestEpilogue({ record = {}, requestReads = null, bodyByt
         // offline engines test the same string.
         "  const __NS = globalThis.__roveStorePrefix || \"__rove_store/\";\n" +
         "  const __harness = (k) => typeof k === \"string\" && k.startsWith(__NS);\n" +
+        "  const __refuse = (code, ks) => {\n" +
+        "    if (code === \"reserved_key\") throw __kvErr(\"kv: '\" + ks + \"' is in a platform-reserved prefix\", code);\n" +
+        "    if (code === \"key_too_large\") throw __kvErr(\"kv: key exceeds the \" + __KV_KEY_MAX + \"-byte limit\", code);\n" +
+        "    if (code === \"value_too_large\") throw __kvErr(\"kv: value exceeds the \" + __KV_VAL_MAX + \"-byte limit\", code);\n" +
+        "    throw __kvErr(\"kv: '\" + ks + \"' was refused at capture\", code);\n" +
+        "  };\n" +
         "  globalThis.kv = {\n" +
         // A CAPTURED world is a strict read-your-tape world: a key in neither
         // the overlay nor the tape means the original run never read it, and
@@ -486,8 +519,15 @@ export function buildRequestEpilogue({ record = {}, requestReads = null, bodyByt
         // happened, so it must not appear in the log the digest folds.
         // `__harness` keys are the shell's own bookkeeping and skip it, which
         // is the same carve-out the sim makes for its store namespace.
-        "    set(k, v) { if (__harness(k)) return __kvNative.set(k, v); const ks = __kvGuardWrite(k, true, v); globalThis.__rove_effects.push({ kind: \"write\", key: ks, value: v }); return __kvNative.set(ks, v); },\n" +
-        "    delete(k) { if (__harness(k)) return __kvNative.delete(k); const ks = __kvGuardWrite(k, false); globalThis.__rove_effects.push({ kind: \"delete\", key: ks }); return __kvNative.delete(ks); },\n" +
+        // Outcome-replay on a captured world: coercion still decides (it is
+        // value-shape, reproduced by re-execution) but the RULES never run —
+        // a taped refusal throws the recorded code verbatim, and a write
+        // with no entry succeeded at capture and proceeds unguarded, so rule
+        // evolution cannot manufacture a false divergence (rove#516). An
+        // authored world decides live via the shared rules, exactly the
+        // native engines' decides() split.
+        "    set(k, v) { if (__harness(k)) return __kvNative.set(k, v); let ks; if (D.captured) { ks = __kvCoerce(k, \"key\"); __kvCoerce(v, \"value\"); const r = D.refusals[\"s\" + ks]; if (r !== undefined) __refuse(r, ks); } else { ks = __kvGuardWrite(k, true, v); } globalThis.__rove_effects.push({ kind: \"write\", key: ks, value: v }); return __kvNative.set(ks, v); },\n" +
+        "    delete(k) { if (__harness(k)) return __kvNative.delete(k); let ks; if (D.captured) { ks = __kvCoerce(k, \"key\"); const r = D.refusals[\"d\" + ks]; if (r !== undefined) __refuse(r, ks); } else { ks = __kvGuardWrite(k, false); } globalThis.__rove_effects.push({ kind: \"delete\", key: ks }); return __kvNative.delete(ks); },\n" +
         "    prefix(p, cursor, limit) {\n" +
         "      let raw;\n" +
         "      try { raw = __kvNative.prefix(p, cursor, limit) || []; }\n" +
