@@ -202,3 +202,41 @@ const mystery = signedPost(w, activeEvt({ id: "evt_myst",
 expect(mystery.status).toBe(200);
 expect(mystery.kv("account/" + TEAM + "/plan")).toBe("pro");
 expect(planPushes(mystery)).toBe(0);
+
+// ── Plan-gated allowances (rove#312) ───────────────────────────────────────
+// TEAM is on pro (max_instances 5) with 2 instances → provisioning passes the
+// allowance gate (disposition held = the CP call was issued).
+const provOk = w.inbound({ method: "POST", path: "/v1/instances", host: "app.rewindjs.com",
+  body: j({ name: "app3", account: TEAM }), session: { id: "al" } });
+expect(provOk.disposition).toBe("held");
+
+// The downgrade case, decided: an account holding MORE instances than its
+// tier allows keeps them all — the gate only refuses NEW creation. TEAM on
+// free (limit 1) with 2 instances → 403, and both instance rows still stand.
+const wFree = scenario({ admin: true, now: "2026-08-15T00:00:00Z", seed: 5,
+  kv: Object.assign({}, BASE, { ["account/" + TEAM + "/plan"]: "free" }) });
+const provBlocked = wFree.inbound({ method: "POST", path: "/v1/instances", host: "app.rewindjs.com",
+  body: j({ name: "app3", account: TEAM }), session: { id: "al" } });
+expect(provBlocked.status).toBe(403);
+expect(provBlocked.body).toEqual({ error: "account_limit_reached", limit: 1, owned: 2 });
+expect(provBlocked.kv("account/" + TEAM + "/instances/app1")).toBe("1");
+expect(provBlocked.kv("account/" + TEAM + "/instances/app2")).toBe("1");
+
+// Team-account allowance rides the caller's PERSONAL plan. Alice on free
+// (max_team_accounts 2) already owning two teams → 403; on pro → allowed.
+const twoTeams = {
+  ["account/t2/members/" + A]: "owner", ["user/" + A + "/accounts/t2"]: "owner",
+  ["account/t3/members/" + A]: "owner", ["user/" + A + "/accounts/t3"]: "owner",
+};
+const wTeams = scenario({ admin: true, now: "2026-08-15T00:00:00Z", seed: 6,
+  kv: Object.assign({}, BASE, twoTeams) });
+const teamBlocked = wTeams.inbound({ method: "POST", path: "/v1/accounts", host: "app.rewindjs.com",
+  body: j({ name: "Team Four" }), session: { id: "al" } });
+expect(teamBlocked.status).toBe(403);
+expect(teamBlocked.body).toEqual({ error: "team_limit_reached", limit: 2 });
+
+const wTeamsPro = scenario({ admin: true, now: "2026-08-15T00:00:00Z", seed: 6,
+  kv: Object.assign({}, BASE, twoTeams, { ["account/" + A + "/plan"]: "pro" }) });
+const teamOk = wTeamsPro.inbound({ method: "POST", path: "/v1/accounts", host: "app.rewindjs.com",
+  body: j({ name: "Team Four" }), session: { id: "al" } });
+expect(teamOk.status).toBe(201);
