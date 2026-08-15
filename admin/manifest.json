@@ -3,6 +3,7 @@
   "version": "1.0.0",
   "dependencies": {
     "@rewind/oidc": "^1.0.0",
-    "@rewind/email": "^1.0.0"
+    "@rewind/email": "^1.0.0",
+    "@rewind/stripe": "^1.0.0"
   }
 }

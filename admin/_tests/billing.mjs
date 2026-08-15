@@ -66,3 +66,79 @@ expect(empty.body).toEqual({
 // Authz is the accountMember matrix: a non-member is refused, no session 401s.
 expect(call("GET", "/v1/accounts/" + TEAM + "/billing", "ca").status).toBe(403);
 expect(call("GET", "/v1/accounts/" + TEAM + "/billing", null).status).toBe(401);
+
+// ── Stripe webhook (rove#309) ──────────────────────────────────────────────
+// The only unauthenticated write surface: no call below carries a session.
+// Payloads are signed in-test with the same secret the handler reads, at a
+// timestamp equal to the scenario clock (verifyWebhook enforces tolerance
+// against Date.now(), which the sim pins to `now`).
+const WHSEC = "whsec_testsecret";
+const T = Math.floor(Date.parse("2026-08-15T00:00:00Z") / 1000);
+const signedPost = (sc, evt) => {
+  const body = j(evt);
+  const sig = "t=" + T + ",v1=" + crypto.hmacSha256(WHSEC, T + "." + body);
+  return sc.inbound({ method: "POST", path: "/v1/billing/webhook", host: "app.rewindjs.com",
+                      body, headers: { "stripe-signature": sig } });
+};
+const subEvt = (over) => Object.assign({
+  id: "evt_1", created: T, type: "customer.subscription.updated",
+  data: { object: { id: "sub_456", customer: "cus_123", status: "past_due",
+                    current_period_end: T + 86400 } },
+}, over);
+
+const w = scenario({ admin: true, now: "2026-08-15T00:00:00Z", seed: 4, kv: Object.assign({
+  stripe_whsec: WHSEC,
+  // pre-applied markers for the dedupe + ordering branches
+  "billing/event/evt_dup": String(T - 50),
+}, BASE) });
+
+// A valid subscription event updates the rows from the event's OWN object —
+// status verbatim, period_end in ms — and stamps the ordering watermark.
+const ok = signedPost(w, subEvt({}));
+expect(ok.status).toBe(200);
+expect(ok.body).toEqual({ received: true });
+expect(ok.kv("account/" + TEAM + "/billing/status")).toBe("past_due");
+expect(ok.kv("account/" + TEAM + "/billing/period_end")).toBe(String((T + 86400) * 1000));
+expect(ok.kv("account/" + TEAM + "/billing/last_event_ts")).toBe(String(T));
+expect(ok.kv("billing/event/evt_1")).toBe(String(T));
+
+// Tampered body → 400 before ANY work; nothing written.
+const bad = w.inbound({ method: "POST", path: "/v1/billing/webhook", host: "app.rewindjs.com",
+  body: j(subEvt({})), headers: { "stripe-signature": "t=" + T + ",v1=" + "0".repeat(64) } });
+expect(bad.status).toBe(400);
+expect(bad.kv("account/" + TEAM + "/billing/status")).toBe("active"); // untouched BASE value
+
+// Redelivery of a processed event id is a no-op (Stripe retries until 2xx).
+const dup = signedPost(w, subEvt({ id: "evt_dup" }));
+expect(dup.body).toEqual({ received: true, duplicate: true });
+expect(dup.kv("account/" + TEAM + "/billing/status")).toBe("active");
+
+// Out-of-order: an event OLDER than the applied watermark is refused by the
+// event's own `created`, not by arrival order.
+const w2 = scenario({ admin: true, now: "2026-08-15T00:00:00Z", seed: 4, kv: Object.assign({
+  stripe_whsec: WHSEC,
+  ["account/" + TEAM + "/billing/last_event_ts"]: String(T + 100),
+}, BASE) });
+const stale = signedPost(w2, subEvt({ id: "evt_old" }));
+expect(stale.body).toEqual({ received: true, stale: true });
+expect(stale.kv("account/" + TEAM + "/billing/status")).toBe("active");
+
+// A customer we never linked is acknowledged, not errored — a 4xx would make
+// Stripe retry forever on events we can never consume.
+const unk = signedPost(w, subEvt({ id: "evt_unk",
+  data: { object: { id: "sub_x", customer: "cus_nobody", status: "active" } } }));
+expect(unk.body).toEqual({ received: true, ignored: "unknown customer" });
+
+// Non-subscription events are acknowledged and ignored.
+const other = signedPost(w, { id: "evt_inv", created: T, type: "invoice.paid", data: { object: {} } });
+expect(other.body).toEqual({ received: true });
+expect(other.kv("billing/event/evt_inv")).toBe(String(T));
+
+// subscription.deleted with a malformed object still lands "canceled".
+const del = signedPost(w, subEvt({ id: "evt_del", type: "customer.subscription.deleted",
+  data: { object: { id: "sub_456", customer: "cus_123" } } }));
+expect(del.kv("account/" + TEAM + "/billing/status")).toBe("canceled");
+
+// Unconfigured secret → 503, fail loud (no silent fallback).
+const bare = scenario({ admin: true, now: "2026-08-15T00:00:00Z", seed: 4, kv: BASE });
+expect(signedPost(bare, subEvt({})).status).toBe(503);
