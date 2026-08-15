@@ -271,23 +271,31 @@ function jsonError(status, message) {
 
 // ── Account model ───────────────────────────────────────────────────
 // The OIDC-verified id_token `sub` (email) is the account identity.
-// account/{sha256(sub)}/plan stores the tier;
-// account/{hash}/instances/{instance_id} marks ownership. v1
-// hardcodes a single "free" tier with max_instances=1 — Phase 10
-// will branch on plan values (rate caps, DLQ retention, blob caps,
-// custom-domain counts, Stripe linkage). Seed-manifest tenants stay
-// outside the account model entirely (no account/* rows, no count
-// toward any limit). All these rows live in __admin__-home kv.
+// account/{sha256(sub)}/plan stores the tier (written by the Stripe
+// webhook, rove#311); account/{hash}/instances/{instance_id} marks
+// ownership. Seed-manifest tenants stay outside the account model
+// entirely (no account/* rows, no count toward any limit). All these
+// rows live in __admin__-home kv.
+//
+// These are ACCOUNT-level allowances — how many tenants an account may
+// create, how many team accounts a user may own — distinct from the
+// per-tenant limits the CP plan blob carries (rate caps, kv/storage
+// bytes, retention: src/plan/root.zig, pushed per tenant by rove#311).
+// The two-plane split is deliberate (platform-accounts-model.md fork 2:
+// per-tenant limits, never pooled account quotas) — do not collapse it.
+//
+// DOWNGRADE is creation-gated, never destructive: an account holding
+// more instances than its (new, lower) tier allows keeps every one of
+// them — the gate below only refuses NEW creation until it is back
+// under the allowance. Anything stronger (suspension, reclaim) is the
+// dunning policy, rove#313, not an allowance check. Pro/enterprise
+// figures are placeholders until rove#314 sets the real ones.
 
 const PLAN_LIMITS = {
-    free: { max_instances: 1 },
+    free:       { max_instances: 1,  max_team_accounts: 2 },
+    pro:        { max_instances: 5,  max_team_accounts: 5 },
+    enterprise: { max_instances: 25, max_team_accounts: 20 },
 };
-
-// Non-personal (team) accounts a single user may OWN. Pre-billing abuse guard:
-// each free account carries its own free instance, so uncapped team creation
-// would void the per-account limit. Phase 10 billing replaces this with a
-// plan-gated allowance. Operators (is_root) are exempt.
-const MAX_TEAM_ACCOUNTS = 2;
 const INVITE_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 
 // The account/user hash. ONE normalization point: the IdP lowercases+trims
@@ -389,7 +397,8 @@ function backfillAccountInstances(aid) {
             kv.set("instance/" + id + "/owner", aid);
 }
 
-// Team (non-personal) accounts this user owns — counted against MAX_TEAM_ACCOUNTS.
+// Team (non-personal) accounts this user owns — counted against the caller's
+// plan-gated max_team_accounts allowance.
 function ownedTeamAccountCount(userHash) {
     return accountsForUser(userHash)
         .filter((aid) => aid !== userHash && roleInAccount(aid, userHash) === "owner").length;
@@ -589,9 +598,12 @@ export function createAccount(name) {
     if (nm.length === 0 || nm.length > 64) return jsonError(400, "invalid name");
     const caller = accountHashFor(a.sub);
     backfillSelf(caller, a.sub);
-    if (!a.is_root && ownedTeamAccountCount(caller) >= MAX_TEAM_ACCOUNTS) {
+    // Team-account allowance rides the caller's PERSONAL account's plan —
+    // your own tier decides how many orgs you may own.
+    const teamLimit = planLimitsFor(caller).max_team_accounts;
+    if (!a.is_root && ownedTeamAccountCount(caller) >= teamLimit) {
         response.status = 403;
-        return { error: "team_limit_reached", limit: MAX_TEAM_ACCOUNTS };
+        return { error: "team_limit_reached", limit: teamLimit };
     }
     const aid = crypto.sha256(crypto.randomUUID()); // unguessable + replay-safe
     kv.set("account/" + aid + "/members/" + caller, "owner");
