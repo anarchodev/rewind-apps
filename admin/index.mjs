@@ -502,7 +502,61 @@ function handleStripeWebhook(rawBody) {
     kv.set(tsKey, String(created));
 
     recordSubscription(aid, sub, type);
+    applyPlanFromSubscription(aid, sub, type);
     return { received: true };
+}
+
+// ── Webhook → enforcement (rove#311) ────────────────────────────────
+// Where money becomes limits. The tier rides the subscription's own
+// metadata (stamped at checkout, rove#310) — the event is self-
+// describing, so no price-id table to drift. Status → target plan:
+//
+//   active / trialing            → metadata.tier (pro|enterprise only —
+//                                  an unknown tier changes NOTHING, it
+//                                  cannot be guessed)
+//   canceled / unpaid /
+//   incomplete_expired / deleted → free
+//   past_due / incomplete /
+//   paused                       → unchanged (the grace window; the
+//                                  dunning POLICY is rove#313's call,
+//                                  so nothing here forecloses it)
+//
+// The push is per-tenant and must be convergent, not one-shot: each
+// tenant's push is a DURABLE send (webhook.send → the CP door; the
+// worker attaches the move-secret for __admin__, so this never rides
+// the is_root /v1/cp route and customers cannot reach the plan verb)
+// keyed `planpush-{tenant}` — the same key maps to the same marker, so
+// a NEWER push for a tenant overwrites an undelivered older one instead
+// of racing it, and retries re-read the newest body. And because the
+// plan row + every push marker + the webhook response commit
+// atomically, there is no partial state: either Stripe sees 200 and
+// every push is durably owed, or the retry replays the whole event.
+const SELLABLE_TIERS = { pro: true, enterprise: true };
+const PLAN_DOWN_STATUSES = { canceled: true, unpaid: true, incomplete_expired: true };
+
+function applyPlanFromSubscription(aid, sub, type) {
+    const status = String(sub.status || "");
+    let target = null;
+    if (status === "active" || status === "trialing") {
+        const tier = sub.metadata && sub.metadata.tier;
+        if (typeof tier === "string" && SELLABLE_TIERS[tier]) target = tier;
+    } else if (PLAN_DOWN_STATUSES[status] || type === "customer.subscription.deleted") {
+        target = "free";
+    }
+    if (target === null) return;                       // grace / unknown: no change
+    if (kv.get("account/" + aid + "/plan") === target) return;  // convergent no-op
+    kv.set("account/" + aid + "/plan", target);
+    const owned = ownedInstances(aid);
+    for (let i = 0; i < owned.length; i++) pushPlanToTenant(owned[i], target);
+}
+
+function pushPlanToTenant(tenant, plan) {
+    webhook.send(CP_DOOR + "plan", {
+        body: JSON.stringify({ tenant: tenant, plan: plan }),
+        headers: { "content-type": "application/json" },
+        key: "planpush-" + tenant,
+        maxAttempts: 8,
+    });
 }
 
 // The rove#308 subscription writer — state comes from the event's OBJECT,
