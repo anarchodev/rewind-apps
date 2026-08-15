@@ -51,6 +51,7 @@ function renderCustomer(root, ctx, whoInit) {
           </label>
           <button type="button" class="new-team">New team</button>
           <a class="members-link" href="#/team">Members</a>
+          <a class="billing-link" href="#/billing">Billing</a>
           <button type="button" class="logout">Sign out</button>
         </nav>
       </header>

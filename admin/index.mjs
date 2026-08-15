@@ -449,6 +449,143 @@ function getBilling(aid) {
     return billingFor(aid);
 }
 
+// ── Billing flow (rove#310) — subscribe / change / cancel ───────────
+// The Elements flow, embedded: the browser mounts Stripe's Payment
+// Element with a client_secret we relay and confirms DIRECTLY against
+// Stripe — card data never reaches a request body here, so it can
+// never reach a tape or a replay log. What DOES transit our response
+// is the client_secret; that exposure is accepted deliberately
+// (rove#307 option 1: one short-lived single-intent capability, in
+// __admin__'s operator-only records; rove#559 is the durable fix).
+//
+// Subscribe is a HELD chain (the browser needs the secret in this
+// response): customer-create hop → createIncomplete hop → respond.
+// The customer→account link rows are written ONLY in the terminal
+// hop — a kv write in a resume hop that issues another platform call
+// drops that call (rove#344), so every intermediate hop carries its
+// state in ctx and writes nothing.
+//
+// Change and cancel are DURABLE (webhook.send via the package): the
+// caller needs no secret back, money-state must survive the response,
+// and the plan itself only moves when Stripe's webhook lands (#311) —
+// so the UI polls billing state rather than trusting the 200.
+//
+// Config comes seeded, never baked: stripe_key (sk_…), stripe_pk
+// (publishable), stripe_price/{tier} (price ids), stripe_whsec.
+// Missing config is a loud 503.
+
+const BILLING_ACTIVE_STATUSES = { active: true, trialing: true, past_due: true, incomplete: true };
+
+function billingConfigPk() {
+    const pk = kv.get("stripe_pk");
+    if (!pk) return jsonError(503, "billing not configured");
+    return { publishable_key: pk };
+}
+
+function subscribeBilling(aid, tier) {
+    if (typeof tier !== "string" || !SELLABLE_TIERS[tier])
+        return jsonError(400, "unknown tier");
+    const price = kv.get("stripe_price/" + tier);
+    const apiKey = kv.get("stripe_key");
+    if (!price || !apiKey) return jsonError(503, "billing not configured");
+    const b = billingFor(aid);
+    if (b.status !== null && BILLING_ACTIVE_STATUSES[b.status])
+        return jsonError(409, "already subscribed — change the plan instead");
+    const sk = stripe.client({ apiKey: apiKey });
+    const ctx = { aid: aid, tier: tier, price: price, cus: b.customer, link: false };
+    if (b.customer === null) {
+        // No Stripe customer yet: create one, then chain to the incomplete
+        // subscription. The link rows are written in the TERMINAL hop.
+        ctx.link = true;
+        sk.customers.create(
+            { email: (request.auth && request.auth.sub) || "", metadata: { aid: aid } },
+            { on: "onBillingCustomer", ctx: ctx });
+        return next();
+    }
+    issueIncompleteSubscription(sk, ctx);
+    return next();
+}
+
+function issueIncompleteSubscription(sk, ctx) {
+    sk.subscriptions.createIncomplete(
+        { customer: ctx.cus, items: [{ price: ctx.price }],
+          metadata: { tier: ctx.tier, aid: ctx.aid } },
+        { on: "onBillingSubscription", ctx: ctx,
+          idempotencyKey: "subinc-" + ctx.aid + "-" + ctx.tier });
+}
+
+function stripeHopFailed(label) {
+    if (request.status >= 200 && request.status < 300) return null;
+    let msg = label + " failed";
+    try { const e = request.json; if (e && e.error && e.error.message) msg = e.error.message; } catch (_) {}
+    response.status = 502;
+    return { error: msg, upstream: request.status || 0 };
+}
+
+// Customer created → chain the incomplete subscription. NO kv writes here:
+// a write in this hop would drop the platform call it issues (rove#344).
+export function onBillingCustomer() {
+    const failed = stripeHopFailed("stripe customer create");
+    if (failed) return failed;
+    const ctx = request.ctx || {};
+    const cus = request.json && request.json.id;
+    if (typeof cus !== "string" || !cus) { response.status = 502; return { error: "no customer id" }; }
+    ctx.cus = cus;
+    issueIncompleteSubscription(stripe.client({ apiKey: kv.get("stripe_key") }), ctx);
+    return next();
+}
+
+// Terminal hop: the incomplete subscription exists. Write everything —
+// the rove#308 link rows (only now, never earlier in the chain), the
+// subscription rows — and hand the browser the payment intent secret.
+export function onBillingSubscription() {
+    const failed = stripeHopFailed("stripe subscription create");
+    if (failed) return failed;
+    const ctx = request.ctx || {};
+    const sub = request.json || {};
+    if (ctx.link && ctx.cus) {
+        kv.set("account/" + ctx.aid + "/billing/customer", ctx.cus);
+        kv.set("billing/customer/" + ctx.cus, ctx.aid);
+    }
+    recordSubscription(ctx.aid, sub, "");
+    const pi = sub.latest_invoice && sub.latest_invoice.payment_intent;
+    const secret = pi && pi.client_secret;
+    if (typeof secret !== "string" || !secret) { response.status = 502; return { error: "no payment intent" }; }
+    // The client_secret transits this recorded response — accepted, rove#307.
+    return { subscription: sub.id || null, status: sub.status || "incomplete", client_secret: secret };
+}
+
+function changeBilling(aid, tier) {
+    if (typeof tier !== "string" || !SELLABLE_TIERS[tier])
+        return jsonError(400, "unknown tier");
+    const price = kv.get("stripe_price/" + tier);
+    const apiKey = kv.get("stripe_key");
+    if (!price || !apiKey) return jsonError(503, "billing not configured");
+    const b = billingFor(aid);
+    if (b.subscription === null) return jsonError(409, "no subscription");
+    const item = kv.get("account/" + aid + "/billing/item");
+    if (item === null) return jsonError(409, "no subscription item on file");
+    // Durable: the plan row moves when the webhook lands (#311); metadata.tier
+    // must move WITH the price or the webhook would re-apply the old tier.
+    stripe.client({ apiKey: apiKey }).subscriptions.update(b.subscription, {
+        items: [{ id: item, price: price }],
+        metadata: { tier: tier, aid: aid },
+        proration_behavior: "create_prorations",
+    }, { idempotencyKey: "subchg-" + aid + "-" + tier });
+    return { ok: true, pending: tier };
+}
+
+function cancelBilling(aid) {
+    const apiKey = kv.get("stripe_key");
+    if (!apiKey) return jsonError(503, "billing not configured");
+    const b = billingFor(aid);
+    if (b.subscription === null) return jsonError(409, "no subscription");
+    // Immediate cancel; period-end cancellation is rove#313's policy call.
+    stripe.client({ apiKey: apiKey }).subscriptions.cancel(b.subscription,
+        { idempotencyKey: "subcxl-" + aid + "-" + b.subscription });
+    return { ok: true };
+}
+
 // ── Stripe webhook (rove#309) ───────────────────────────────────────
 // The ONLY unauthenticated write surface on the dashboard. Stripe posts
 // with no session, so the route is on the middleware's PRE_AUTH list and
@@ -581,6 +718,10 @@ function recordSubscription(aid, sub, type) {
     if (status !== null) kv.set(p + "status", status);
     if (typeof sub.current_period_end === "number")
         kv.set(p + "period_end", String(sub.current_period_end * 1000));
+    // The subscription ITEM id (si_…): a plan change updates the item, not the
+    // subscription, so without this row `change` has nothing to address.
+    const item = sub.items && sub.items.data && sub.items.data[0];
+    if (item && typeof item.id === "string" && item.id) kv.set(p + "item", item.id);
 }
 
 // ── Team account endpoints ──────────────────────────────────────────
@@ -1688,6 +1829,10 @@ const ROUTES = [
     ["DELETE", "/v1/accounts/:aid/members/:h",  "accountOwner",  (c) => removeMember(c.params.aid, c.params.h)],
     ["POST",   "/v1/accounts/:aid/leave",       "authed",        (c) => leaveAccount(c.params.aid)],
     ["GET",    "/v1/accounts/:aid/billing",     "accountMember", (c) => getBilling(c.params.aid)],
+    ["GET",    "/v1/billing/config",            "authed",        (c) => billingConfigPk()],
+    ["POST",   "/v1/accounts/:aid/billing/subscribe", "accountOwner", (c) => subscribeBilling(c.params.aid, c.body.tier)],
+    ["POST",   "/v1/accounts/:aid/billing/change",    "accountOwner", (c) => changeBilling(c.params.aid, c.body.tier)],
+    ["POST",   "/v1/accounts/:aid/billing/cancel",    "accountOwner", (c) => cancelBilling(c.params.aid)],
     // Stripe webhook — pre-auth in _middlewares; the signature is the auth.
     ["POST",   "/v1/billing/webhook",           "open",          (c) => handleStripeWebhook(c.rawBody || "")],
     ["POST",   "/v1/invites/accept",            "authed",        (c) => acceptInvite(c.body.token)],
