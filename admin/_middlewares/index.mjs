@@ -34,6 +34,11 @@ const PRE_AUTH_PATHS = [
     // HTTP-routable (only invokable as {on} callback modules); the real
     // gate is the cryptographic jwt.verify inside oidc.rp._finish.
     "/_rp/complete", "/_rp/jwks",
+    // Stripe posts webhooks with no session; the route authenticates by
+    // signature (stripe.verifyWebhook — double-HMAC compare + timestamp
+    // tolerance) BEFORE any work. The only unauthenticated write surface
+    // on the dashboard, and deliberately so (rove#309).
+    "/v1/billing/webhook",
 ];
 
 // Machine-to-machine routes that accept a platform root-token bearer in

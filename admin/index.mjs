@@ -1,6 +1,7 @@
 // oidc/email are first-party @rewind packages (declared in manifest.json).
 import oidc from "@rewind/oidc";
 import email from "@rewind/email";
+import stripe from "@rewind/stripe";
 
 function validId(id) {
     return typeof id === "string" && /^[A-Za-z0-9_-]{1,64}$/.test(id);
@@ -437,6 +438,86 @@ function billingFor(aid) {
 // flow). No Stripe call: this is a pure read of our own rows.
 function getBilling(aid) {
     return billingFor(aid);
+}
+
+// ── Stripe webhook (rove#309) ───────────────────────────────────────
+// The ONLY unauthenticated write surface on the dashboard. Stripe posts
+// with no session, so the route is on the middleware's PRE_AUTH list and
+// the signature IS the authentication: stripe.verifyWebhook (double-HMAC
+// compare + timestamp tolerance) runs before any other work, over the
+// RAW body — never a reparsed one.
+//
+// Idempotency and ordering, both required because Stripe retries and
+// delivery order is not causal order:
+//   - billing/event/{evt_id} dedupes exact redelivery. The marker and
+//     every other write here commit atomically WITH the response, so a
+//     crash mid-handler loses the marker too and the retry reprocesses
+//     from scratch — dedupe-then-process ordering cannot go wrong.
+//   - account/{aid}/billing/last_event_ts refuses events OLDER than the
+//     last applied one, reconciling from the event's own `created` +
+//     object state rather than assuming arrival order.
+//
+// This handler issues NO outbound call and returns terminally, so the
+// continuation-skips-middleware seam (Activation.isContinuation) has no
+// resume path to re-enter the bypass. The plan push (rove#311) rides the
+// same atomic commit as these rows — never a held upstream call.
+
+function handleStripeWebhook(rawBody) {
+    const secret = kv.get("stripe_whsec");
+    if (!secret) return jsonError(503, "billing not configured");
+    let event;
+    try {
+        event = stripe.verifyWebhook({
+            secret: secret,
+            header: request.headers["stripe-signature"] || "",
+            body: rawBody,
+        });
+    } catch (_) {
+        return jsonError(400, "bad signature");
+    }
+
+    // Dedupe on the event id — Stripe retries until it sees a 2xx.
+    if (typeof event.id !== "string" || event.id.length === 0)
+        return jsonError(400, "event has no id");
+    if (kv.get("billing/event/" + event.id) !== null)
+        return { received: true, duplicate: true };
+    kv.set("billing/event/" + event.id, String(event.created || 0));
+
+    // Everything that is not a subscription lifecycle event is acknowledged
+    // and ignored — a 4xx would make Stripe retry events we never consume.
+    const type = String(event.type || "");
+    if (type.indexOf("customer.subscription.") !== 0) return { received: true };
+
+    const sub = (event.data && event.data.object) || {};
+    const cus = typeof sub.customer === "string" ? sub.customer : null;
+    const aid = cus === null ? null : kv.get("billing/customer/" + cus);
+    // A customer we never linked (test events, deleted accounts): ack, don't
+    // error — otherwise Stripe retries forever on principle.
+    if (!aid) return { received: true, ignored: "unknown customer" };
+
+    // Out-of-order: an event older than the last applied one must not win.
+    const tsKey = "account/" + aid + "/billing/last_event_ts";
+    const created = Number(event.created || 0);
+    if (created < Number(kv.get(tsKey) || 0)) return { received: true, stale: true };
+    kv.set(tsKey, String(created));
+
+    recordSubscription(aid, sub, type);
+    return { received: true };
+}
+
+// The rove#308 subscription writer — state comes from the event's OBJECT,
+// verbatim. `customer.subscription.deleted` carries status "canceled" on the
+// object; the fallback covers a malformed one so the row never goes empty on
+// a deletion we did accept.
+function recordSubscription(aid, sub, type) {
+    const p = "account/" + aid + "/billing/";
+    if (typeof sub.id === "string" && sub.id) kv.set(p + "subscription", sub.id);
+    const status = (typeof sub.status === "string" && sub.status)
+        ? sub.status
+        : (type === "customer.subscription.deleted" ? "canceled" : null);
+    if (status !== null) kv.set(p + "status", status);
+    if (typeof sub.current_period_end === "number")
+        kv.set(p + "period_end", String(sub.current_period_end * 1000));
 }
 
 // ── Team account endpoints ──────────────────────────────────────────
@@ -1541,6 +1622,8 @@ const ROUTES = [
     ["DELETE", "/v1/accounts/:aid/members/:h",  "accountOwner",  (c) => removeMember(c.params.aid, c.params.h)],
     ["POST",   "/v1/accounts/:aid/leave",       "authed",        (c) => leaveAccount(c.params.aid)],
     ["GET",    "/v1/accounts/:aid/billing",     "accountMember", (c) => getBilling(c.params.aid)],
+    // Stripe webhook — pre-auth in _middlewares; the signature is the auth.
+    ["POST",   "/v1/billing/webhook",           "open",          (c) => handleStripeWebhook(c.rawBody || "")],
     ["POST",   "/v1/invites/accept",            "authed",        (c) => acceptInvite(c.body.token)],
     // deploy chokepoint (root-token M2M or session-ownership; deployGate self-gates)
     ["POST",   "/v1/deploy/reset",              "open",          (c) => handleWsReset(c.rawBody || "{}")],
