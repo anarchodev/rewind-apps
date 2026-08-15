@@ -1208,14 +1208,23 @@ function buildResolution(sk, b, done) {
     const pkgs = b.resolution.packages || [];
     for (let i = 0; i < pkgs.length; i++) {
         const p = pkgs[i];
-        const staged = sk.prefix(WSPKG + p.pkg_hash + "/", "", 1000);
-        if (staged.length === 0)
-            return { error: "package " + p.spec + "@" + p.version + " has no staged files" };
-        const files = staged.map(function (row) {
-            const f = JSON.parse(row.value);
-            return { path: row.key.slice((WSPKG + p.pkg_hash + "/").length),
-                     source_hash: f.source_hex, bytecode_hash: f.bytecode_hex };
-        });
+        // A package compiled during THIS cut has its bytecode only in `done` —
+        // the compile chain accumulates there because a kv write in a resume
+        // hop would drop the next platform call (rove#344). The staged rows
+        // still carry `bytecode_hex: undefined` for it, and the manifest
+        // stamper requires a 64-hex `bytecode_hash` on every package file, so
+        // reading kv alone refuses the deploy with "invalid resolution".
+        let files = done[p.pkg_hash] || null;
+        if (!files) {
+            const staged = sk.prefix(WSPKG + p.pkg_hash + "/", "", 1000);
+            if (staged.length === 0)
+                return { error: "package " + p.spec + "@" + p.version + " has no staged files" };
+            files = staged.map(function (row) {
+                const f = JSON.parse(row.value);
+                return { path: row.key.slice((WSPKG + p.pkg_hash + "/").length),
+                         source_hash: f.source_hex, bytecode_hash: f.bytecode_hex };
+            });
+        }
         res.packages.push({
             spec: p.spec, version: p.version, pkg_hash: p.pkg_hash,
             files: files, imports: p.imports || {},
