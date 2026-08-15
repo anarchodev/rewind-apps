@@ -710,16 +710,21 @@ function handleSession() {
 // the log-server verifies cap+tenant (`standalone.zig`, A4). So the token
 // never enters JS/the browser, and the read is confined to one tenant.
 //
-// Cross-tenant read is operator-only for now (is_root); per-owner scoping
-// (a customer reading their own instance's logs) is a follow-up that reuses
-// `ownedInstances`. The result comes back in `onFetchResult` (the buffered
-// on.fetch convention) and is relayed verbatim.
+// Reach over a tenant's logs is exactly reach over the tenant: `canAccess` —
+// the same primitive the `tenant` route class uses — so an active member of the
+// owning account reads them and a pending invitee does not. An operator reads
+// any tenant, which is the only cross-tenant read there is. The route is
+// wildcard (`/v1/logs/*`), so it carries no `:id` for `routeAuthz` to gate on
+// and the check lives here, after the tenant is parsed out of the path. The
+// result comes back in `onFetchResult` (the buffered on.fetch convention) and
+// is relayed verbatim.
 const LOG_DOOR = "http://rewind-logs.internal/v1/";
 
 function handleLogQuery(path, qs) {
     const auth = request.auth || {};
-    if (!auth.sub) return jsonError(401, "unauthenticated");
-    if (!auth.is_root) return jsonError(403, "operator only");
+    // The M2M root grant is `{sub: null, is_root: true}`, so authority — not a
+    // session — is what 401 turns on (rove#414).
+    if (!auth.sub && !auth.is_root) return jsonError(401, "unauthenticated");
     // path = /v1/logs/{tenant}/{list|count|show/{id}}
     const rest = path.slice("/v1/logs/".length);
     const slash = rest.indexOf("/");
@@ -729,6 +734,14 @@ function handleLogQuery(path, qs) {
     if (!validId(tenant)) return jsonError(400, "invalid tenant");
     if (sub !== "list" && sub !== "count" && !sub.startsWith("show/")) {
         return jsonError(404, "no such log route");
+    }
+    // Membership is derived from the SESSION, never from the path: the tenant
+    // in the URL is the thing being authorized, not evidence of anything. A
+    // tenant the caller cannot reach is refused identically whether or not it
+    // exists, so the door is not a tenant-existence oracle. `show/{id}` returns
+    // full request and response bodies, so it is gated the same as `list`.
+    if (!auth.is_root && !canAccess(accountHashFor(auth.sub), tenant)) {
+        return jsonError(403, "not your instance");
     }
     after.fetch(LOG_DOOR + tenant + "/" + sub + (qs ? "?" + qs : ""));
     return next();

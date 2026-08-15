@@ -187,3 +187,43 @@ const limit = capped.inbound({ method: "POST", path: "/v1/instances", host: "app
   body: { name: "another", account: TEAM }, session: { id: "al" } });
 expect(limit.status).toBe(403);
 expect(limit.body.error).toBe("account_limit_reached");
+
+// ── log door: reach over logs IS reach over the tenant (rove#546) ──────────
+// `/v1/logs/*` is a wildcard route, so `routeAuthz` has no `:id` to gate on and
+// the handler owns the check — which is how it stayed operator-only while a
+// customer's own instance page 403'd on its default tab. Every case below is
+// driven as a NON-operator: an operator session passes every gate in this file
+// and would have proven nothing.
+const logs = scenario({
+  admin: true, now: "2026-07-01T00:00:00Z", seed: 7,
+  kv: Object.assign({}, BASE, {
+    ["instance/logapp/owner"]: TEAM,
+    ["account/" + TEAM + "/instances/logapp"]: "",
+  }),
+});
+const logCall = (path, sid) => logs.inbound({ method: "GET", path, host: "app.rewindjs.com",
+  session: sid ? { id: sid } : undefined });
+
+expect(logCall("/v1/logs/logapp/list", null).status).toBe(401);   // no session
+const ownerRead = logCall("/v1/logs/logapp/list", "al");          // owner of the owning account
+expect(ownerRead.disposition).toBe("held");
+expect(ownerRead).toHaveFetched(/rewind-logs\.internal\/v1\/logapp\/list/);
+expect(logCall("/v1/logs/logapp/count", "bo").disposition).toBe("held"); // a MEMBER reads too
+
+// Carol holds a pending invite to team1 — "invited:*" is not membership, so the
+// door stays shut until she accepts.
+const pending = logCall("/v1/logs/logapp/list", "ca");
+expect(pending.status).toBe(403);
+expect(pending.effects.some((e) => e.kind === "fetch")).toBe(false); // refused BEFORE the door
+
+// `show/{id}` returns full request and response bodies — same gate as `list`.
+expect(logCall("/v1/logs/logapp/show/r1", "ca").status).toBe(403);
+expect(logCall("/v1/logs/logapp/show/r1", "al").disposition).toBe("held");
+
+// A tenant no one in this fixture owns: the operator still reads across
+// tenants, and the customer's refusal is identical to the one above — so the
+// door never answers "does this tenant exist?".
+expect(logCall("/v1/logs/acme/list", "op").disposition).toBe("held");
+const foreign = logCall("/v1/logs/acme/list", "al");
+expect(foreign.status).toBe(403);
+expect(foreign.body.error).toBe(pending.body.error);
