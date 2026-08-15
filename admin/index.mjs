@@ -400,6 +400,45 @@ function accountName(aid) {
     return null;
 }
 
+// ── Billing state (rove#308) ────────────────────────────────────────
+// The subscription graph lives HERE, in the dashboard tenant's own kv,
+// hanging off the account rows — not in Stripe. Stripe is the payment
+// rail; the account graph is ours, which is what kills webhook-sync
+// drift (docs/strategy/platform-accounts-model.md; src/plan/root.zig:
+// "rove only ENFORCES tiers — setting one is the product layer's job").
+//
+// Rows (all __admin__-home kv):
+//   account/{aid}/billing/customer      Stripe customer id (cus_…)
+//   account/{aid}/billing/subscription  subscription id (sub_…)
+//   account/{aid}/billing/status        Stripe subscription status VERBATIM
+//                                       (active/past_due/canceled/…) — no
+//                                       local vocabulary to drift from theirs
+//   account/{aid}/billing/period_end    current_period_end, ms epoch
+//   billing/customer/{cus_id} → aid     reverse index, so a webhook resolves
+//                                       the account in O(1), never by scan
+//
+// The org/billing-account fork is already decided: one Account entity is
+// both (splittable later). Nothing here introduces a second entity.
+
+function billingFor(aid) {
+    const g = (k) => kv.get("account/" + aid + "/billing/" + k);
+    const pe = g("period_end");
+    return {
+        customer: g("customer"),
+        subscription: g("subscription"),
+        status: g("status"),
+        period_end: pe === null ? null : Number(pe),
+        plan: kv.get("account/" + aid + "/plan") || "free",
+    };
+}
+
+// GET /v1/accounts/:aid/billing — accountMember (any active member may SEE
+// billing state; mutating it is owner-only and arrives with the checkout
+// flow). No Stripe call: this is a pure read of our own rows.
+function getBilling(aid) {
+    return billingFor(aid);
+}
+
 // ── Team account endpoints ──────────────────────────────────────────
 // Routed by the ROUTES table (below) + gated by routeAuthz before invocation:
 // createAccount/acceptInvite/leaveAccount are "authed" (own checks inside);
@@ -1501,6 +1540,7 @@ const ROUTES = [
     ["PUT",    "/v1/accounts/:aid/members/:h",  "accountOwner",  (c) => setMemberRole(c.params.aid, c.params.h, c.body.role)],
     ["DELETE", "/v1/accounts/:aid/members/:h",  "accountOwner",  (c) => removeMember(c.params.aid, c.params.h)],
     ["POST",   "/v1/accounts/:aid/leave",       "authed",        (c) => leaveAccount(c.params.aid)],
+    ["GET",    "/v1/accounts/:aid/billing",     "accountMember", (c) => getBilling(c.params.aid)],
     ["POST",   "/v1/invites/accept",            "authed",        (c) => acceptInvite(c.body.token)],
     // deploy chokepoint (root-token M2M or session-ownership; deployGate self-gates)
     ["POST",   "/v1/deploy/reset",              "open",          (c) => handleWsReset(c.rawBody || "{}")],
