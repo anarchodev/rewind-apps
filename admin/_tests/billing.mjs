@@ -37,6 +37,9 @@ const BASE = {
   ["account/" + TEAM + "/billing/status"]: "active",
   ["account/" + TEAM + "/billing/period_end"]: "1790000000000",
   ["billing/customer/cus_123"]: TEAM,
+  ["account/" + TEAM + "/billing/item"]: "si_9",
+  stripe_key: "sk_test_x", stripe_pk: "pk_test_x",
+  "stripe_price/pro": "price_pro", "stripe_price/enterprise": "price_ent",
   ["account/" + TEAM + "/instances/app1"]: "1",
   ["account/" + TEAM + "/instances/app2"]: "1",
   // alice's personal account — no billing rows at all
@@ -158,11 +161,13 @@ const planPushes = (r) => r.effects.filter((e) =>
 const activeEvt = (over) => subEvt(Object.assign({
   id: "evt_up",
   data: { object: { id: "sub_456", customer: "cus_123", status: "active",
-                    current_period_end: T + 86400, metadata: { tier: "enterprise" } } },
+                    current_period_end: T + 86400, metadata: { tier: "enterprise" },
+                    items: { data: [{ id: "si_evt" }] } } },
 }, over));
 const up = signedPost(w, activeEvt({}));
 expect(up.status).toBe(200);
 expect(up.kv("account/" + TEAM + "/plan")).toBe("enterprise");
+expect(up.kv("account/" + TEAM + "/billing/item")).toBe("si_evt");
 expect(up).toHaveSent("webhook", {
   url: "http://rewind-cp.internal/_control/plan",
   body: j({ tenant: "app1", plan: "enterprise" }),
@@ -240,3 +245,92 @@ const wTeamsPro = scenario({ admin: true, now: "2026-08-15T00:00:00Z", seed: 6,
 const teamOk = wTeamsPro.inbound({ method: "POST", path: "/v1/accounts", host: "app.rewindjs.com",
   body: j({ name: "Team Four" }), session: { id: "al" } });
 expect(teamOk.status).toBe(201);
+
+// ── Billing flow (rove#310) ────────────────────────────────────────────────
+// Publishable key is config, not baked; unseeded is a loud 503.
+expect(call("GET", "/v1/billing/config", "al").body).toEqual({ publishable_key: "pk_test_x" });
+expect(signedPost(bare, subEvt({ id: "evt_cfg" })).status).toBe(503); // bare also lacks whsec
+const noStripe = scenario({ admin: true, now: "2026-08-15T00:00:00Z", seed: 9, kv: {
+  "_config/oidc/rp/default": RP_CONFIG, "_rp/sess/al": sess(alice, false),
+} });
+const cfgBare = noStripe.inbound({ method: "GET", path: "/v1/billing/config", host: "app.rewindjs.com",
+  session: { id: "al" } });
+expect(cfgBare.status).toBe(503);
+
+// The full subscribe chain from an UNLINKED account (alice's personal): the
+// customer-create hop carries everything in ctx and writes NOTHING (a kv
+// write in a resume hop drops the platform call it issues — rove#344); the
+// terminal hop writes the link rows, the subscription rows, and relays the
+// payment intent secret.
+const sub1 = w.inbound({ method: "POST", path: "/v1/accounts/" + A + "/billing/subscribe",
+  host: "app.rewindjs.com", body: j({ tier: "pro" }), session: { id: "al" } });
+expect(sub1.disposition).toBe("held");
+expect(sub1).toHaveFetched(/api\.stripe\.com\/v1\/customers/);
+const hop2 = sub1.fetch(/v1\/customers/).resolve({ status: 200, done: true, body: j({ id: "cus_new" }) });
+expect(hop2.disposition).toBe("held");
+expect(hop2).toHaveFetched(/api\.stripe\.com\/v1\/subscriptions/);
+const fin = hop2.fetch(/v1\/subscriptions/).resolve({ status: 200, done: true, body: j({
+  id: "sub_new", status: "incomplete", customer: "cus_new",
+  items: { data: [{ id: "si_new" }] },
+  latest_invoice: { payment_intent: { client_secret: "pi_secret_x" } },
+}) });
+expect(fin.status).toBe(200);
+expect(fin.body).toEqual({ subscription: "sub_new", status: "incomplete", client_secret: "pi_secret_x" });
+expect(fin.kv("account/" + A + "/billing/customer")).toBe("cus_new");
+expect(fin.kv("billing/customer/cus_new")).toBe(A);
+expect(fin.kv("account/" + A + "/billing/subscription")).toBe("sub_new");
+expect(fin.kv("account/" + A + "/billing/status")).toBe("incomplete");
+expect(fin.kv("account/" + A + "/billing/item")).toBe("si_new");
+
+// A Stripe-side failure in the chain relays as 502 and writes nothing.
+const subFail = w.inbound({ method: "POST", path: "/v1/accounts/" + A + "/billing/subscribe",
+  host: "app.rewindjs.com", body: j({ tier: "pro" }), session: { id: "al" } });
+const failHop = subFail.fetch(/v1\/customers/).resolve({ status: 402, done: true,
+  body: j({ error: { message: "card declined" } }) });
+expect(failHop.status).toBe(502);
+expect(failHop.body).toEqual({ error: "card declined", upstream: 402 });
+expect(failHop.kv("account/" + A + "/billing/customer")).toBe(null);
+
+// An account already subscribed cannot subscribe again (TEAM is active).
+const dblSub = w.inbound({ method: "POST", path: "/v1/accounts/" + TEAM + "/billing/subscribe",
+  host: "app.rewindjs.com", body: j({ tier: "enterprise" }), session: { id: "al" } });
+expect(dblSub.status).toBe(409);
+
+// A LINKED but inactive account subscribes in one hop (no customer create).
+const wLapsed = scenario({ admin: true, now: "2026-08-15T00:00:00Z", seed: 8,
+  kv: Object.assign({}, BASE, { ["account/" + TEAM + "/billing/status"]: "canceled" }) });
+const reSub = wLapsed.inbound({ method: "POST", path: "/v1/accounts/" + TEAM + "/billing/subscribe",
+  host: "app.rewindjs.com", body: j({ tier: "pro" }), session: { id: "al" } });
+expect(reSub.disposition).toBe("held");
+expect(reSub).toHaveFetched(/api\.stripe\.com\/v1\/subscriptions/);
+
+// Owner-only + tier validation.
+expect(w.inbound({ method: "POST", path: "/v1/accounts/" + TEAM + "/billing/subscribe",
+  host: "app.rewindjs.com", body: j({ tier: "pro" }), session: { id: "bo" } }).status).toBe(403);
+expect(w.inbound({ method: "POST", path: "/v1/accounts/" + A + "/billing/subscribe",
+  host: "app.rewindjs.com", body: j({ tier: "platinum" }), session: { id: "al" } }).status).toBe(400);
+
+// Plan change is DURABLE: item-addressed, metadata.tier moves WITH the price
+// (or the webhook would re-apply the old tier), idempotency-keyed.
+const chg = w.inbound({ method: "POST", path: "/v1/accounts/" + TEAM + "/billing/change",
+  host: "app.rewindjs.com", body: j({ tier: "enterprise" }), session: { id: "al" } });
+expect(chg.status).toBe(200);
+expect(chg.body).toEqual({ ok: true, pending: "enterprise" });
+const chgMarker = chg.effects.filter((e) => e.kind === "write" && e.key.indexOf("_send/owed/") === 0)
+  .map((e) => JSON.parse(e.value))[0];
+expect(chgMarker.url).toBe("https://api.stripe.com/v1/subscriptions/sub_456");
+expect(chgMarker.body.indexOf("items%5B0%5D%5Bid%5D=si_9") >= 0).toBe(true);
+expect(chgMarker.body.indexOf("items%5B0%5D%5Bprice%5D=price_ent") >= 0).toBe(true);
+expect(chgMarker.body.indexOf("metadata%5Btier%5D=enterprise") >= 0).toBe(true);
+expect(chgMarker.headers["Idempotency-Key"]).toBe("subchg-" + TEAM + "-enterprise");
+
+// Cancel is durable too; without a subscription it is a 409, not a Stripe call.
+const cxl = w.inbound({ method: "POST", path: "/v1/accounts/" + TEAM + "/billing/cancel",
+  host: "app.rewindjs.com", body: "{}", session: { id: "al" } });
+expect(cxl.body).toEqual({ ok: true });
+const cxlMarker = cxl.effects.filter((e) => e.kind === "write" && e.key.indexOf("_send/owed/") === 0)
+  .map((e) => JSON.parse(e.value))[0];
+expect(cxlMarker.method).toBe("DELETE");
+expect(cxlMarker.url).toBe("https://api.stripe.com/v1/subscriptions/sub_456");
+expect(w.inbound({ method: "POST", path: "/v1/accounts/" + A + "/billing/cancel",
+  host: "app.rewindjs.com", body: "{}", session: { id: "al" } }).status).toBe(409);

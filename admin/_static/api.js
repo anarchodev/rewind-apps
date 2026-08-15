@@ -309,6 +309,19 @@ export const api = {
   // the `rewind-cp.internal` door fetch (the worker attaches the
   // move-secret) — no CP secret in the browser (step3-auth-plan.md B4).
   // All are operator-only; a non-operator session gets 403.
+  // ── Billing (rove#310) ─────────────────────────────────────────────
+  async billingConfig() { return rest("GET", "/v1/billing/config"); },
+  async getBilling(aid) { return rest("GET", "/v1/accounts/" + seg(aid) + "/billing"); },
+  async subscribeBilling(aid, tier) {
+    return rest("POST", "/v1/accounts/" + seg(aid) + "/billing/subscribe", { tier });
+  },
+  async changeBilling(aid, tier) {
+    return rest("POST", "/v1/accounts/" + seg(aid) + "/billing/change", { tier });
+  },
+  async cancelBilling(aid) {
+    return rest("POST", "/v1/accounts/" + seg(aid) + "/billing/cancel", {});
+  },
+
   async cpProvision(tenant, cluster, host) {
     return this._cpPost("provision", { tenant, cluster, host });
   },

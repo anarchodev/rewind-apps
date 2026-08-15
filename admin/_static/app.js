@@ -20,6 +20,7 @@ import * as instance from "./pages/instance.js";
 import * as cluster from "./pages/cluster.js";
 import * as team from "./pages/team.js";
 import * as invite from "./pages/invite.js";
+import * as billing from "./pages/billing.js";
 
 // Route resolver. Static routes map exactly; `#/instance/:id`,
 // `#/team/:aid`, and `#/invite/:token` are parameterized (prefix match).
@@ -29,6 +30,11 @@ function resolveRoute(hash) {
   if (hash === "#/instances") return { page: instances, params: {} };
   if (hash === "#/cluster") return { page: cluster, params: {} };
   if (hash === "#/team") return { page: team, params: {} };
+  if (hash === "#/billing") return { page: billing, params: {} };
+  if (hash.startsWith("#/billing/")) {
+    const aid = decodeURIComponent(hash.slice("#/billing/".length));
+    if (aid.length > 0) return { page: billing, params: { aid } };
+  }
   if (hash.startsWith("#/team/")) {
     const aid = decodeURIComponent(hash.slice("#/team/".length));
     if (aid.length > 0) return { page: team, params: { aid } };
