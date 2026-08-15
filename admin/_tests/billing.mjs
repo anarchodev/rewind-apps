@@ -37,6 +37,8 @@ const BASE = {
   ["account/" + TEAM + "/billing/status"]: "active",
   ["account/" + TEAM + "/billing/period_end"]: "1790000000000",
   ["billing/customer/cus_123"]: TEAM,
+  ["account/" + TEAM + "/instances/app1"]: "1",
+  ["account/" + TEAM + "/instances/app2"]: "1",
   // alice's personal account — no billing rows at all
   ["account/" + A + "/members/" + A]: "owner",
   ["user/" + A + "/accounts/" + A]: "owner",
@@ -142,3 +144,61 @@ expect(del.kv("account/" + TEAM + "/billing/status")).toBe("canceled");
 // Unconfigured secret → 503, fail loud (no silent fallback).
 const bare = scenario({ admin: true, now: "2026-08-15T00:00:00Z", seed: 4, kv: BASE });
 expect(signedPost(bare, subEvt({})).status).toBe(503);
+
+// ── Webhook → enforcement (rove#311) ───────────────────────────────────────
+// The tier rides the subscription's own metadata (stamped at checkout). An
+// `active` event sets the plan row and durably pushes plan/{tenant} to the CP
+// for EVERY owned instance — all inside the same atomic commit as the 200.
+// Count durable plan pushes on a result — the marker writes webhook.send
+// leaves under _send/owed/ whose url is the CP plan door. (`toHaveSent`
+// asserts presence; absence needs the effect view.)
+const planPushes = (r) => r.effects.filter((e) =>
+  e.kind === "write" && typeof e.key === "string" && e.key.indexOf("_send/owed/") === 0 &&
+  JSON.parse(e.value).url === "http://rewind-cp.internal/_control/plan").length;
+const activeEvt = (over) => subEvt(Object.assign({
+  id: "evt_up",
+  data: { object: { id: "sub_456", customer: "cus_123", status: "active",
+                    current_period_end: T + 86400, metadata: { tier: "enterprise" } } },
+}, over));
+const up = signedPost(w, activeEvt({}));
+expect(up.status).toBe(200);
+expect(up.kv("account/" + TEAM + "/plan")).toBe("enterprise");
+expect(up).toHaveSent("webhook", {
+  url: "http://rewind-cp.internal/_control/plan",
+  body: j({ tenant: "app1", plan: "enterprise" }),
+  maxAttempts: 8,
+});
+expect(up).toHaveSent("webhook", {
+  url: "http://rewind-cp.internal/_control/plan",
+  body: j({ tenant: "app2", plan: "enterprise" }),
+});
+
+// Convergent no-op: active at the tier the account already has → row + no push.
+// (BASE plan is "pro".)
+const same = signedPost(w, activeEvt({ id: "evt_same",
+  data: { object: { id: "sub_456", customer: "cus_123", status: "active",
+                    metadata: { tier: "pro" } } } }));
+expect(same.status).toBe(200);
+expect(planPushes(same)).toBe(0);
+
+// Cancellation walks the account back to free and pushes it to every tenant.
+const down = signedPost(w, activeEvt({ id: "evt_down",
+  data: { object: { id: "sub_456", customer: "cus_123", status: "canceled" } } }));
+expect(down.kv("account/" + TEAM + "/plan")).toBe("free");
+expect(down).toHaveSent("webhook", { body: j({ tenant: "app1", plan: "free" }) });
+expect(down).toHaveSent("webhook", { body: j({ tenant: "app2", plan: "free" }) });
+
+// past_due is the grace window: billing rows update, plan does NOT move and
+// nothing is pushed — the dunning policy is rove#313's, not this handler's.
+// (The evt_1 case above is exactly this: status past_due.)
+expect(ok.kv("account/" + TEAM + "/plan")).toBe("pro");
+expect(planPushes(ok)).toBe(0);
+
+// An active event with an unknown/missing tier changes nothing — the plan
+// cannot be guessed from a subscription we cannot map.
+const mystery = signedPost(w, activeEvt({ id: "evt_myst",
+  data: { object: { id: "sub_456", customer: "cus_123", status: "active",
+                    metadata: { tier: "platinum" } } } }));
+expect(mystery.status).toBe(200);
+expect(mystery.kv("account/" + TEAM + "/plan")).toBe("pro");
+expect(planPushes(mystery)).toBe(0);
