@@ -178,16 +178,50 @@ function badgeKindFor(status) {
     return "badge--error";
 }
 
-// ── postMessage handshake ────────────────────────────────────────────
+// ── Bundle acquisition: opener handshake + reload cache ──────────────
+//
+// The dashboard opens this page with the record's identity in the URL
+// fragment (#/{instance}/{request_id}) and posts the composed bundle
+// via postMessage. The received bundle is cached in sessionStorage
+// under that fragment, so a browser refresh — or a duplicated tab,
+// which copies sessionStorage — boots the same record with no opener.
+// A tab with neither opener nor cache cannot compose the bundle itself
+// (record access is the dashboard's session, not this origin's), so it
+// gets pointed back at the dashboard's page for this record.
 
 function expectedDashboardOrigin() {
     return window.location.origin.replace("://replay.", "://app.");
 }
 
+function bundleCacheKey() {
+    return "replay:bundle:" + (window.location.hash || "#");
+}
+
+function cachedBundle() {
+    try {
+        const raw = sessionStorage.getItem(bundleCacheKey());
+        return raw ? JSON.parse(raw) : null;
+    } catch { return null; }
+}
+
+function cacheBundle(bundle) {
+    // Best-effort: a bundle past the sessionStorage quota simply isn't
+    // cached — the tab still works, only its refresh loses state and
+    // shows the reopen guidance.
+    try { sessionStorage.setItem(bundleCacheKey(), JSON.stringify(bundle)); }
+    catch { /* quota exceeded */ }
+}
+
 function awaitBundle() {
+    const cached = cachedBundle();
+    if (cached) return Promise.resolve(cached);
     if (!window.opener) {
+        const m = window.location.hash.match(/^#\/([^/]+)\/./);
+        const back = m
+            ? `${expectedDashboardOrigin()}/#/instance/${m[1]}`
+            : expectedDashboardOrigin() + "/";
         return Promise.reject(new Error(
-            "open this page from the dashboard's Replay button"));
+            "no replay state in this tab — reopen this record from the dashboard: " + back));
     }
     const expectedOrigin = expectedDashboardOrigin();
     window.opener.postMessage({ kind: "replay:ready" }, expectedOrigin);
@@ -202,6 +236,7 @@ function awaitBundle() {
             if (e.data?.kind !== "replay:bundle") return;
             clearTimeout(timer);
             window.removeEventListener("message", onMsg);
+            cacheBundle(e.data.bundle);
             resolve(e.data.bundle);
         }
         window.addEventListener("message", onMsg);

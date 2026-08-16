@@ -331,7 +331,7 @@ function renderLogs(root, { instanceId, api, showError, clearError }) {
     clearError();
     try {
       const bundle = await api.composeReplayBundle(instanceId, requestId);
-      api.replayOpen(bundle);
+      api.replayOpen(bundle, instanceId, requestId);
     } catch (err) {
       showError(`Replay failed: ${err.message}`);
     } finally {
