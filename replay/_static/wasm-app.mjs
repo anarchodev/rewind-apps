@@ -283,6 +283,101 @@ function rewriteImportSpecifiers(moduleSources, bundle) {
 // LINE / THROW). Most rendering is parameterised on a `playhead`
 // index into this array.
 
+// ── Frame provenance ─────────────────────────────────────────────────
+//
+// The trace stream records every JS frame the engine executed — which
+// includes the replay shell's own machinery: the generated
+// arena-prelude shims and the interaction-digest mirror run as
+// base-arena code whose file the engine reports as "<arena-base>", and
+// a kv-heavy handler sprays dozens of those frames per request. They
+// are the engine's frames, not the customer's: the timeline, the
+// scrubber ticks, and the source highlight speak customer code only.
+// The full stream stays intact in mat.events (step-parity, the digest,
+// and the vars passes all index into it); provenance is a presentation
+// index over it, not a filter of it.
+//
+// "Customer" = the file is a module shipped in the bundle. Anything
+// else — the base arena, a synthetic eval name, a module the capture
+// did not ship — is an engine frame.
+function isCustomerFile(file) {
+    return !!file && state.modulePaths != null && state.modulePaths.has(file);
+}
+
+// The epilogue is APPENDED to the entry module's source before the run
+// (request-replay.mjs), so its frames wear the customer's filename —
+// with line numbers past the end of the file the bundle actually
+// shipped. Provenance is therefore a (file, line) question: customer
+// code is a bundle file at a line the bundle's source contains. Line
+// 0 / missing line info counts as in-file (exits carry no line).
+function isCustomerLoc(file, line) {
+    if (!isCustomerFile(file)) return false;
+    if (!line) return true;
+    const count = state.moduleLineCounts?.get(file);
+    return count == null || line <= count;
+}
+
+// A frame whose bytecode carries no name (arrow functions, function
+// expressions the compiler didn't name) reaches the host as atom 0 and
+// renders as "<atom:0>" — noise dressed as data. Show "(anonymous)";
+// the file:line beside it is the identity that matters.
+function displayName(name) {
+    return /^<atom:\d+>$/.test(name ?? "") ? "(anonymous)" : name;
+}
+
+// Per-event provenance, one O(events) walk, cached on the materialised:
+//   prov[i].own           — the event itself executes customer code
+//   prov[i].customerFrame — innermost stack frame in bundle code at
+//                           this moment ({file, line}), or null
+// mat._provHasCustomer records whether ANY event is customer-owned; a
+// record with none (sources missing from the bundle) degrades to the
+// unfiltered behaviour rather than an unwalkable timeline.
+function provenanceIndex(mat) {
+    if (mat._prov) return mat._prov;
+    const prov = new Array(mat.events.length);
+    const stack = [];
+    let hasCustomer = false;
+    for (let i = 0; i < mat.events.length; i++) {
+        const e = mat.events[i];
+        if (e.kind === "FUNC_ENTER") {
+            const customer = isCustomerLoc(e.file, e.line);
+            stack.push({
+                file: e.file, line: e.line, customer,
+                // Last line of THIS frame that sits inside the bundle's
+                // source — the entry <eval> frame spans both the
+                // customer's module body and the appended epilogue, and
+                // the highlight must not chase it past the file's end.
+                custLine: customer ? e.line : null,
+            });
+        } else if (e.kind === "FUNC_EXIT") {
+            stack.pop();
+        } else if (e.kind === "LINE" && stack.length > 0) {
+            const top = stack[stack.length - 1];
+            top.line = e.line;
+            if (top.customer && isCustomerLoc(top.file, e.line)) top.custLine = e.line;
+        }
+        // FUNC_EXIT "executes" in the frame it returns into.
+        const own = e.kind === "FUNC_EXIT"
+            ? (stack.length > 0 && stack[stack.length - 1].customer
+               && isCustomerLoc(stack[stack.length - 1].file, stack[stack.length - 1].line))
+            : isCustomerLoc(e.file, e.line);
+        let customerFrame = null;
+        for (let s = stack.length - 1; s >= 0; s--) {
+            if (stack[s].customer) {
+                customerFrame = {
+                    file: stack[s].file,
+                    line: stack[s].custLine ?? stack[s].line,
+                };
+                break;
+            }
+        }
+        if (own) hasCustomer = true;
+        prov[i] = { own, customerFrame };
+    }
+    mat._prov = prov;
+    mat._provHasCustomer = hasCustomer;
+    return prov;
+}
+
 // Stack snapshot at the moment the playhead event fired. Cheap to
 // recompute (one O(events) walk) — and once we have mat.stackSnapshots
 // from materialise() this becomes O(stackSnapshotStep). For now we
@@ -307,19 +402,38 @@ function stackAtPlayhead(mat, playhead) {
 }
 
 // (file, line) for the source viewport based on the current playhead.
+// The viewport shows CUSTOMER code: while the playhead traverses an
+// engine frame (a shim or digest helper the handler's kv call entered),
+// the highlight stays on the innermost bundle frame that got us there —
+// the line the customer can actually read — instead of going blank on a
+// file the bundle doesn't carry.
 function currentSourceForPlayhead(mat, playhead) {
     const { stack, throwInfo } = stackAtPlayhead(mat, playhead);
-    if (throwInfo && playhead === mat.events.length - 1) {
+    if (throwInfo && playhead === mat.events.length - 1
+        && isCustomerLoc(throwInfo.file, throwInfo.line)) {
         return { file: throwInfo.file, line: throwInfo.line };
     }
-    if (stack.length > 0) {
+    const prov = provenanceIndex(mat);
+    const p = prov[Math.min(playhead, prov.length - 1)];
+    if (p) {
+        const e = mat.events[Math.min(playhead, mat.events.length - 1)];
+        if (p.own && e.kind !== "FUNC_EXIT" && e.file) {
+            return { file: e.file, line: e.line };
+        }
+        if (p.customerFrame) return { ...p.customerFrame };
+    }
+    if (stack.length > 0 && !mat._provHasCustomer) {
+        // No bundle-owned frames anywhere (sources missing from the
+        // capture): degrade to the raw top-of-stack rather than blank.
         const top = stack[stack.length - 1];
         return { file: top.file, line: top.line };
     }
-    // Outside any frame: fall back to the last seen event's file/line.
+    // Outside any frame: fall back to the last customer event seen.
     for (let i = Math.min(playhead, mat.events.length - 1); i >= 0; i--) {
         const e = mat.events[i];
-        if (e.file) return { file: e.file, line: e.line };
+        if (e.file && (isCustomerLoc(e.file, e.line) || !mat._provHasCustomer)) {
+            return { file: e.file, line: e.line };
+        }
     }
     return { file: null, line: null };
 }
@@ -338,12 +452,19 @@ function currentSourceForPlayhead(mat, playhead) {
 //   current  = index in items of the most recent visible event at or
 //              before `playhead` (-1 if playhead is before any
 //              visible event)
+// Engine frames (see provenance above) don't earn cards or ticks
+// either: a digest-fold helper entering is not an event the customer
+// did. THROW stays visible regardless of where it fired — a throw is
+// an outcome, and hiding it because the frame was foreign would hide
+// the run's ending.
 function visibleScans(mat, playhead) {
+    const prov = provenanceIndex(mat);
     const items = [];
     let current = -1;
     for (let i = 0; i < mat.events.length; i++) {
         const e = mat.events[i];
         if (e.kind !== "FUNC_ENTER" && e.kind !== "THROW") continue;
+        if (e.kind === "FUNC_ENTER" && mat._provHasCustomer && !prov[i].own) continue;
         if (i <= playhead) current = items.length;
         items.push({ event: e, eventIdx: i });
     }
@@ -503,7 +624,7 @@ function renderEventStream(mat, playhead) {
         if (e.kind === "FUNC_ENTER") {
             body.appendChild(el("div", {
                 className: "t-mono-sm t-dim",
-                text: e.name,
+                text: displayName(e.name),
             }));
             body.appendChild(el("div", {
                 className: "ev__detail t-mono-sm t-dimmer",
@@ -552,7 +673,7 @@ function renderScrubber(mat, playhead) {
                 left: pct.toFixed(3) + "%",
                 background: e.kind === "THROW" ? "var(--c-error)" : "var(--c-info)",
             },
-            title: `${i + 1} · ${e.kind === "THROW" ? "throw" : "fn enter " + (e.name ?? "")}`,
+            title: `${i + 1} · ${e.kind === "THROW" ? "throw" : "fn enter " + (displayName(e.name) ?? "")}`,
         });
         $.scrubberTicks.appendChild(tick);
     });
@@ -598,15 +719,44 @@ function renderStackBreadcrumb(mat, playhead) {
         return;
     }
 
-    for (let i = 0; i < stack.length; i++) {
-        const frame = stack[i];
-        const isLast = i === stack.length - 1;
+    // Collapse runs of engine frames (shims, digest helpers — code the
+    // bundle doesn't carry) into one dimmed chip; the walkable crumbs
+    // are the customer's frames. Mid-epilogue the whole stack can be
+    // engine frames — still collapse (one honest chip beats a raw
+    // ":157" into code the reader can't see). Only a record with no
+    // customer frames ANYWHERE keeps its raw stack — a fully-dimmed
+    // breadcrumb explains nothing there.
+    provenanceIndex(mat);
+    const collapse = mat._provHasCustomer;
+    const shown = [];
+    for (const frame of stack) {
+        if (!collapse || isCustomerLoc(frame.file, frame.line)) {
+            shown.push({ frame, engineCount: 0 });
+        } else {
+            const last = shown[shown.length - 1];
+            if (last && last.engineCount > 0) last.engineCount++;
+            else shown.push({ frame: null, engineCount: 1 });
+        }
+    }
+
+    for (let i = 0; i < shown.length; i++) {
+        const { frame, engineCount } = shown[i];
+        const isLast = i === shown.length - 1;
         if (i > 0) {
             $.stack.appendChild(el("span", {
                 className: "stack__chev",
                 text: "›",
                 attrs: { "aria-hidden": "true" },
             }));
+        }
+        if (engineCount > 0) {
+            $.stack.appendChild(el("span", {
+                className: "stack__frame stack__frame--engine t-dimmer",
+                text: `engine ×${engineCount}`,
+                title: `${engineCount} replay-engine frame(s) — shim/`
+                    + "digest machinery, not part of the deployed bundle",
+            }));
+            continue;
         }
         const btn = el("button", {
             className: "stack__frame" + (isLast ? " is-current" : ""),
@@ -617,10 +767,11 @@ function renderStackBreadcrumb(mat, playhead) {
         }));
         btn.appendChild(el("span", {
             className: "stack__frame-fn t-mono",
-            text: frame.name,
+            text: displayName(frame.name),
         }));
         if (isLast) {
-            const errOnTop = throwInfo && mat.events[playhead]?.kind === "THROW";
+            const errOnTop = throwInfo && mat.events[playhead]?.kind === "THROW"
+                && isCustomerLoc(throwInfo.file, throwInfo.line);
             btn.appendChild(el("span", {
                 className: "stack__frame-line t-mono-sm" + (errOnTop ? " c-error" : ""),
                 text: ":" + (errOnTop ? throwInfo.line : frame.line),
@@ -673,8 +824,25 @@ function setPlayhead(idx) {
 
 function jumpStart() { setPlayhead(0); }
 function jumpEnd()   { if (state.mat) setPlayhead(state.mat.events.length - 1); }
-function stepLine()  { setPlayhead(state.playhead + 1); }
-function stepBack()  { setPlayhead(state.playhead - 1); }
+
+// Single-event steppers move in customer grain: an event inside an
+// engine frame is not a place the playhead rests (the source pane
+// would have nothing of the customer's to show for it). Falls back to
+// raw ±1 when the record has no customer-owned events at all.
+function stepToward(dir) {
+    if (!state.mat) return;
+    const prov = provenanceIndex(state.mat);
+    if (!state.mat._provHasCustomer) {
+        setPlayhead(state.playhead + dir);
+        return;
+    }
+    const n = state.mat.events.length;
+    for (let i = state.playhead + dir; i >= 0 && i < n; i += dir) {
+        if (prov[i].own) { setPlayhead(i); return; }
+    }
+}
+function stepLine()  { stepToward(+1); }
+function stepBack()  { stepToward(-1); }
 
 // step-over: advance to the next event in the playhead's OWN frame,
 // skipping over (descending into and emerging from) any nested
@@ -710,12 +878,17 @@ function stepOver() {
     setPlayhead(n - 1);
 }
 
-// step-in: jump to the next FUNC_ENTER after the playhead.
+// step-in: jump to the next customer FUNC_ENTER after the playhead —
+// stepping "into" a digest helper or shim is never what the verb meant.
 function stepIn() {
     if (!state.mat) return;
     const events = state.mat.events;
+    const prov = provenanceIndex(state.mat);
     for (let i = state.playhead + 1; i < events.length; i++) {
-        if (events[i].kind === "FUNC_ENTER") return setPlayhead(i);
+        if (events[i].kind === "FUNC_ENTER"
+            && (!state.mat._provHasCustomer || prov[i].own)) {
+            return setPlayhead(i);
+        }
     }
     setPlayhead(events.length - 1);
 }
@@ -1105,14 +1278,34 @@ function renderVariablesEmpty(msg) {
 // via top_frame() + prev_frame(). The deepest frame is the
 // "current" frame the user is inspecting.
 function renderVariablesFrames(frames) {
-    const top = frames[0];
+    // Engine frames (shims, the digest machinery) carry locals like
+    // __foldEffect / __effectLog — the shell's plumbing, not the
+    // handler's state. Show the innermost CUSTOMER frame; fall back to
+    // the raw top only when no frame is customer code at all.
+    let topIdx = frames.findIndex(f => isCustomerLoc(f.file, f.line));
+    if (topIdx < 0 && state.mat?._provHasCustomer) {
+        // Every live frame is the engine's (the epilogue wind-down at
+        // the run's tail). Plumbing locals would masquerade as handler
+        // state — say where we are instead.
+        renderVariablesEmpty("(engine wind-down — step back to reach handler frames)");
+        return;
+    }
+    const skipped = topIdx < 0 ? 0 : topIdx;
+    if (topIdx < 0) topIdx = 0;
+    const top = frames[topIdx];
     $varsBody.replaceChildren();
 
     const section = el("div", { className: "vars__section" });
     section.appendChild(el("span", {
         className: "t-eyebrow vars__section-title",
-        text: (top.func || "<frame>") + " · " + (top.file || "?") + ":" + (top.line || "?"),
+        text: (displayName(top.func) || "<frame>") + " · " + (top.file || "?") + ":" + (top.line || "?"),
     }));
+    if (skipped > 0) {
+        section.appendChild(el("span", {
+            className: "t-meta t-dimmer",
+            text: ` (inside ${skipped} engine frame${skipped === 1 ? "" : "s"})`,
+        }));
+    }
     const kv = el("div", { className: "kv" });
     const vars = top.vars || {};
     const names = Object.keys(vars);
@@ -1137,10 +1330,11 @@ function renderVariablesFrames(frames) {
     // If there are deeper frames, append a hint row pointing at the
     // stack breadcrumb. Switching which frame's vars are shown
     // (clicking a non-current breadcrumb frame) is a follow-up.
-    if (frames.length > 1) {
+    const ancestors = frames.length - topIdx - 1;
+    if (ancestors > 0) {
         $varsBody.appendChild(el("div", {
             className: "t-meta t-dim",
-            text: `(${frames.length - 1} ancestor frame${frames.length === 2 ? "" : "s"} above — click in the stack breadcrumb to inspect them, coming next)`,
+            text: `(${ancestors} ancestor frame${ancestors === 1 ? "" : "s"} above — click in the stack breadcrumb to inspect them, coming next)`,
             style: { marginTop: "var(--sp-4)" },
         }));
     }
@@ -1182,6 +1376,12 @@ const state = {
     engine: null,
     playhead: 0,
     currentModule: null,
+    // Provenance authority (see isCustomerLoc): a trace event is
+    // customer code iff its file is a bundle module AND its line is
+    // inside that module's shipped source — the appended epilogue runs
+    // under the entry module's filename at lines past its end.
+    modulePaths: null,
+    moduleLineCounts: null,
 };
 
 function renderAll() {
@@ -1310,6 +1510,9 @@ async function main() {
         return;
     }
     state.bundle = bundle;
+    state.modulePaths = new Set((bundle.modules || []).map(m => m.path));
+    state.moduleLineCounts = new Map((bundle.modules || []).map(
+        m => [m.path, (m.source || "").split("\n").length]));
 
     renderAppbar(bundle);
 
