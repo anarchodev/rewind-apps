@@ -542,9 +542,18 @@ export const api = {
   /// Open the replay shell in a new tab and send it the bundle via
   /// postMessage. The shell is at `replay.<suffix>` — derived from the
   /// dashboard's own origin by replacing the `app.` label.
-  replayOpen(bundle) {
+  ///
+  /// The URL fragment carries the record's identity
+  /// (#/{instance}/{request_id}): the shell caches the posted bundle in
+  /// sessionStorage under it, so a refresh of the popup reloads the
+  /// same record without this handshake, and a state-less tab can point
+  /// the user back at the right dashboard page.
+  replayOpen(bundle, instance_id, request_id) {
     const replayOrigin = window.location.origin.replace("://app.", "://replay.");
-    const popup = window.open(replayOrigin + "/", "_blank");
+    const frag = (instance_id && request_id)
+      ? `#/${encodeURIComponent(instance_id)}/${encodeURIComponent(request_id)}`
+      : "";
+    const popup = window.open(replayOrigin + "/" + frag, "_blank");
     if (!popup) {
       throw new Error("popup blocked — allow popups for the dashboard");
     }
