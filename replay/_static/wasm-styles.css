@@ -163,6 +163,15 @@
 }
 .stack__frame.is-current .stack__frame-fn { color: var(--c-brand); }
 
+/* Collapsed run of replay-engine frames (shims / digest machinery) —
+   informational, not walkable: no hover affordance, stays dim. */
+.stack__frame--engine {
+  font-family: var(--font-mono, monospace);
+  font-size: 11px;
+  cursor: default;
+}
+.stack__frame--engine:hover { background: transparent; color: inherit; }
+
 .stack__frame-file { /* the .mjs name */ }
 .stack__frame-fn   { font-weight: 500; }
 .stack__frame-line { color: var(--c-brand); }
