@@ -57,7 +57,7 @@ const asMember = call("GET", "/v1/accounts/" + TEAM + "/billing", "bo");
 expect(asMember.status).toBe(200);
 expect(asMember.body).toEqual({
   customer: "cus_123", subscription: "sub_456", status: "active",
-  period_end: 1790000000000, plan: "pro",
+  period_end: 1790000000000, cancel_at_period_end: false, plan: "pro",
 });
 
 // An account with no billing rows reads as the null shape on the free plan —
@@ -65,7 +65,8 @@ expect(asMember.body).toEqual({
 const empty = call("GET", "/v1/accounts/" + A + "/billing", "al");
 expect(empty.status).toBe(200);
 expect(empty.body).toEqual({
-  customer: null, subscription: null, status: null, period_end: null, plan: "free",
+  customer: null, subscription: null, status: null, period_end: null,
+  cancel_at_period_end: false, plan: "free",
 });
 
 // Authz is the accountMember matrix: a non-member is refused, no session 401s.
@@ -324,13 +325,27 @@ expect(chgMarker.body.indexOf("items%5B0%5D%5Bprice%5D=price_ent") >= 0).toBe(tr
 expect(chgMarker.body.indexOf("metadata%5Btier%5D=enterprise") >= 0).toBe(true);
 expect(chgMarker.headers["Idempotency-Key"]).toBe("subchg-" + TEAM + "-enterprise");
 
-// Cancel is durable too; without a subscription it is a 409, not a Stripe call.
+// Cancel is PERIOD-END (rove#313 decision 5): a durable update setting
+// cancel_at_period_end, never a DELETE — the customer paid through the
+// period, and the plan only walks to free when Stripe's deleted event lands
+// at the boundary. Without a subscription it is a 409, not a Stripe call.
 const cxl = w.inbound({ method: "POST", path: "/v1/accounts/" + TEAM + "/billing/cancel",
   host: "app.rewindjs.com", body: "{}", session: { id: "al" } });
-expect(cxl.body).toEqual({ ok: true });
+expect(cxl.body).toEqual({ ok: true, cancels_at: 1790000000000 });
 const cxlMarker = cxl.effects.filter((e) => e.kind === "write" && e.key.indexOf("_send/owed/") === 0)
   .map((e) => JSON.parse(e.value))[0];
-expect(cxlMarker.method).toBe("DELETE");
+expect(cxlMarker.method).toBe("POST");
 expect(cxlMarker.url).toBe("https://api.stripe.com/v1/subscriptions/sub_456");
+expect(cxlMarker.body).toBe("cancel_at_period_end=true");
+expect(cxl.kv("account/" + TEAM + "/plan")).toBe("pro"); // plan moves at the boundary, not now
+
+// The webhook's subscription.updated carries the flag → the row lands, the
+// plan stays (status is still active until the boundary).
+const flagEvt = signedPost(w, activeEvt({ id: "evt_flag",
+  data: { object: { id: "sub_456", customer: "cus_123", status: "active",
+                    cancel_at_period_end: true, current_period_end: T + 86400,
+                    metadata: { tier: "pro" } } } }));
+expect(flagEvt.kv("account/" + TEAM + "/billing/cancel_at_period_end")).toBe("1");
+expect(flagEvt.kv("account/" + TEAM + "/plan")).toBe("pro");
 expect(w.inbound({ method: "POST", path: "/v1/accounts/" + A + "/billing/cancel",
   host: "app.rewindjs.com", body: "{}", session: { id: "al" } }).status).toBe(409);

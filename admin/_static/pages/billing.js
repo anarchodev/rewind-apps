@@ -105,7 +105,8 @@ export function render(root, { goto, api, params, who }) {
     const renew = wrap.querySelector(".renewal-line");
     if (live && b.period_end) {
       renew.hidden = false;
-      renew.textContent = "Renews " + new Date(b.period_end).toLocaleDateString();
+      renew.textContent = (b.cancel_at_period_end ? "Cancels " : "Renews ")
+        + new Date(b.period_end).toLocaleDateString();
     } else renew.hidden = true;
 
     tiersEl.replaceChildren();
@@ -132,7 +133,7 @@ export function render(root, { goto, api, params, who }) {
       card.appendChild(btn);
       tiersEl.appendChild(card);
     }
-    if (live) {
+    if (live && !b.cancel_at_period_end) {
       const cxl = document.createElement("button");
       cxl.className = "cancel-sub";
       cxl.textContent = "Cancel subscription";
@@ -195,12 +196,14 @@ export function render(root, { goto, api, params, who }) {
   }
 
   async function doCancel(btn) {
-    if (!window.confirm("Cancel the subscription? The account returns to the free plan immediately.")) return;
+    if (!window.confirm("Cancel the subscription? Service continues until the end of the paid period, then the account returns to the free plan.")) return;
     errEl.hidden = true;
     btn.disabled = true;
     try {
       await api.cancelBilling(aid);
-      const ok = await pollUntil((b) => b.plan === "free");
+      // Period-end cancel (rove#313): the plan does not move now — the flag
+      // does, via the webhook's subscription.updated. Poll for that.
+      const ok = await pollUntil((b) => b.cancel_at_period_end === true);
       if (!ok) showError(new Error("cancellation is taking longer than expected — refresh shortly"));
       renderState();
     } catch (e) { showError(e); btn.disabled = false; }
