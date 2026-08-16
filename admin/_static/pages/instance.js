@@ -179,6 +179,40 @@ function renderLogs(root, { instanceId, api, showError, clearError }) {
   el.innerHTML = `
     <div class="toolbar">
       <button type="button" class="refresh">Refresh</button>
+      <select class="f-status" title="Filter by response status — Failures selects every request whose outcome was not ok (faults, errors, refusals), whatever its status">
+        <option value="">Status: all</option>
+        <option value="2xx">2xx</option>
+        <option value="3xx">3xx</option>
+        <option value="4xx">4xx</option>
+        <option value="5xx">5xx</option>
+        <option value="failures">Failures</option>
+      </select>
+      <select class="f-method" title="Filter by request method">
+        <option value="">Method: all</option>
+        <option>GET</option>
+        <option>POST</option>
+        <option>PUT</option>
+        <option>PATCH</option>
+        <option>DELETE</option>
+        <option>HEAD</option>
+        <option>OPTIONS</option>
+      </select>
+      <select class="f-activation" title="Filter by activation kind — what woke the handler">
+        <option value="">Kind: all</option>
+        <option>inbound</option>
+        <option>inbound_headers</option>
+        <option>inbound_chunk</option>
+        <option>ws_message</option>
+        <option>send_callback</option>
+        <option>fetch_chunk</option>
+        <option>wake_batch</option>
+        <option>durable_wake</option>
+        <option>timer</option>
+        <option>subscription_fire</option>
+        <option>disconnect</option>
+      </select>
+      <input type="text" class="f-path" placeholder="path contains…"
+             title="Case-sensitive substring of the request path" />
       <span class="count muted"></span>
     </div>
     <div class="table-wrap">
@@ -213,6 +247,10 @@ function renderLogs(root, { instanceId, api, showError, clearError }) {
 
   const tbody = el.querySelector("tbody");
   const refreshBtn = el.querySelector(".refresh");
+  const statusSel = el.querySelector(".f-status");
+  const methodSel = el.querySelector(".f-method");
+  const activationSel = el.querySelector(".f-activation");
+  const pathInput = el.querySelector(".f-path");
   const countLabel = el.querySelector(".count");
   const loadMoreWrap = el.querySelector(".load-more-wrap");
   const loadMoreBtn = el.querySelector(".load-more");
@@ -234,9 +272,17 @@ function renderLogs(root, { instanceId, api, showError, clearError }) {
     loadMoreBtn.disabled = true;
     clearError();
     try {
+      // "failures" is an outcome filter wearing the status dropdown —
+      // it selects outcome != ok server-side, whatever the status.
+      const statusVal = statusSel.value;
       const res = await api.listLogs(instanceId, {
         limit: PAGE_SIZE,
         after: append ? cursor : null,
+        status: statusVal && statusVal !== "failures" ? statusVal : null,
+        failures: statusVal === "failures",
+        method: methodSel.value || null,
+        activation: activationSel.value || null,
+        path: pathInput.value.trim() || null,
       });
       const records = res.records ?? [];
       cursor = res.next_cursor || null;
@@ -250,9 +296,13 @@ function renderLogs(root, { instanceId, api, showError, clearError }) {
       for (const r of records) recordsById.set(r.request_id, r);
 
       if (!append && records.length === 0) {
+        const filtered = statusSel.value || methodSel.value
+          || activationSel.value || pathInput.value.trim();
         const tr = document.createElement("tr");
         tr.className = "empty";
-        tr.innerHTML = `<td colspan="8"><em>no requests logged yet</em></td>`;
+        tr.innerHTML = filtered
+          ? `<td colspan="8"><em>no requests match these filters</em></td>`
+          : `<td colspan="8"><em>no requests logged yet</em></td>`;
         tbody.appendChild(tr);
       } else {
         for (const r of records) tbody.appendChild(buildRow(r));
@@ -360,6 +410,18 @@ function renderLogs(root, { instanceId, api, showError, clearError }) {
 
   refreshBtn.addEventListener("click", () => load({ append: false }));
   loadMoreBtn.addEventListener("click", () => load({ append: true }));
+
+  // Filter changes restart from the newest page (the cursor belongs to
+  // the previous filter shape). The path box debounces so typing
+  // doesn't fire a query per keystroke.
+  for (const sel of [statusSel, methodSel, activationSel]) {
+    sel.addEventListener("change", () => load({ append: false }));
+  }
+  let pathDebounce = 0;
+  pathInput.addEventListener("input", () => {
+    clearTimeout(pathDebounce);
+    pathDebounce = setTimeout(() => load({ append: false }), 300);
+  });
   drawerClose.addEventListener("click", closeDrawer);
 
   load({ append: false });

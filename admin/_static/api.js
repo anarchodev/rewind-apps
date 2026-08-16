@@ -363,12 +363,26 @@ export const api = {
   // requires them verbatim on `/show/{id}` and `?after_request_id=`. Pass
   // them through unmodified; the pagination cursor is
   // `{received_ns, request_id}` where request_id is the `req_` token.
-  async listLogs(instance_id, { limit = 100, after = null } = {}) {
+  // Optional filters ride the query string; the log server ANDs them
+  // onto the tenant/time window server-side (so paging + filters
+  // compose): `status` is `NNN` or `Nxx`, `failures` selects
+  // outcome != ok, `method`/`activation` match exactly, `path` is a
+  // case-sensitive substring (URLSearchParams percent-encodes it; the
+  // server decodes).
+  async listLogs(instance_id, {
+    limit = 100, after = null,
+    status = null, failures = false, method = null, activation = null, path = null,
+  } = {}) {
     const params = { limit: String(limit) };
     if (after) {
       params.after_received_ns = String(after.received_ns);
       params.after_request_id = String(after.request_id);
     }
+    if (status) params.status = status;
+    if (failures) params.failures = "1";
+    if (method) params.method = method;
+    if (activation) params.activation = activation;
+    if (path) params.path = path;
     const qs = new URLSearchParams(params).toString();
     const res = await logFetch(
       `/v1/${encodeURIComponent(instance_id)}/list?${qs}`);
