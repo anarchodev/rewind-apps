@@ -336,6 +336,10 @@ function provenanceIndex(mat) {
     const prov = new Array(mat.events.length);
     const stack = [];
     let hasCustomer = false;
+    // Rail geometry (see pctForEventIdx): the ordered customer-owned
+    // event indices, plus each raw index's position in that order.
+    const ownIdx = [];
+    const ownPos = new Int32Array(mat.events.length);
     for (let i = 0; i < mat.events.length; i++) {
         const e = mat.events[i];
         if (e.kind === "FUNC_ENTER") {
@@ -370,12 +374,23 @@ function provenanceIndex(mat) {
                 break;
             }
         }
-        if (own) hasCustomer = true;
+        if (own) { hasCustomer = true; ownIdx.push(i); }
+        ownPos[i] = ownIdx.length > 0 ? ownIdx.length - 1 : 0;
         prov[i] = { own, customerFrame };
     }
     mat._prov = prov;
     mat._provHasCustomer = hasCustomer;
+    mat._ownIdx = hasCustomer ? ownIdx : null;
+    mat._ownPos = hasCustomer ? ownPos : null;
     return prov;
+}
+
+// The ordered customer-owned event indices — the rail's coordinate
+// space. Null when the record has no customer-owned events (raw space
+// applies there).
+function ownEventIndex(mat) {
+    provenanceIndex(mat);
+    return mat._ownIdx;
 }
 
 // Stack snapshot at the moment the playhead event fired. Cheap to
@@ -645,20 +660,30 @@ function renderEventStream(mat, playhead) {
     });
 }
 
-// Scrubber rail in EVENT-INDEX space: the rail represents
-// [0, mat.events.length - 1]. Each visible-scan event renders as a
-// tick at its true event-index position, so ticks are irregularly
-// spaced (clusters during tight loops, gaps across function-body
-// runs). The playhead can drag continuously across the rail.
+// Scrubber rail in CUSTOMER-event space: the rail represents the
+// ordered customer-owned events (frame provenance above). Raw
+// event-index space is dominated by engine events — the epilogue setup
+// and the digest tail are routinely 90%+ of a drill — so a rail in raw
+// space compresses everything the handler did into a sliver where a
+// single source line is sub-pixel and a drag can never land on it (a
+// handler's `return` line is one event of hundreds). In customer space
+// every line the handler executed owns a draggable region of the rail.
+// Ticks stay irregularly spaced within it (clusters during tight
+// loops); a record with no customer-owned events keeps raw space.
 //
 // The chip + transport time stay in visible-scan grain — the
-// rail-position is "where am I in the recording," the chip is
+// rail-position is "where am I in the handler's run," the chip is
 // "which named scan event am I past."
 function pctForEventIdx(mat, eventIdx) {
+    const e0 = Math.max(0, Math.min(mat.events.length - 1, eventIdx));
+    const own = ownEventIndex(mat);
+    if (own) {
+        if (own.length <= 1) return 50;
+        return (mat._ownPos[e0] / (own.length - 1)) * 100;
+    }
     const total = mat.events.length;
     if (total <= 1) return 50;
-    const e = Math.max(0, Math.min(total - 1, eventIdx));
-    return (e / (total - 1)) * 100;
+    return (e0 / (total - 1)) * 100;
 }
 
 function renderScrubber(mat, playhead) {
@@ -954,9 +979,16 @@ function wireTransport() {
     if ($scrubber) {
         let dragging = false;
 
+        // Drag maps pixels through the same customer-event space the
+        // rail is drawn in (pctForEventIdx) — each customer event owns
+        // an equal slice, so every executed line is reachable by drag.
         const eventIdxAt = (clientX) => {
             const rect = $scrubber.getBoundingClientRect();
             const frac = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
+            const own = ownEventIndex(state.mat);
+            if (own && own.length > 0) {
+                return own[Math.round(frac * (own.length - 1))];
+            }
             const total = state.mat.events.length;
             if (total <= 1) return 0;
             return Math.round(frac * (total - 1));
