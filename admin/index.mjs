@@ -438,6 +438,7 @@ function billingFor(aid) {
         subscription: g("subscription"),
         status: g("status"),
         period_end: pe === null ? null : Number(pe),
+        cancel_at_period_end: g("cancel_at_period_end") === "1",
         plan: kv.get("account/" + aid + "/plan") || "free",
     };
 }
@@ -580,10 +581,15 @@ function cancelBilling(aid) {
     if (!apiKey) return jsonError(503, "billing not configured");
     const b = billingFor(aid);
     if (b.subscription === null) return jsonError(409, "no subscription");
-    // Immediate cancel; period-end cancellation is rove#313's policy call.
-    stripe.client({ apiKey: apiKey }).subscriptions.cancel(b.subscription,
+    // Period-end cancellation (rove#313): the customer paid through the
+    // period, so service runs to what they paid for. Stripe then sends
+    // customer.subscription.deleted at the boundary and the webhook (#311)
+    // walks the plan to free. Immediate cancellation is deliberately NOT a
+    // customer surface — it stays a support/operator action via Stripe.
+    stripe.client({ apiKey: apiKey }).subscriptions.update(b.subscription,
+        { cancel_at_period_end: true },
         { idempotencyKey: "subcxl-" + aid + "-" + b.subscription });
-    return { ok: true };
+    return { ok: true, cancels_at: b.period_end };
 }
 
 // ── Stripe webhook (rove#309) ───────────────────────────────────────
@@ -718,6 +724,8 @@ function recordSubscription(aid, sub, type) {
     if (status !== null) kv.set(p + "status", status);
     if (typeof sub.current_period_end === "number")
         kv.set(p + "period_end", String(sub.current_period_end * 1000));
+    if (typeof sub.cancel_at_period_end === "boolean")
+        kv.set(p + "cancel_at_period_end", sub.cancel_at_period_end ? "1" : "0");
     // The subscription ITEM id (si_…): a plan change updates the item, not the
     // subscription, so without this row `change` has nothing to address.
     const item = sub.items && sub.items.data && sub.items.data[0];
