@@ -37,7 +37,7 @@
     <a href="https://github.com/anarchodev/rove">Source</a>
     <a href="/pricing">Pricing</a>
     <a href="/docs">Docs</a>
-    <a href="/sign-in">Sign in</a>
+    <a href="https://app.rewindjs.com/_rp/login">Sign in</a>
     <a href="/start" class="btn btn-primary" style="padding: 8px 18px; font-size: 14px;">Start free</a>
   </nav>
 
@@ -52,14 +52,15 @@
       machine that records every request — all from one email.
     </p>
 
-    <!-- This form is inert, and the copy below it ("you land in the editor")
-         describes a path that does not complete yet: self-serve provisioning
-         does not produce a reachable tenant, so a signed-up stranger gets a
-         404 rather than a served subdomain. Do NOT wire this form up, and do
-         not enable a signup CTA, until that lands. The editor itself is real
-         — the dashboard's per-instance Code/Deploy/Logs/Replay/KV tabs. -->
+    <!-- This form is inert by design: the real signup entry is the
+         dashboard's OIDC login (app.rewindjs.com/_rp/login — /start links
+         it), and that exchange must originate at the dashboard with PKCE
+         state, so a static page cannot carry a typed email into the flow.
+         On submit this redirects there and the email is typed once, on the
+         auth page. Making this form the real entry needs a marketing-side
+         handler or an auth-side prefill parameter — neither exists today. -->
     <form class="row" style="justify-content: center; gap: 8px; flex-wrap: wrap; max-width: 540px; margin: 0 auto 12px;"
-          onsubmit="event.preventDefault()">
+          onsubmit="event.preventDefault(); window.location.href='https://app.rewindjs.com/_rp/login'">
       <input type="email" placeholder="you@example.com" required
              style="flex: 1; min-width: 280px; background: var(--mantle); border: 1px solid var(--surface-0);
                     color: var(--text-1); padding: 14px 18px; border-radius: var(--r-lg);

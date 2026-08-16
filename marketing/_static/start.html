@@ -1,0 +1,164 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Start — rewind.js</title>
+  <meta name="description" content="Type your email, click the link, and you're in the editor with a live subdomain already serving. No password, no credit card, no setup.">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' rx='4' fill='%2311111b'/%3E%3Crect x='1.5' y='3' width='13' height='10' rx='5' fill='%23cba6f7'/%3E%3Cpolygon points='7,5 7,11 4.3,8' fill='%2311111b'/%3E%3Cpolygon points='11,5 11,11 8.3,8' fill='%2311111b'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="rewind.css">
+  <link rel="stylesheet" href="landing.css">
+  <!-- No icon-font stylesheet here: the jsDelivr dependency is being
+       removed (privacy policy §6/§7) — new pages must not add usages. -->
+  <style>
+    .steps { display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; }
+    @media (max-width: 900px) { .steps { grid-template-columns: 1fr; } }
+    .step {
+      background: var(--mantle); border: 1px solid var(--surface-0);
+      border-radius: var(--r-lg); padding: 24px 26px; text-align: left;
+    }
+    .step-n {
+      font-family: var(--font-mono); font-size: 13px; font-weight: 600;
+      color: var(--brand); background: rgba(203,166,247,0.12);
+      border: 1px solid rgba(203,166,247,0.3); border-radius: var(--r-pill);
+      display: inline-flex; align-items: center; justify-content: center;
+      width: 26px; height: 26px; margin-bottom: 14px;
+    }
+    .step h3 { font-size: 16px; color: var(--text-0); margin: 0 0 8px; letter-spacing: -0.2px; }
+    .step p { font-size: 14px; color: var(--text-2); line-height: 1.6; margin: 0; }
+    .nono { display: flex; flex-wrap: wrap; gap: 10px 22px; justify-content: center; }
+    .nono span { font-size: 14px; color: var(--text-3); }
+    .nono span b { color: var(--text-2); font-weight: 500; }
+  </style>
+</head>
+<body>
+
+  <!-- ============ NAV ============ -->
+  <nav class="nav">
+    <a href="/" aria-label="rewind.js home" style="display:flex; align-items:center;">
+      <svg width="155" height="32" viewBox="0 0 460 90" xmlns="http://www.w3.org/2000/svg" aria-label="Rewind.js">
+        <g transform="translate(0, 8)">
+          <g transform="translate(0, 6) scale(0.5)">
+            <rect x="0" y="0" width="142" height="95" rx="47.5" fill="#11111B"/>
+            <rect x="14" y="18" width="114" height="59" rx="29.5" fill="#CBA6F7"/>
+            <polygon points="60,28 60,67 36,47.5" fill="#11111B"/>
+            <polygon points="92,28 92,67 68,47.5" fill="#11111B"/>
+          </g>
+          <text x="85" y="55" font-family="Geist, -apple-system, BlinkMacSystemFont, sans-serif"
+                font-size="42" font-weight="600" fill="#CDD6F4" letter-spacing="-1.5">rewind<tspan fill="#7F849C">.js</tspan></text>
+        </g>
+      </svg>
+    </a>
+
+    <div class="nav-spacer"></div>
+
+    <a href="/showcase">Showcase</a>
+    <a href="/depth">Depth</a>
+    <a href="https://github.com/anarchodev/rove">Source</a>
+    <a href="/pricing">Pricing</a>
+    <a href="/docs">Docs</a>
+    <a href="https://app.rewindjs.com/_rp/login">Sign in</a>
+  </nav>
+
+  <!-- ============ HERO ============ -->
+  <section class="page" style="padding-top: 64px; padding-bottom: 40px; text-align: center;">
+    <h1 class="t-hero" style="font-size: 60px; letter-spacing: -2.5px; margin-bottom: 18px;">
+      There are <span class="c-brand">no steps.</span>
+    </h1>
+    <p class="t-body" style="font-size: 20px; line-height: 1.5; max-width: 620px; margin: 0 auto 32px;">
+      Well — three, and you only do the first two. Signing up and signing in
+      are the same thing: your email, a link, the editor.
+    </p>
+
+    <!-- The signup entry. This hands off to the dashboard's OIDC login
+         (app.rewindjs.com/_rp/login), which redirects to the __auth__
+         magic-link flow at auth.rewindjs.com and lands the signed-in
+         user back in the dashboard. The OIDC exchange must originate at
+         the dashboard (it carries PKCE state), so this is a link, not a
+         form — the email is typed once, on the auth page. -->
+    <a href="https://app.rewindjs.com/_rp/login" class="btn btn-primary"
+       style="padding: 16px 36px; font-size: 17px; border-radius: var(--r-lg);">
+      Start free — send me the link
+    </a>
+    <p class="t-caption" style="margin: 14px 0 0;">Takes about a minute, most of it your inbox.</p>
+  </section>
+
+  <!-- ============ THE THREE STEPS ============ -->
+  <section class="page" style="padding-bottom: 56px;">
+    <div class="steps">
+      <div class="step">
+        <div class="step-n">1</div>
+        <h3>Type your email</h3>
+        <p>That's the whole form. No password to invent, no card, no project
+           wizard, no cloud account to link.</p>
+      </div>
+      <div class="step">
+        <div class="step-n">2</div>
+        <h3>Click the link we send</h3>
+        <p>It works once and expires in fifteen minutes. Clicking it is both
+           signup and sign-in — there's no separate registration.</p>
+      </div>
+      <div class="step">
+        <div class="step-n">3</div>
+        <h3>You're in the editor</h3>
+        <p>A working example is already deployed, your subdomain is already
+           serving it with TLS, and every request to it is already being
+           recorded for replay.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ WHAT THE FREE PLAN IS ============ -->
+  <section class="page" style="padding-bottom: 48px;">
+    <div class="card" style="padding: 32px 36px;">
+      <div class="grid-2" style="gap: 48px; align-items: center;">
+        <div>
+          <div class="t-eyebrow" style="color: var(--open); margin-bottom: 12px;">What you get, for nothing</div>
+          <h2 class="t-h2" style="margin: 0 0 14px;">The free plan is a real place to build.</h2>
+          <p class="t-body" style="margin: 0;">
+            One app on its own TLS subdomain, a schemaless transactional
+            database, static hosting, and seven days of full deterministic
+            replay — free while your app is active, with no card on file.
+            When you need more, <a href="/pricing">one flat price</a> covers
+            your whole team.
+          </p>
+        </div>
+        <div class="terminal" style="text-align: left;">
+          <span class="prompt">you@example.com</span> → click →<br>
+          <span style="color: var(--text-1);">your-app.rewindjs.app</span> <span class="tok-com">· live, recorded, replayable</span>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ REASSURANCE STRIP ============ -->
+  <section class="page" style="padding-bottom: 64px; text-align: center;">
+    <div class="nono">
+      <span><b>No</b> password</span>
+      <span><b>No</b> credit card</span>
+      <span><b>No</b> CLI to install</span>
+      <span><b>No</b> schema to design</span>
+      <span><b>No</b> deploy step to learn</span>
+      <span><b>No</b> lock-in — the engine is AGPL</span>
+    </div>
+    <div style="margin-top: 36px;">
+      <a href="https://app.rewindjs.com/_rp/login" class="btn btn-primary" style="padding: 14px 32px; font-size: 16px;">
+        Start free
+      </a>
+    </div>
+  </section>
+
+  <!-- ============ FOOTER ============ -->
+  <footer class="footer">
+    <span>© 2026 Loop46, Inc.</span>
+    <span class="footer-sep">·</span>
+    <span class="footer-mark">AGPL-3.0 · open from the start</span>
+    <div class="footer-spacer"></div>
+    <a href="/privacy">Privacy</a>
+    <a href="/terms">Terms</a>
+    <a href="/status">Status</a>
+    <a href="https://github.com/anarchodev/rove">GitHub</a>
+  </footer>
+
+</body>
+</html>
