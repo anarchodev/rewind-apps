@@ -10,7 +10,8 @@
     "test:headed": "playwright test --headed",
     "test:debug": "PWDEBUG=1 playwright test",
     "report": "playwright show-report",
-    "check:surface": "node epilogue-surface-check.mjs"
+    "check:surface": "node epilogue-surface-check.mjs",
+    "check:tape": "node tape-rail-check.mjs"
   },
   "devDependencies": {
     "@playwright/test": "^1.49.0"

@@ -72,14 +72,20 @@
        ============================================================ -->
   <div class="replay__main">
 
-    <!-- Modules rail (left). Populated from bundle.modules. Each
-         entry shows path-prefix dim + basename bright. -->
+    <!-- Tape rail (left) — THIS SAGA'S WINDOW on the tenant's one
+         execution tape: a begin/end bracket, one row per hop, and the
+         quiet gaps between them as a single count line. The unit of
+         playback is the saga, not the activation, so the rail lists
+         hops; the bundle's modules moved to the source header's file
+         picker. Populated from the saga window (`/v1/{t}/saga/{id}`)
+         the opener posts alongside the anchor hop's bundle. -->
     <aside class="rail replay__modules">
       <div class="rail__head row-sb">
-        <span class="t-eyebrow">Modules</span>
-        <button class="btn btn--ghost btn--icon btn--sm" aria-label="Collapse">‹</button>
+        <span class="t-eyebrow">Tape</span>
+        <a class="t-meta" id="tape-logs-link" href="#"
+           title="Whole-history browsing lives on the log page">logs ↗</a>
       </div>
-      <ul class="mod-tree" id="mod-tree">
+      <ul class="tape" id="tape-list">
         <li class="t-meta t-dim" style="padding: var(--sp-2) var(--sp-4);">
           (loading…)
         </li>
@@ -88,16 +94,23 @@
 
     <!-- Resize handle between modules rail and source viewport. -->
     <div class="modules-resize" role="separator" aria-orientation="vertical"
-         aria-label="Resize modules rail" title="Drag to resize"></div>
+         aria-label="Resize tape rail" title="Drag to resize"></div>
 
     <!-- Source viewport (center). Filename + line in the head; code
          body below with current-line highlight when known. -->
     <main class="replay__source">
       <div class="source__head">
+        <!-- The file picker: the bundle's modules, demoted here from
+             their own rail (the rail now carries the saga's tape).
+             The deploy hash rides here too — it is per-HOP identity,
+             and a saga can straddle a deploy. -->
+        <select class="filepick t-mono-lg" id="file-pick"
+                aria-label="Module"></select>
         <span class="t-mono-lg" id="source-header">
           <span class="t-dim">(no module selected)</span>
         </span>
         <span class="grow"></span>
+        <span class="t-meta" id="source-deploy"></span>
         <span class="t-meta" id="source-state">loading…</span>
       </div>
       <div class="code source__code" id="source-code">

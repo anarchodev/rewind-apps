@@ -260,6 +260,112 @@
 .mod-tree__dir { color: var(--text-4); }
 .mod-tree__hash { flex-shrink: 0; }
 
+/* ---------- Tape rail (left column) ----------
+   This saga's window on the tenant's execution tape. The mauve rail
+   running down the left IS the saga bracket: it starts at the begin
+   cap and ends at the end cap, so a hop's membership is visible
+   without reading a label. Rows between hops are the quiet-gap count
+   lines — foreign activations that ran in the seam, summarized rather
+   than hidden (hiding is fine; SILENT hiding is the sin). */
+
+.tape { list-style: none; margin: 0; padding: var(--sp-2) 0 var(--sp-3); }
+.tape__row { position: relative; padding-left: 22px; }
+.tape__row::before {
+  content: "";
+  position: absolute;
+  left: 11px; top: 0; bottom: 0;
+  width: 2px;
+  background: rgba(203, 166, 247, 0.45);
+}
+/* Open-ended caps: the bracket starts/stops at the cap's midpoint. */
+.tape__row--begin::before { top: 50%; }
+.tape__row--end::before { bottom: 50%; }
+
+.tape__cap {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-1) var(--sp-3) var(--sp-1) 0;
+  color: var(--c-brand);
+}
+.tape__cap::after {
+  content: "";
+  flex: 1;
+  border-top: 1px solid var(--surface-0);
+}
+.tape__cap-tick {
+  position: absolute;
+  left: 7px;
+  width: 10px; height: 2px;
+  background: rgba(203, 166, 247, 0.45);
+}
+
+.tape__hop {
+  display: block;
+  width: calc(100% - var(--sp-3));
+  text-align: left;
+  margin: 2px var(--sp-3) 2px 0;
+  padding: var(--sp-1) var(--sp-2);
+  border: 1px solid transparent;
+  border-radius: var(--r-md);
+  background: none;
+  cursor: pointer;
+  transition: background var(--motion-fast) var(--ease-out);
+}
+.tape__hop:hover { background: var(--mantle); }
+.tape__hop.is-anchor {
+  background: rgba(203, 166, 247, 0.09);
+  border-color: rgba(203, 166, 247, 0.45);
+}
+.tape__hop-r1 {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  color: var(--text-1);
+}
+.tape__hop.is-anchor .tape__hop-r1 { color: var(--text-0); }
+.tape__hop-r2 {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  margin-top: 2px;
+  color: var(--text-3);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* Activation-kind dot: the same colour language the events stream
+   uses, so a kind reads identically in both panes. */
+.tape__kind {
+  width: 7px; height: 7px;
+  border-radius: 50%;
+  flex: 0 0 auto;
+  background: var(--text-3);
+}
+.tape__kind--inbound { background: var(--c-info); }
+.tape__kind--callback { background: var(--c-effect); }
+.tape__kind--wake { background: var(--c-read); }
+.tape__kind--disconnect { background: var(--c-error); }
+.tape__seq { margin-left: auto; color: var(--text-3); flex: 0 0 auto; }
+
+.tape__gap {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: 3px var(--sp-3) 3px 0;
+  color: var(--text-4);
+}
+/* A gap whose count hit the scan cap says so ("1000+"), never a
+   silently truncated number. */
+.tape__gap--truncated { color: var(--text-3); }
+
+.tape__unplaced {
+  margin: var(--sp-2) var(--sp-3) 0 0;
+  padding: var(--sp-1) var(--sp-2);
+  border-left: 2px solid var(--surface-2);
+  color: var(--text-3);
+}
+
 /* ---------- Source viewport (middle column) ---------- */
 
 .replay__source {
@@ -279,6 +385,23 @@
   background: var(--mantle);
   flex-shrink: 0;
 }
+
+/* The file picker — the bundle's modules, demoted out of their own
+   rail. A native select so keyboard + long bundles behave; styled to
+   read as the filename it replaced rather than as a form control. */
+.filepick {
+  appearance: none;
+  max-width: 42ch;
+  padding: 2px var(--sp-4) 2px var(--sp-2);
+  border: 1px solid transparent;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--c-info);
+  cursor: pointer;
+}
+.filepick:hover { background: var(--surface-0); border-color: var(--surface-1); }
+.filepick:focus-visible { outline: 2px solid var(--c-brand); outline-offset: 1px; }
+.filepick option { background: var(--base); color: var(--text-0); }
 
 /* Reuse the .code container from rewind.css; just make it fill the
    remaining space and scroll. */

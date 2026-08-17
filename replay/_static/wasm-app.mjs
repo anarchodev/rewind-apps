@@ -52,7 +52,10 @@ const $ = {
     stack:           document.getElementById("stack-frames"),
     nextErrorBtn:    document.getElementById("next-error-btn"),
     nextErrorLabel:  document.getElementById("next-error-label"),
-    modTree:         document.getElementById("mod-tree"),
+    tapeList:        document.getElementById("tape-list"),
+    tapeLogsLink:    document.getElementById("tape-logs-link"),
+    filePick:        document.getElementById("file-pick"),
+    sourceDeploy:    document.getElementById("source-deploy"),
     sourceHeader:    document.getElementById("source-header"),
     sourceState:     document.getElementById("source-state"),
     sourceCode:      document.getElementById("source-code"),
@@ -156,20 +159,6 @@ function el(tag, opts = {}) {
     return e;
 }
 
-function splitPath(p) {
-    const i = p.lastIndexOf("/");
-    return i < 0 ? { dir: "", base: p } : { dir: p.slice(0, i + 1), base: p.slice(i + 1) };
-}
-
-function shortHash(s) {
-    let h = 0x811c9dc5;
-    for (let i = 0; i < s.length; i++) {
-        h ^= s.charCodeAt(i);
-        h = (h * 0x01000193) >>> 0;
-    }
-    return h.toString(16).padStart(8, "0").slice(0, 4);
-}
-
 function badgeKindFor(status) {
     if (status == null) return "";
     if (status >= 200 && status < 300) return "badge--ok";
@@ -246,6 +235,15 @@ function cacheBundle(bundle) {
     }
 }
 
+// The opener answers with `{bundle, saga}` — the anchor hop's replay
+// bundle plus this saga's window (hops + gap summaries). The saga half
+// is optional: an older dashboard sends only `bundle`, and the viewer
+// degrades to a single-hop rail rather than failing.
+//
+// The cache key is the URL fragment, which is saga-addressed
+// (#/{instance}/{request_id}); a hop switch rewrites the fragment, so
+// each hop caches under its own key and a refresh lands back on the
+// hop the user was looking at.
 function awaitBundle() {
     const cached = cachedBundle();
     if (cached) return Promise.resolve(cached);
@@ -258,7 +256,12 @@ function awaitBundle() {
             "no replay state in this tab — reopen this record from the dashboard: " + back));
     }
     const expectedOrigin = expectedDashboardOrigin();
-    window.opener.postMessage({ kind: "replay:ready" }, expectedOrigin);
+    // Name the record we want. The fragment is the authority (a hop
+    // switch navigates it), so a reopened or refreshed tab asks for the
+    // hop it is actually showing rather than whatever the dashboard
+    // happened to open with.
+    window.opener.postMessage(
+        { kind: "replay:ready", request_id: currentRecordId() }, expectedOrigin);
     return new Promise((resolve, reject) => {
         const timer = setTimeout(() => {
             window.removeEventListener("message", onMsg);
@@ -267,14 +270,47 @@ function awaitBundle() {
         function onMsg(e) {
             if (e.origin !== expectedOrigin) return;
             if (e.source !== window.opener) return;
+            if (e.data?.kind === "replay:error") {
+                clearTimeout(timer);
+                window.removeEventListener("message", onMsg);
+                reject(new Error(e.data.message || "the dashboard could not compose this record"));
+                return;
+            }
             if (e.data?.kind !== "replay:bundle") return;
             clearTimeout(timer);
             window.removeEventListener("message", onMsg);
-            cacheBundle(e.data.bundle);
-            resolve(e.data.bundle);
+            const payload = { bundle: e.data.bundle, saga: e.data.saga ?? null };
+            cacheBundle(payload);
+            resolve(payload);
         }
         window.addEventListener("message", onMsg);
     });
+}
+
+// The record this tab is showing, from its saga-addressed fragment
+// (#/{instance}/{request_id}).
+function currentRecordId() {
+    const m = window.location.hash.match(/^#\/([^/]+)\/([^/?#]+)/);
+    return m ? decodeURIComponent(m[2]) : null;
+}
+
+function currentInstanceId() {
+    const m = window.location.hash.match(/^#\/([^/]+)\//);
+    return m ? decodeURIComponent(m[1]) : null;
+}
+
+// Move the viewer to another hop of this saga. URLs are
+// saga-addressed and refresh-safe, so a hop switch is a NAVIGATION:
+// the fragment names the hop, and the page re-materialises it from
+// cache or a fresh handshake. That keeps one hop's engine state from
+// leaking into the next — every hop's tape is self-contained, which
+// is exactly why saga playback can be lazy per hop.
+function navigateToHop(hop) {
+    const inst = currentInstanceId();
+    if (!inst || !hop?.request_id) return;
+    window.location.hash =
+        `#/${encodeURIComponent(inst)}/${encodeURIComponent(hop.request_id)}`;
+    window.location.reload();
 }
 
 // ── Bundle helpers ───────────────────────────────────────────────────
@@ -561,15 +597,22 @@ function renderAppbar(bundle) {
     const req = bundle.request || {};
     const res = bundle.response || {};
 
-    const tenant = (req.host || "").split(".")[0] || req.host || "—";
-    const recId = bundle.recording_id || bundle.deployment_id || "—";
+    const tenant = bundle.tenant_id || (req.host || "").split(".")[0] || req.host || "—";
+    // The unit of playback is the SAGA, so the crumb names it. The
+    // deploy hash is per-HOP identity (a saga can straddle a deploy)
+    // and lives with the hop's source instead.
+    const sagaId = bundle.saga_id || "—";
 
     $.crumb.replaceChildren(
         el("span", { text: tenant }),
         el("span", { className: "crumb__sep", text: "/" }),
-        el("span", { text: "recordings" }),
+        el("span", { text: "sagas" }),
         el("span", { className: "crumb__sep", text: "/" }),
-        el("span", { className: "c-brand t-mono", text: String(recId).slice(0, 14) }),
+        el("span", {
+            className: "c-brand t-mono",
+            text: String(sagaId).slice(0, 20),
+            title: String(sagaId),
+        }),
     );
 
     $.meta.replaceChildren();
@@ -591,33 +634,192 @@ function renderAppbar(bundle) {
     }
 }
 
-function renderModulesRail(bundle, currentPath, onSelect) {
+// The file picker — the bundle's modules, demoted from their own rail
+// into the source header. Rebuilt per hop: a saga can straddle a
+// deploy, so the module list belongs to the HOP being viewed, not to
+// the saga.
+function renderFilePick(bundle, currentPath, onSelect) {
+    if (!$.filePick) return;
     const modules = bundle.modules || [];
-    $.modTree.replaceChildren();
+    $.filePick.replaceChildren();
     if (modules.length === 0) {
-        $.modTree.appendChild(el("li", {
+        $.filePick.appendChild(el("option", { text: "(no modules)" }));
+        $.filePick.disabled = true;
+        return;
+    }
+    $.filePick.disabled = false;
+    for (const m of modules) {
+        const opt = el("option", { text: m.path, title: m.path });
+        opt.value = m.path;
+        if (m.path === currentPath) opt.selected = true;
+        $.filePick.appendChild(opt);
+    }
+    $.filePick.onchange = () => onSelect($.filePick.value);
+}
+
+// Human duration for a quiet gap. Sub-second gaps are the common case
+// between a request's own hops; a held connection's seams run minutes.
+function fmtDuration(ns) {
+    const n = Number(ns || 0);
+    if (n <= 0) return "0 ms";
+    if (n < 1e6) return `${(n / 1e3).toFixed(0)} µs`;
+    if (n < 1e9) return `${(n / 1e6).toFixed(0)} ms`;
+    if (n < 60e9) return `${(n / 1e9).toFixed(1)} s`;
+    return `${Math.round(n / 60e9)} min`;
+}
+
+function fmtClock(ns) {
+    const ms = Number(BigInt(ns || 0) / 1000000n);
+    const d = new Date(ms);
+    return d.toLocaleTimeString([], { hour12: false }) +
+        "." + String(d.getMilliseconds()).padStart(3, "0").slice(0, 1);
+}
+
+// An execution stamp is `raft term << 40 | per-term counter` — 13+
+// digits, unreadable in a rail. Split it: the counter is the
+// human-scale position, and the TERM only matters when it changes,
+// which is a leadership change mid-saga (the counter restarts, so two
+// hops can share a counter across terms — the term marker is what
+// keeps the rail honest about that).
+const EXEC_SEQ_TERM_SHIFT = 40n;
+
+function splitStamp(execSeq) {
+    try {
+        const v = BigInt(execSeq || 0);
+        if (v === 0n) return null;
+        return {
+            term: v >> EXEC_SEQ_TERM_SHIFT,
+            counter: v & ((1n << EXEC_SEQ_TERM_SHIFT) - 1n),
+        };
+    } catch { return null; }
+}
+
+const KIND_CLASS = {
+    inbound: "inbound", inbound_headers: "inbound", inbound_chunk: "inbound",
+    send_callback: "callback", fetch_chunk: "callback",
+    wake_batch: "wake", durable_wake: "wake", timer: "wake", kv_wake: "wake",
+    subscription_fire: "wake", ws_message: "inbound",
+    disconnect: "disconnect",
+};
+
+// The tape rail — this saga's WINDOW on the tenant's execution tape:
+// a begin/end bracket, one row per hop, and the quiet gaps between
+// consecutive hops as single count lines. The saga is the unit of
+// playback, so clicking a hop moves the whole viewer to it (the
+// opener composes that hop's bundle on demand).
+//
+// `saga` is the `/v1/{t}/saga/{id}` payload; `anchorId` is the
+// prefixed request_id of the hop currently materialised. Absent saga
+// (an older opener, or a record with no saga context) degrades to a
+// one-row rail naming the anchor — never an empty rail.
+function renderTapeRail(saga, anchorId, onSelectHop) {
+    if (!$.tapeList) return;
+    $.tapeList.replaceChildren();
+
+    if (!saga || !Array.isArray(saga.hops) || saga.hops.length === 0) {
+        $.tapeList.appendChild(el("li", {
             className: "t-meta t-dim",
-            text: "(no modules in bundle)",
+            text: saga ? "(no hops on this saga's tape yet)" : "(no saga window)",
             style: { padding: "var(--sp-2) var(--sp-4)" },
         }));
         return;
     }
-    for (const m of modules) {
-        const li = el("li", {
-            className: "mod-tree__item" + (m.path === currentPath ? " is-current" : ""),
+
+    const hops = saga.hops;
+    const gaps = Array.isArray(saga.gaps) ? saga.gaps : [];
+    const closed = Number(saga.saga?.closed_at_ns || 0) > 0;
+
+    const cap = (label, cls) => {
+        const li = el("li", { className: "tape__row tape__row--" + cls });
+        const capEl = el("span", { className: "tape__cap t-mono-sm" });
+        capEl.appendChild(el("span", { className: "tape__cap-tick" }));
+        capEl.appendChild(document.createTextNode(label));
+        li.appendChild(capEl);
+        return li;
+    };
+
+    $.tapeList.appendChild(cap("begin · " + fmtClock(hops[0].received_ns), "begin"));
+
+    hops.forEach((h, i) => {
+        const li = el("li", { className: "tape__row" });
+        const isAnchor = h.request_id === anchorId;
+        const btn = el("button", {
+            className: "tape__hop" + (isAnchor ? " is-anchor" : ""),
+            title: isAnchor ? "the hop in view" : "replay this hop",
         });
-        const { dir, base } = splitPath(m.path);
-        const file = el("span", { className: "mod-tree__file t-mono" });
-        if (dir) file.appendChild(el("span", { className: "mod-tree__dir", text: dir }));
-        file.appendChild(document.createTextNode(base));
-        li.appendChild(file);
-        li.appendChild(el("span", {
-            className: "mod-tree__hash t-dimmer t-mono-sm",
-            text: shortHash(m.source || ""),
-            title: "Content fingerprint — same value means byte-identical source",
+        if (isAnchor) btn.setAttribute("aria-current", "true");
+
+        const r1 = el("div", { className: "tape__hop-r1 t-mono" });
+        r1.appendChild(el("span", {
+            className: "tape__kind tape__kind--" + (KIND_CLASS[h.activation] || "inbound"),
         }));
-        li.addEventListener("click", () => onSelect(m.path));
-        $.modTree.appendChild(li);
+        r1.appendChild(document.createTextNode(h.activation || "inbound"));
+        // The stamp is the hop's position on the tenant's tape — the
+        // ordering that survives failover, so it is what the rail
+        // shows rather than a wall-clock time.
+        const st = splitStamp(h.exec_seq);
+        const prev = i > 0 ? splitStamp(hops[i - 1].exec_seq) : null;
+        const termChanged = st && prev && st.term !== prev.term;
+        r1.appendChild(el("span", {
+            className: "tape__seq t-mono-sm",
+            text: st ? (termChanged ? `t${st.term}·#${st.counter}` : `#${st.counter}`) : "unplaced",
+            title: st
+                ? `tape position ${h.exec_seq} (term ${st.term}, #${st.counter})` +
+                  (termChanged ? " — leadership changed before this hop" : "")
+                : "captured without a tape position",
+        }));
+        btn.appendChild(r1);
+
+        const r2 = el("div", { className: "tape__hop-r2 t-mono-sm" });
+        r2.appendChild(el("span", {
+            className: "badge " + (h.status >= 500 ? "badge--err" : "badge--ok"),
+            text: String(h.status || 0),
+        }));
+        r2.appendChild(document.createTextNode(
+            (h.method ? h.method + " " : "") + (h.path || "")));
+        btn.appendChild(r2);
+
+        btn.addEventListener("click", () => { if (!isAnchor) onSelectHop(h); });
+        li.appendChild(btn);
+        $.tapeList.appendChild(li);
+
+        // The seam after this hop: how many foreign activations ran
+        // between it and the next, and how long the tenant was quiet.
+        const g = gaps[i];
+        if (g) {
+            const li2 = el("li", { className: "tape__row" });
+            const count = g.truncated ? `${g.count}+` : String(g.count);
+            li2.appendChild(el("span", {
+                className: "tape__gap t-mono-sm" + (g.truncated ? " tape__gap--truncated" : ""),
+                text: `· ${count} quiet · ${fmtDuration(g.quiet_ns)}`,
+                title: g.truncated
+                    ? "more than the scan cap ran here — the count is a floor, not a total"
+                    : "activations of OTHER sagas that ran in this seam",
+            }));
+            $.tapeList.appendChild(li2);
+        }
+    });
+
+    // "open as of the last record" — a saga's end is only knowable
+    // from a close it actually recorded. The index's roll-up is
+    // explicitly NOT a liveness signal, so an unclosed saga says so
+    // rather than claiming an end it never saw.
+    const last = hops[hops.length - 1];
+    $.tapeList.appendChild(cap(
+        closed ? "end · " + fmtClock(saga.saga.closed_at_ns)
+               : "open as of " + fmtClock(last.received_ns),
+        "end"));
+
+    // Unstamped hops have no tape position and are not given a fake
+    // one — they ride as an addendum below the bracket.
+    const unplaced = Array.isArray(saga.unplaced) ? saga.unplaced : [];
+    if (unplaced.length > 0) {
+        const li = el("li", { className: "tape__unplaced t-mono-sm" });
+        const n = unplaced.length + (saga.unplaced_truncated ? "+" : "");
+        li.appendChild(document.createTextNode(
+            `${n} unplaced hop${unplaced.length === 1 ? "" : "s"}`));
+        li.title = "captured without a tape position — no place in this order";
+        $.tapeList.appendChild(li);
     }
 }
 
@@ -625,14 +827,14 @@ function renderSourceView(bundle, modulePath, highlightLine) {
     const mod = (bundle.modules || []).find(m => m.path === modulePath);
     const src = mod?.source || "";
 
-    const { dir, base } = splitPath(modulePath);
+    // The filename lives in the picker beside this header now; the
+    // header carries the position within it.
     $.sourceHeader.replaceChildren();
-    if (dir) $.sourceHeader.appendChild(el("span", { className: "t-dim", text: dir }));
-    $.sourceHeader.appendChild(el("span", { className: "c-info", text: base }));
     if (highlightLine != null) {
-        $.sourceHeader.appendChild(el("span", { className: "t-dim", text: " · line" }));
-        $.sourceHeader.appendChild(el("span", { className: "c-brand", text: " " + highlightLine }));
+        $.sourceHeader.appendChild(el("span", { className: "t-dim", text: "line " }));
+        $.sourceHeader.appendChild(el("span", { className: "c-brand", text: String(highlightLine) }));
     }
+    if ($.filePick && $.filePick.value !== modulePath) $.filePick.value = modulePath;
 
     const lines = src.split("\n");
     $.sourceCode.replaceChildren();
@@ -1477,6 +1679,10 @@ const state = {
     engine: null,
     playhead: 0,
     currentModule: null,
+    // This saga's window (`/v1/{t}/saga/{id}`) — hops + gap
+    // summaries. Null when the opener sent none (older dashboard, or
+    // a record with no saga context); the rail says so.
+    saga: null,
     // Provenance authority (see isCustomerLoc): a trace event is
     // customer code iff its file is a bundle module AND its line is
     // inside that module's shipped source — the appended epilogue runs
@@ -1494,7 +1700,7 @@ function renderAll() {
     // re-follow on the next step that lands in a different file).
     if (src.file && src.file !== state.currentModule) {
         state.currentModule = src.file;
-        renderModulesRail(state.bundle, state.currentModule, selectModule);
+        renderFilePick(state.bundle, state.currentModule, selectModule);
     }
     renderSourceView(state.bundle, state.currentModule, src.line);
     renderStackBreadcrumb(state.mat, state.playhead);
@@ -1506,7 +1712,7 @@ function renderAll() {
 
 function selectModule(path) {
     state.currentModule = path;
-    renderModulesRail(state.bundle, state.currentModule, selectModule);
+    renderFilePick(state.bundle, state.currentModule, selectModule);
     // Don't reach into the playhead's line when the user is browsing
     // a non-current module; show the file without a line highlight.
     const src = currentSourceForPlayhead(state.mat || { events: [] }, state.playhead);
@@ -1603,19 +1809,39 @@ function renderFidelity(f) {
 }
 
 async function main() {
-    let bundle;
+    let bundle, saga;
     try {
-        bundle = await awaitBundle();
+        ({ bundle, saga } = await awaitBundle());
     } catch (err) {
         renderError(err);
         return;
     }
     state.bundle = bundle;
+    state.saga = saga;
     state.modulePaths = new Set((bundle.modules || []).map(m => m.path));
     state.moduleLineCounts = new Map((bundle.modules || []).map(
         m => [m.path, (m.source || "").split("\n").length]));
 
     renderAppbar(bundle);
+    // The tape rail renders from the saga window alone — before the
+    // engine boots, before this hop replays. The saga's shape is
+    // index data; materialising a hop is the expensive part, and the
+    // rail must not wait on it.
+    renderTapeRail(saga, bundle.request_id, navigateToHop);
+    if ($.tapeLogsLink) {
+        const inst = currentInstanceId();
+        $.tapeLogsLink.href = inst
+            ? `${expectedDashboardOrigin()}/#/instance/${encodeURIComponent(inst)}`
+            : expectedDashboardOrigin() + "/";
+        $.tapeLogsLink.target = "_blank";
+        $.tapeLogsLink.rel = "noopener";
+    }
+    // The deploy hash is per-HOP identity — a saga can straddle a
+    // deploy — so it sits with the hop's source, not in the appbar.
+    if ($.sourceDeploy && bundle.deployment_id) {
+        $.sourceDeploy.textContent = "deploy " + String(bundle.deployment_id).replace(/^dep_/, "").slice(0, 6);
+        $.sourceDeploy.title = String(bundle.deployment_id);
+    }
 
     let entryPath;
     try {
@@ -1625,7 +1851,7 @@ async function main() {
         return;
     }
     state.currentModule = entryPath;
-    renderModulesRail(bundle, state.currentModule, selectModule);
+    renderFilePick(bundle, state.currentModule, selectModule);
     renderSourceView(bundle, state.currentModule, null);
 
     $.sourceState.textContent = "booting WASM…";

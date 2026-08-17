@@ -618,6 +618,15 @@ export const api = {
   /// sessionStorage under it, so a refresh of the popup reloads the
   /// same record without this handshake, and a state-less tab can point
   /// the user back at the right dashboard page.
+  /// The viewer's unit of playback is the SAGA, so the popup asks for
+  /// a specific record (`replay:ready` carries the request_id from its
+  /// own fragment) and we answer with that record's bundle plus the
+  /// saga window its tape rail draws. Walking to another hop is a
+  /// navigation in the popup, which re-handshakes — so this listener
+  /// lives as long as the popup does, not for one exchange.
+  ///
+  /// The session lives HERE, never in the replay origin: every compose
+  /// and every log read goes through this window.
   replayOpen(bundle, instance_id, request_id) {
     const replayOrigin = window.location.origin.replace("://app.", "://replay.");
     const frag = (instance_id && request_id)
@@ -627,16 +636,42 @@ export const api = {
     if (!popup) {
       throw new Error("popup blocked — allow popups for the dashboard");
     }
-    function onMsg(e) {
+    async function onMsg(e) {
       if (e.origin !== replayOrigin) return;
       if (e.source !== popup) return;
-      if (e.data?.kind === "replay:ready") {
-        window.removeEventListener("message", onMsg);
-        popup.postMessage({ kind: "replay:bundle", bundle }, replayOrigin);
+      if (e.data?.kind !== "replay:ready") return;
+      const want = e.data.request_id || request_id;
+      try {
+        // The record we opened with is already composed; any other hop
+        // of the saga is composed on demand.
+        const b = (want && want !== request_id)
+          ? await api.composeReplayBundle(instance_id, want)
+          : bundle;
+        // The saga window is best-effort: a viewer with no rail still
+        // replays the hop, and a hard failure here would turn a
+        // rail-shaped problem into "replay is broken".
+        let saga = null;
+        if (b?.saga_id) {
+          try { saga = await api.getSaga(instance_id, b.saga_id); } catch (_) { saga = null; }
+        }
+        popup.postMessage({ kind: "replay:bundle", bundle: b, saga }, replayOrigin);
+      } catch (err) {
+        popup.postMessage({
+          kind: "replay:error",
+          message: String(err?.message || err),
+        }, replayOrigin);
       }
     }
     window.addEventListener("message", onMsg);
-    setTimeout(() => window.removeEventListener("message", onMsg), 30_000);
+    // Reap the listener once the popup is gone (a hop switch reloads
+    // the popup, so a fixed timeout would silently break walking a
+    // saga after 30s).
+    const reap = setInterval(() => {
+      if (popup.closed) {
+        window.removeEventListener("message", onMsg);
+        clearInterval(reap);
+      }
+    }, 5_000);
     return popup;
   },
 };
