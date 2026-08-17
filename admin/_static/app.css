@@ -629,7 +629,7 @@ button.danger:disabled {
 
 .code-layout {
   display: grid;
-  grid-template-columns: 18rem 1fr;
+  grid-template-columns: 22rem 1fr;
   gap: 1rem;
   height: 100%;
 }
@@ -644,8 +644,16 @@ button.danger:disabled {
 }
 
 .file-list .toolbar {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
   padding: 0.5rem;
   border-bottom: 1px solid var(--border);
+}
+
+.file-list .toolbar .draft-note {
+  margin: 0;
+  font-size: 0.72rem;
 }
 
 .file-list ul {
@@ -691,6 +699,57 @@ button.danger:disabled {
 .file-list li.empty {
   color: var(--muted);
   font-style: italic;
+}
+
+/* Role-section headers in the bundle tree (Routes / Triggers / …). */
+.file-list li.section {
+  cursor: default;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0.55rem 0.6rem 0.15rem;
+  font-size: 0.68rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.file-list li.section:hover {
+  background: none;
+}
+
+.file-list li.section .add {
+  padding: 0 0.5rem;
+  font-size: 0.8rem;
+  line-height: 1.4;
+}
+
+.file-list li.note {
+  cursor: default;
+  color: var(--muted);
+  font-style: italic;
+  font-size: 0.7rem;
+  padding-top: 0;
+}
+
+.file-list li.note:hover {
+  background: none;
+}
+
+/* Right-aligned role annotation (route URL, guarded prefix, …). */
+.file-list .file-annot {
+  margin-left: auto;
+  color: var(--muted);
+  font-size: 0.7rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 10rem;
+}
+
+/* Current-deployment rows the draft can't edit yet (statics, packages). */
+.file-list li.read-only .file-path {
+  color: var(--muted);
 }
 
 .editor {
