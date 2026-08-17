@@ -400,6 +400,57 @@ export const api = {
     return res.text();
   },
 
+  // ── Saga viewer reads (the saga window / tape surfaces) ──────────
+  //
+  // Every exec_seq travels as a DECIMAL STRING — stamps exceed 2^53
+  // and a bare JSON number silently rounds; keep them strings
+  // end-to-end (compare with === / BigInt, never Number).
+
+  // One saga as the viewer consumes it: {saga, hops, gaps, unplaced,
+  // unplaced_truncated, next_cursor}. `after_seq` is the hop keyset
+  // cursor (a decimal-string exec_seq).
+  async getSaga(instance_id, saga_id, { after_seq = null, limit = null } = {}) {
+    const params = {};
+    if (after_seq) params.after_seq = String(after_seq);
+    if (limit) params.limit = String(limit);
+    const qs = new URLSearchParams(params).toString();
+    const res = await logFetch(
+      `/v1/${encodeURIComponent(instance_id)}/saga/${encodeURIComponent(String(saga_id))}` +
+      (qs ? `?${qs}` : ""));
+    if (res.status === 404) return null;
+    return res.json();
+  },
+
+  // The tenant's execution tape, ascending by exec_seq:
+  // {records, next_cursor:{exec_seq}}.
+  async getWindow(instance_id, { seq_from = null, seq_to = null, after_seq = null, limit = null } = {}) {
+    const params = {};
+    if (seq_from) params.seq_from = String(seq_from);
+    if (seq_to) params.seq_to = String(seq_to);
+    if (after_seq) params.after_seq = String(after_seq);
+    if (limit) params.limit = String(limit);
+    const qs = new URLSearchParams(params).toString();
+    const res = await logFetch(
+      `/v1/${encodeURIComponent(instance_id)}/window` + (qs ? `?${qs}` : ""));
+    return res.json();
+  },
+
+  // The interference scan for ONE seam (the open interval between two
+  // hop stamps): {probe, scanned, scan_truncated, skipped_no_tape,
+  // interacting:[{...row, wrote, read, keys_truncated}]}. after_seq=0
+  // means the seam before the saga's first hop.
+  async getSeam(instance_id, after_seq, before_seq, { limit = null } = {}) {
+    const params = {
+      after_seq: String(after_seq ?? "0"),
+      before_seq: String(before_seq),
+    };
+    if (limit) params.limit = String(limit);
+    const qs = new URLSearchParams(params).toString();
+    const res = await logFetch(
+      `/v1/${encodeURIComponent(instance_id)}/seam?${qs}`);
+    return res.json();
+  },
+
   // ── Source read (cross-tenant read door) ─────────────────────────
   //
   // Reads a deployment's handler sources back through the admin app's
