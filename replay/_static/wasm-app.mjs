@@ -197,26 +197,50 @@ function bundleCacheKey() {
     return "replay:bundle:" + (window.location.hash || "#");
 }
 
+// The cached bundle must survive a JSON round-trip that the postMessage
+// structured clone never faced: Uint8Array byte fields (request body,
+// activation bytes, tape blobs) flatten into index-keyed plain objects
+// under bare JSON.stringify, which reboots the engine on garbage. They
+// serialize as {$u8: base64} and revive as real Uint8Arrays; BigInts
+// (u64 seed/timestamp_ns) as decimal strings, which every consumer
+// already normalizes with BigInt() at its use site.
+function cacheReplacer(_k, v) {
+    if (typeof v === "bigint") return v.toString();
+    if (v instanceof Uint8Array) {
+        let s = "";
+        for (let i = 0; i < v.length; i += 0x8000)
+            s += String.fromCharCode.apply(null, v.subarray(i, i + 0x8000));
+        return { $u8: btoa(s) };
+    }
+    return v;
+}
+
+function cacheReviver(_k, v) {
+    if (v && typeof v === "object" && typeof v.$u8 === "string") {
+        const bin = atob(v.$u8);
+        const out = new Uint8Array(bin.length);
+        for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+        return out;
+    }
+    return v;
+}
+
 function cachedBundle() {
     try {
         const raw = sessionStorage.getItem(bundleCacheKey());
-        return raw ? JSON.parse(raw) : null;
+        return raw ? JSON.parse(raw, cacheReviver) : null;
     } catch { return null; }
 }
 
 function cacheBundle(bundle) {
     // Best-effort: a bundle past the sessionStorage quota simply isn't
     // cached — the tab still works, only its refresh loses state and
-    // shows the reopen guidance. BigInts (u64 seed/timestamp_ns from an
-    // older dashboard) serialize as decimal strings — lossless, because
-    // every consumer normalizes with BigInt() at its use site. Without
-    // the replacer JSON.stringify THROWS on a BigInt, and a silent catch
-    // here kills refresh for every record. Warn on failure so the next
-    // cache-write regression is visible in the console instead of
-    // masquerading as a quota limit.
+    // shows the reopen guidance. Warn on failure so a cache-write
+    // regression is visible in the console instead of masquerading as a
+    // quota limit.
     try {
-        sessionStorage.setItem(bundleCacheKey(), JSON.stringify(bundle,
-            (_k, v) => typeof v === "bigint" ? v.toString() : v));
+        sessionStorage.setItem(bundleCacheKey(),
+            JSON.stringify(bundle, cacheReplacer));
     } catch (e) {
         console.warn("replay: bundle not cached — refresh will lose state:", e);
     }
