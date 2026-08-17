@@ -268,6 +268,174 @@ function foldKvRefusals(entries) {
     return out;
 }
 
+/// Derive the response production would have put ON THE WIRE from what the
+/// re-executed handler produced. The replay's `globalThis.response` and its
+/// return value are the handler's RAW intent; the worker applies emit-side
+/// rules to both before anything reaches a socket, so the raw pair is not the
+/// response and must never be shown or digested as one.
+///
+/// The rules mirrored here, all from the serving path:
+///
+///   - status coercion + 100..599 clamp (`worker_dispatch`);
+///   - header vetting — pseudo-names, token-invalid names, hop-by-hop and
+///     platform-managed names, `x-rewind-*` / `x-rove-internal-*`, non-string
+///     or CR/LF/NUL values are dropped; survivors lowercase, first 32 only
+///     (`response_building.isEmittableHeaderName` / `isCleanHeaderValue`);
+///   - cookie sanitization — strings only, first 32, `Domain=` stripped so a
+///     handler cannot push a cookie onto the parent domain
+///     (`response_building.sanitizeSetCookie`);
+///   - body derivation — a string is raw, a `Uint8Array` is RAW BYTES, an
+///     undefined/null return is empty, anything else is `JSON.stringify` and
+///     auto-stamps `content-type: application/json` unless the handler set its
+///     own (`response_building.bodyFromReturn` + `dispatcher`);
+///   - buffered `stream.write` chunks ship AHEAD of the body on a first-hop
+///     HTTP terminal (`dispatcher.prependStreamChunks`).
+///
+/// `held` is `next(...)`: the connection stays open and prod ships nothing
+/// yet, so there is no wire response for this hop — the vetted status and
+/// headers are returned anyway because they are what the handler set and
+/// prod discarded, which is worth seeing.
+///
+/// `body` is the live value (string or `Uint8Array`) — the digest folds it
+/// directly, exactly as the worker folds `pending.body`. `bodyB64` carries the
+/// same bytes through JSON for a binary body.
+///
+/// Self-contained by construction: the epilogue embeds this function's own
+/// source into the arena run (`deriveWireResponse.toString()`), so it may not
+/// close over anything in this module. That is also what makes it directly
+/// unit-testable from node (`e2e/replay-response-check.mjs`).
+export function deriveWireResponse(result, responseGlobal, effects, activationKind) {
+    const raw = responseGlobal || {};
+
+    let status = raw.status;
+    status = (status === undefined || status === null) ? 200 : (status | 0);
+    if (status < 100) status = 100;
+    else if (status > 599) status = 599;
+
+    const RESERVED = ["connection", "transfer-encoding", "upgrade", "keep-alive", "te",
+        "trailer", "proxy-authenticate", "proxy-authorization", "set-cookie", "content-length"];
+    const emittable = (n) => {
+        if (!n.length || n[0] === ":") return false;
+        for (let i = 0; i < n.length; i++) {
+            const c = n.charCodeAt(i);
+            if (c <= 0x20 || c === 0x7f) return false;
+        }
+        const l = n.toLowerCase();
+        if (RESERVED.indexOf(l) >= 0) return false;
+        if (l.indexOf("x-rewind-") === 0 || l.indexOf("x-rove-internal-") === 0) return false;
+        return true;
+    };
+    const cleanVal = (v) => {
+        for (let i = 0; i < v.length; i++) {
+            const c = v.charCodeAt(i);
+            if (c === 13 || c === 10 || c === 0) return false;
+        }
+        return true;
+    };
+    const headers = {};
+    const hsrc = (raw.headers && typeof raw.headers === "object") ? raw.headers : {};
+    for (const k of Object.keys(hsrc).slice(0, 32)) {
+        if (!emittable(k)) continue;
+        const v = hsrc[k];
+        if (typeof v !== "string" || !cleanVal(v)) continue;
+        headers[k.toLowerCase()] = v;
+    }
+
+    const cookies = [];
+    const csrc = Array.isArray(raw.cookies) ? raw.cookies : [];
+    for (let i = 0; i < Math.min(csrc.length, 32); i++) {
+        const c0 = csrc[i];
+        if (typeof c0 !== "string" || !c0.length) continue;
+        const segs = c0.split(";");
+        let cout = segs[0].trim();
+        for (let j = 1; j < segs.length; j++) {
+            const seg = segs[j].trim();
+            if (!seg.length) continue;
+            const eq = seg.indexOf("=");
+            const an = (eq < 0 ? seg : seg.slice(0, eq)).trim().toLowerCase();
+            if (an === "domain") continue;
+            cout += "; " + seg;
+        }
+        if (cout.length) cookies.push(cout);
+    }
+
+    const held = !!(result && typeof result === "object" && result.__rove_disposition === "next");
+    if (held) {
+        return { held: true, status, headers, cookies, body: null, bodyB64: null, binary: false, isJson: false };
+    }
+
+    const isBytes = result instanceof Uint8Array;
+    let isJson = false;
+    let text = null;
+    if (typeof result === "string") text = result;
+    else if (result === undefined || result === null || isBytes) text = null;
+    else {
+        const j = JSON.stringify(result);
+        if (j !== undefined) { text = j; isJson = true; }
+    }
+    if (isJson && !("content-type" in headers)) headers["content-type"] = "application/json";
+
+    // First-hop HTTP terminals only — a WS frame went to the socket and a
+    // resume's chunks are already on the open stream.
+    const frames = (activationKind === "inbound" || activationKind === "inbound_headers")
+        ? (effects || []).filter(e => e && e.kind === "stream" && !e.rolledBack && !e.dropped)
+            .map(e => e.data == null ? "" : e.data)
+        : [];
+
+    const utf8 = (s) => {
+        const out = [];
+        for (let i = 0; i < s.length; i++) {
+            const c = s.charCodeAt(i);
+            if (c < 0x80) out.push(c);
+            else if (c < 0x800) out.push(0xc0 | (c >> 6), 0x80 | (c & 63));
+            else if (c >= 0xd800 && c < 0xdc00 && i + 1 < s.length) {
+                const cp = 0x10000 + ((c - 0xd800) << 10) + (s.charCodeAt(i + 1) - 0xdc00);
+                i++;
+                out.push(0xf0 | (cp >> 18), 0x80 | ((cp >> 12) & 63), 0x80 | ((cp >> 6) & 63), 0x80 | (cp & 63));
+            } else out.push(0xe0 | (c >> 12), 0x80 | ((c >> 6) & 63), 0x80 | (c & 63));
+        }
+        return new Uint8Array(out);
+    };
+    const b64 = (u) => {
+        const A = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        let s = "";
+        for (let i = 0; i < u.length; i += 3) {
+            const b0 = u[i], b1 = i + 1 < u.length ? u[i + 1] : 0, b2 = i + 2 < u.length ? u[i + 2] : 0;
+            s += A[b0 >> 2] + A[((b0 & 3) << 4) | (b1 >> 4)]
+               + (i + 1 < u.length ? A[((b1 & 15) << 2) | (b2 >> 6)] : "=")
+               + (i + 2 < u.length ? A[b2 & 63] : "=");
+        }
+        return s;
+    };
+
+    let body;
+    if (isBytes && frames.length) {
+        const head = utf8(frames.join(""));
+        const all = new Uint8Array(head.length + result.length);
+        all.set(head, 0);
+        all.set(result, head.length);
+        body = all;
+    } else if (isBytes) {
+        body = result;
+    } else if (frames.length) {
+        body = frames.join("") + (text === null ? "" : text);
+    } else {
+        body = text === null ? "" : text;
+    }
+
+    const binary = body instanceof Uint8Array;
+    return {
+        held: false,
+        status,
+        headers,
+        cookies,
+        body,
+        bodyB64: binary ? b64(body) : null,
+        binary,
+        isJson,
+    };
+}
+
 export function buildRequestEpilogue({ record = {}, requestReads = null, bodyBytes = null, exportName = "default", binaryBody = false, activation = "inbound", ctx = undefined, activationBag = undefined, result = null, middlewarePath = null, tenant = null, sagaId = null, captured = true, kvRefusals = null } = {}) {
     const reads = foldRequestReads(requestReads);
 
@@ -592,9 +760,16 @@ export function buildRequestEpilogue({ record = {}, requestReads = null, bodyByt
         // capture recorded. Written only on the success path — a handler
         // that throws leaves the key absent, which the shell reports as
         // "did not complete" rather than as a bogus match.
-        "  const __res = globalThis.response || {};\n" +
         "  const __ser = (v) => { if (v === undefined || v === null) return null; if (typeof v === \"string\") return v; try { return JSON.stringify(v); } catch (_) { return String(v); } };\n" +
-        // Close the digest with the run's own result — the last element.
+        // The WIRE response — what prod would have shipped, not the handler's
+        // raw intent. Both the digest and the shell's response panel read it,
+        // and they must read the SAME derivation: a panel showing a body one
+        // byte off from the one digested would present a divergence as a
+        // faithful reproduction. `deriveWireResponse` is embedded by source
+        // because the arena run cannot import this module.
+        "  const __deriveWire = " + deriveWireResponse.toString() + ";\n" +
+        "  const __wire = __deriveWire(globalThis.__replay_result, globalThis.response, __effectLog, D.kind);\n" +
+        // Close the digest with the run's own wire response — the last element.
         //
         // NOT for a PARK. `next(...)` holds the connection and has no response
         // yet, and the worker reflects that by returning `.continuation` /
@@ -606,13 +781,16 @@ export function buildRequestEpilogue({ record = {}, requestReads = null, bodyByt
         //
         // A held chain still gets a digest per activation — it just ends at the
         // last interaction rather than at a response that has not happened.
-        "  const __parked = globalThis.__replay_result && typeof globalThis.__replay_result === \"object\" &&\n" +
-        "    globalThis.__replay_result.__rove_disposition === \"next\";\n" +
-        "  if (__dg && !__parked) __dg.response(__res.status === undefined ? 200 : __res.status, __ser(globalThis.__replay_result) ?? \"\");\n" +
+        "  if (__dg && !__wire.held) __dg.response(__wire.status, __wire.body);\n" +
         // Parks through the native door (the guarded binding refuses the
         // sentinel key exactly as prod does); the divergence verdict comes
         // from module memory, where nothing in the run could touch it.
-        "  __rove_park_output(JSON.stringify({ status: __res.status === undefined ? null : __res.status, result: __ser(globalThis.__replay_result), effects: __effectLog, digest: __dg ? __dg.hex() : null, divergence: __rove_divergence() }));\n" +
+        //
+        // `result` stays alongside the wire body: the body is what the socket
+        // received, the result is what the handler returned, and they differ
+        // whenever prod transformed one into the other (JSON-stringified,
+        // byte-passed, stream-prefixed).
+        "  __rove_park_output(JSON.stringify({ status: __wire.status, held: __wire.held, headers: __wire.headers, cookies: __wire.cookies, body: __wire.binary ? null : __wire.body, bodyB64: __wire.bodyB64, binary: __wire.binary, isJson: __wire.isJson, result: __ser(globalThis.__replay_result), effects: __effectLog, digest: __dg ? __dg.hex() : null, divergence: __rove_divergence() }));\n" +
         "})();\n"
     );
 }

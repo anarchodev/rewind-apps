@@ -1,0 +1,58 @@
+name: replay-checks
+
+# Static checks over the browser replay shell. Pure node, no toolchain, no
+# secrets, no cluster — so they run on every PR that touches the shell, which
+# is the point: both files they guard are hand-mirrored copies of contracts
+# that live in the rove repo, and a mirror nothing checks drifts silently.
+#
+#   epilogue-surface-check  — the epilogue installs the CURRENT request
+#                             surface (a rename in rove leaves this one
+#                             installing a property that no longer exists).
+#   replay-response-check   — the shell derives the WIRE response the way the
+#                             serving path builds it. The shell both SHOWS
+#                             that response and folds it into the interaction
+#                             digest it compares against the capture, so a
+#                             drifted rule reports divergences as agreement
+#                             and agreements as divergence.
+#
+# The stronger cross-engine gate — replay a record captured from a real
+# worker and compare digests — is rove's `interaction_digest_smoke_v2.py`,
+# which needs a cluster and S3. These are its cheap always-on complement.
+
+on:
+  pull_request:
+    paths:
+      - "replay/**"
+      - "e2e/epilogue-surface-check.mjs"
+      - "e2e/replay-response-check.mjs"
+      - ".github/workflows/replay-checks.yml"
+  push:
+    branches: [main]
+    paths:
+      - "replay/**"
+      - "e2e/epilogue-surface-check.mjs"
+      - "e2e/replay-response-check.mjs"
+      - ".github/workflows/replay-checks.yml"
+  workflow_dispatch: {}
+
+concurrency:
+  group: replay-checks-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  replay-checks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      # No install step: both checks import the shell's own modules and use
+      # nothing outside the node standard library.
+      - name: Epilogue request-surface check
+        working-directory: e2e
+        run: node epilogue-surface-check.mjs
+      - name: Wire-response derivation check
+        working-directory: e2e
+        run: node replay-response-check.mjs

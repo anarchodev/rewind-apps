@@ -23,6 +23,8 @@
 //   ✓ scrubber ticks for scan events; playhead chip
 //   ✓ stack breadcrumb derived from events up to playhead
 //   ✓ next-error count
+//   ✓ response panel — the wire response the re-execution produced,
+//     labelled by how far the capture's digest verifies it
 //
 // Still stubbed (controls disabled — coming next pass):
 //   ✗ step buttons / play
@@ -65,6 +67,8 @@ const $ = {
     sourceState:     document.getElementById("source-state"),
     sourceCode:      document.getElementById("source-code"),
     stream:          document.getElementById("event-stream"),
+    respSummary:     document.getElementById("resp-summary"),
+    respBody:        document.getElementById("resp-body"),
     scrubberTicks:   document.getElementById("scrubber-ticks"),
     scrubberPlayed:  document.getElementById("scrubber-played"),
     scrubberPlayhead: document.getElementById("scrubber-playhead"),
@@ -1118,6 +1122,15 @@ function renderError(err) {
         el("span", { className: "t-mono", text: err.message || String(err) }),
     );
     if ($.sourceState) $.sourceState.textContent = "failed";
+    // The run never happened, so the response panel has nothing to
+    // reconstruct. Say that rather than leaving "(waiting for the run…)"
+    // on screen forever, which reads as a run still in progress.
+    if ($.respSummary) $.respSummary.replaceChildren(el("span", {
+        className: "t-dim", text: "(the replay did not run)",
+    }));
+    if ($.respBody) $.respBody.replaceChildren(el("div", {
+        className: "t-meta t-dim", text: "(the replay did not run)",
+    }));
 }
 
 // ── Stepping actions ─────────────────────────────────────────────────
@@ -1395,6 +1408,23 @@ try {
 if ($vars) {
     $vars.addEventListener("toggle", () => {
         try { localStorage.setItem(VARS_OPEN_STORAGE_KEY, $vars.open ? "1" : "0"); }
+        catch { /* fine */ }
+    });
+}
+
+// Same treatment for the response panel. Default open — the panel's
+// whole point is that the response is visible without a click — but the
+// preference sticks for anyone who wants the source viewport taller.
+const $resp = document.querySelector(".resp");
+const RESP_OPEN_STORAGE_KEY = "rewind.replay.respOpen";
+if ($resp) {
+    try {
+        const saved = localStorage.getItem(RESP_OPEN_STORAGE_KEY);
+        if (saved === "0") $resp.open = false;
+        else if (saved === "1") $resp.open = true;
+    } catch { /* localStorage blocked — keep HTML default */ }
+    $resp.addEventListener("toggle", () => {
+        try { localStorage.setItem(RESP_OPEN_STORAGE_KEY, $resp.open ? "1" : "0"); }
         catch { /* fine */ }
     });
 }
@@ -1944,6 +1974,205 @@ function renderFidelity(f) {
     }));
 }
 
+// ── Response panel ───────────────────────────────────────────────────
+//
+// The terminal of the timeline: what the re-executed handler put on the
+// wire. This is a RECONSTRUCTION, and how much it is worth turns
+// entirely on the fidelity verdict — so the panel never shows a
+// response without saying how far the capture verifies it.
+//
+// It is the REPLAYED response by necessity, not by preference: the
+// record carries a status, an outcome and an exception, and nothing
+// else. Response headers and body bytes are never captured — they are
+// the densest customer data in a request and taping them would cost
+// storage on every request to duplicate what re-execution rebuilds.
+// The interaction digest is what closes that gap: it folds the terminal
+// status AND body, so a digest match means the bytes below are the
+// bytes production sent, and a mismatch means they are demonstrably
+// not. Those two cases must never look alike.
+
+const RESP_TRUST = {
+    verified: {
+        label: "verified against the capture",
+        cls: "badge--ok",
+        title: "the interaction digest matches: same reads served, same effects emitted, same terminal status and body — these are the bytes production sent",
+    },
+    diverged: {
+        label: "diverged — NOT what production sent",
+        cls: "badge--diverged",
+        title: "the replay's interaction digest differs from the capture's, so this response is the re-execution's own, not a reproduction",
+    },
+    unverified: {
+        label: "unverified",
+        cls: "badge--warn",
+        title: "the capture carries no interaction digest (recorded before digests shipped), so nothing checks this response against production",
+    },
+};
+
+function respTrust(f) {
+    if (!f) return RESP_TRUST.unverified;
+    if (f.digestVerdict === "match") return RESP_TRUST.verified;
+    if (f.digestVerdict === "mismatch" || f.verdict === "mismatch") return RESP_TRUST.diverged;
+    return RESP_TRUST.unverified;
+}
+
+// UTF-8 byte length — what the wire carries, which is what a
+// content-length would have said. `String.length` is UTF-16 units and
+// would under-count every non-ASCII body.
+const _respEncoder = new TextEncoder();
+function wireByteLength(out) {
+    if (out.binary) return atob(out.bodyB64 || "").length;
+    return _respEncoder.encode(out.body ?? "").length;
+}
+
+function hexPreview(b64, limit = 256) {
+    const bin = atob(b64 || "");
+    const n = Math.min(bin.length, limit);
+    let s = "";
+    for (let i = 0; i < n; i++) {
+        s += bin.charCodeAt(i).toString(16).padStart(2, "0") + (i % 16 === 15 ? "\n" : " ");
+    }
+    return s.trimEnd() + (bin.length > n ? `\n… ${bin.length - n} more byte(s)` : "");
+}
+
+function respSection(title, rows, emptyText) {
+    const sec = el("div", { className: "resp__section" });
+    sec.appendChild(el("span", { className: "t-eyebrow", text: title }));
+    if (rows.length === 0) {
+        sec.appendChild(el("span", { className: "t-meta t-dim", text: emptyText }));
+        return sec;
+    }
+    const kv = el("div", { className: "kv" });
+    for (const [k, v, cls] of rows) {
+        kv.appendChild(el("span", { className: "kv__k", text: k }));
+        kv.appendChild(el("span", { className: "kv__v " + (cls || ""), text: v }));
+    }
+    sec.appendChild(kv);
+    return sec;
+}
+
+function renderResponse(bundle, mat, f) {
+    if (!$.respSummary || !$.respBody) return;
+    const out = mat?.outcome ?? null;
+    $.respSummary.replaceChildren();
+    $.respBody.replaceChildren();
+
+    // The run never reached its end, so there is no replayed response to
+    // show. Say what the CAPTURE recorded instead, labelled as captured —
+    // a handler that threw is exactly when someone opens this panel, and
+    // an empty box would read as "it returned nothing".
+    if (!out) {
+        const why = f?.run?.oom ? `arena exhausted (${f.run.oomUsed}/${f.run.oomLimit} bytes)`
+                  : f?.threw ? "the handler threw"
+                  : f?.run?.rc ? `the engine stopped the run (rc=${f.run.rc})`
+                  : "the run did not reach the end";
+        $.respSummary.appendChild(el("span", {
+            className: "badge badge--warn",
+            text: "no replayed response",
+        }));
+        $.respSummary.appendChild(el("span", { className: "t-dim", text: why }));
+
+        const rows = [];
+        if (bundle.response?.status != null) rows.push(["status", String(bundle.response.status)]);
+        if (bundle.response?.outcome) rows.push(["outcome", String(bundle.response.outcome)]);
+        $.respBody.appendChild(respSection(
+            "Captured — what production recorded", rows,
+            "(the record carries no status)"));
+
+        const exc = bundle.response?.exception;
+        const sec = el("div", { className: "resp__section" });
+        sec.appendChild(el("span", { className: "t-eyebrow", text: "Captured exception" }));
+        sec.appendChild(el("pre", {
+            className: "resp__payload" + (exc ? "" : " resp__payload--empty"),
+            text: exc || "(none recorded)",
+        }));
+        $.respBody.appendChild(sec);
+        return;
+    }
+
+    // `next(...)`: the handler held the connection. Production shipped
+    // nothing at this hop and discarded whatever was staged on
+    // `response`, so showing a body here would invent one.
+    if (out.held) {
+        $.respSummary.appendChild(el("span", { className: "badge badge--info", text: "held" }));
+        $.respSummary.appendChild(el("span", {
+            className: "t-dim",
+            text: "next() — the connection stayed open; no response at this hop",
+        }));
+        const staged = Object.entries(out.headers || {}).map(([k, v]) => [k, v]);
+        $.respBody.appendChild(respSection(
+            "Staged and discarded — prod ships nothing on a held hop",
+            [["status", String(out.status)], ...staged],
+            "(nothing staged)"));
+        const sec = el("div", { className: "resp__section" });
+        sec.appendChild(el("span", { className: "t-eyebrow", text: "Continuation" }));
+        sec.appendChild(el("pre", {
+            className: "resp__payload",
+            text: out.result ?? "(no ctx)",
+        }));
+        $.respBody.appendChild(sec);
+        return;
+    }
+
+    const trust = respTrust(f);
+    const bytes = wireByteLength(out);
+
+    $.respSummary.appendChild(el("span", {
+        className: "badge " + badgeKindFor(out.status),
+        text: String(out.status),
+    }));
+    const ct = (out.headers || {})["content-type"];
+    if (ct) $.respSummary.appendChild(el("span", { className: "t-mono t-dim", text: ct }));
+    $.respSummary.appendChild(el("span", {
+        className: "t-dim",
+        text: `${bytes} byte${bytes === 1 ? "" : "s"}`,
+    }));
+    $.respSummary.appendChild(el("span", {
+        className: "badge " + trust.cls,
+        text: trust.label,
+        title: trust.title,
+        attrs: { id: "resp-trust", "data-trust": trust.cls === "badge--ok" ? "verified"
+            : trust.cls === "badge--diverged" ? "diverged" : "unverified" },
+    }));
+
+    // Status + headers + cookies. `content-type` on a JSON body is
+    // marked auto: the handler never wrote it, the worker stamped it
+    // because the return value was not a string.
+    const rows = [["status", String(out.status)]];
+    for (const [k, v] of Object.entries(out.headers || {})) {
+        const auto = out.isJson && k === "content-type";
+        rows.push([k + (auto ? " (auto)" : ""), v, auto ? "t-dim" : ""]);
+    }
+    for (const c of out.cookies || []) rows.push(["set-cookie", c]);
+    $.respBody.appendChild(respSection("Wire", rows, "(no headers)"));
+
+    const sec = el("div", { className: "resp__section" });
+    sec.appendChild(el("span", {
+        className: "t-eyebrow",
+        text: out.binary ? "Body — binary (hex)" : "Body",
+    }));
+    const empty = bytes === 0;
+    sec.appendChild(el("pre", {
+        className: "resp__payload" + (empty ? " resp__payload--empty" : ""),
+        text: empty ? "(empty body)"
+            : out.binary ? hexPreview(out.bodyB64)
+            : out.body,
+    }));
+    // The handler's RETURN VALUE, when the wire body is not simply it:
+    // JSON-stringified, byte-passed, or prefixed with buffered
+    // stream.write chunks. Saying so keeps "what I returned" and "what
+    // was sent" from being read as the same thing.
+    if (out.isJson || out.binary || (!out.binary && out.result != null && out.result !== out.body)) {
+        sec.appendChild(el("span", {
+            className: "t-meta t-dimmer",
+            text: out.binary ? "returned Uint8Array — shipped as raw bytes"
+                : out.isJson ? "returned an object — shipped as JSON.stringify"
+                : "the wire body differs from the return value (buffered stream.write chunks ship first)",
+        }));
+    }
+    $.respBody.appendChild(sec);
+}
+
 async function main() {
     let bundle, saga;
     try {
@@ -2197,6 +2426,8 @@ async function main() {
     wireTransport();
     renderAll();
     renderFidelity(state.fidelity);
+    renderResponse(bundle, mat, state.fidelity);
+    window.__replay_response__ = mat.outcome ?? null;
     inspectAndRenderVars(state.playhead);
 
     $.sourceState.textContent = `completed · ${mat.events.length} event(s)`;

@@ -209,6 +209,28 @@
   </div>
 
   <!-- ============================================================
+       RESPONSE PANEL
+       What the re-executed handler put on the wire — status, headers,
+       cookies, body — labelled by how far the capture verifies it. The
+       head carries the headline, so a collapsed panel still answers
+       "what did it return?".
+       ============================================================ -->
+  <details class="resp" open>
+    <summary class="resp__head">
+      <span class="row-c gap-3">
+        <span class="resp__chev" aria-hidden="true">▾</span>
+        <span class="t-h3">Response</span>
+      </span>
+      <span class="row-c gap-2 t-meta" id="resp-summary">
+        <span class="t-dim">(waiting for the run…)</span>
+      </span>
+    </summary>
+    <div class="resp__body" id="resp-body">
+      <div class="t-meta t-dim">(waiting for the run…)</div>
+    </div>
+  </details>
+
+  <!-- ============================================================
        VARIABLES DRAWER
        Body is a fixed-height, resizable scroll region so different
        frames bringing different numbers of vars during a scrub
