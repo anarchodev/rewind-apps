@@ -15,8 +15,11 @@ name: replay-checks
 #                             drifted rule reports divergences as agreement
 #                             and agreements as divergence.
 #   model-view-check        — what the handler can see at the playhead.
+#   model-view-engine-check — the SEAM under that pane: boots the real WASM
+#                             arena and asserts the shapes the pane consumes,
+#                             instead of trusting either half of the seam.
 #
-# `npm run check` in e2e/ runs the same three; they are separate steps here so
+# `npm run check` in e2e/ runs the same four; they are separate steps here so
 # a failure names itself in the job summary.
 #
 # `tape-rail-check.mjs` is deliberately NOT in this lane: it drives the shell
@@ -67,3 +70,6 @@ jobs:
       - name: Model-view check
         working-directory: e2e
         run: node model-view-check.mjs
+      - name: Model-view engine-seam check
+        working-directory: e2e
+        run: node model-view-engine-check.mjs
