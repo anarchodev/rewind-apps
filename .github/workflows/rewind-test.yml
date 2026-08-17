@@ -38,7 +38,14 @@ env:
   # silently ignores it — the identity goes unset and getReplay never
   # builds its logs URL, which reads as a handler bug rather than a
   # stale toolchain.
-  ROVE_REF: 6931ea0cc73c6e420232409388097d6dd7a6665d
+  # rove abc6dcdf (#604). Bumped from 6931ea0c, which had fallen 63 commits
+  # behind and could no longer gate this repo honestly: the generated arena
+  # mirrors on main are produced from CURRENT rove sources (#88), so checking
+  # them against a stale pin reported STALE for content that is in fact fresh.
+  # The pin also predates rove#599, which added `@rewind/export` to the CLI's
+  # embedded first-party set — without it `rewind test ./admin` cannot resolve
+  # the admin manifest's dependency at all.
+  ROVE_REF: abc6dcdf87828669b072c3a3ca0a4338677fcbe4
   ZIG_VERSION: 0.15.2
 
 jobs:

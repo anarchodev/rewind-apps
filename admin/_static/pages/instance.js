@@ -119,11 +119,24 @@ function renderSettings(root, { instanceId, api, showError, clearError, goto }) 
   const el = document.createElement("div");
   el.className = "settings-panel";
   el.innerHTML = `
+    <section class="export-section">
+      <h3>Export this instance's data</h3>
+      <p>Everything you'd need to leave or to keep a copy: the KV store as
+        JSON-lines parts, and the deployed code bundle (the deployment
+        manifest plus a link per source file and static asset). Parts are
+        content-addressed; download links expire after 5 minutes — request
+        them again to re-mint.</p>
+      <p class="export-status" hidden></p>
+      <button type="button" class="export-start">Export data</button>
+      <button type="button" class="export-links" hidden>Get download links</button>
+      <ul class="export-list" hidden></ul>
+    </section>
     <section class="danger-zone">
       <h3>Delete this instance</h3>
       <p>Deletes <strong>${escapeHtml(instanceId)}</strong> permanently: its
         handlers, its KV data, and its request history. It stops answering
         immediately and the name becomes available to anyone again.
+        Exports are destroyed with the instance — download first (above).
         <strong>This cannot be undone.</strong></p>
       <form class="delete-form">
         <label>
@@ -168,7 +181,111 @@ function renderSettings(root, { instanceId, api, showError, clearError, goto }) 
     }
   });
 
-  return () => {};
+  // ── Export (rove#340) ─────────────────────────────────────────────
+  const expStatus = el.querySelector(".export-status");
+  const expStart = el.querySelector(".export-start");
+  const expLinks = el.querySelector(".export-links");
+  const expList = el.querySelector(".export-list");
+  let pollTimer = null;
+  let currentExport = null;
+
+  function setStatus(text) {
+    expStatus.textContent = text;
+    expStatus.hidden = !text;
+  }
+
+  function stopPoll() {
+    if (pollTimer !== null) { clearInterval(pollTimer); pollTimer = null; }
+  }
+
+  function showState(st) {
+    if (!st) return;
+    currentExport = st.id;
+    if (st.state === "running") {
+      setStatus(`Export running — ${st.entries} entries, `
+        + `${st.bytes} bytes, ${st.parts} part(s) so far…`);
+      expStart.disabled = true;
+      expLinks.hidden = true;
+    } else if (st.state === "done") {
+      stopPoll();
+      const when = st.finished_at ? new Date(st.finished_at).toLocaleString() : "";
+      setStatus(`Last export: ${st.entries} entries, ${st.bytes} bytes in `
+        + `${st.parts} part(s)${st.bundle ? " + code bundle" : ""}`
+        + (when ? ` — finished ${when}` : ""));
+      expStart.disabled = false;
+      expStart.textContent = "Export again";
+      expLinks.hidden = false;
+    } else if (st.state === "failed") {
+      stopPoll();
+      setStatus(`Export failed: ${st.error || "unknown error"}`);
+      expStart.disabled = false;
+    }
+  }
+
+  async function poll() {
+    if (!currentExport) return;
+    try { showState(await api.getExport(instanceId, currentExport)); }
+    catch (_) { /* transient — next tick retries */ }
+  }
+
+  // Adopt the newest prior export so a refresh shows where things stand.
+  (async () => {
+    try {
+      const res = await api.listExports(instanceId);
+      const newest = (res.exports || [])[0];
+      if (newest) {
+        showState(newest);
+        if (newest.state === "running") pollTimer = setInterval(poll, 3000);
+      }
+    } catch (_) { /* absent list is just "no exports yet" */ }
+  })();
+
+  expStart.addEventListener("click", async () => {
+    clearError();
+    expStart.disabled = true;
+    expList.hidden = true;
+    try {
+      const res = await api.startExport(instanceId);
+      currentExport = res.id;
+      setStatus("Export started…");
+      stopPoll();
+      pollTimer = setInterval(poll, 3000);
+    } catch (e) {
+      expStart.disabled = false;
+      showError(e instanceof ApiError && e.status === 409
+        ? "An export is already running — it will appear here when done."
+        : `Export failed to start: ${e.message}`);
+    }
+  });
+
+  expLinks.addEventListener("click", async () => {
+    clearError();
+    try {
+      const res = await api.getExportLinks(instanceId, currentExport);
+      expList.replaceChildren();
+      for (const l of res.links || []) {
+        const li = document.createElement("li");
+        const a = document.createElement("a");
+        a.href = l.url;
+        a.textContent = (l.kind === "bundle" ? "code bundle manifest" : "kv part")
+          + " — " + l.hash.slice(0, 12) + "… (" + l.bytes + " bytes)";
+        a.target = "_blank";
+        a.rel = "noopener";
+        li.appendChild(a);
+        expList.appendChild(li);
+      }
+      const note = document.createElement("li");
+      note.textContent = "Links expire in " + Math.round((res.ttl_seconds || 300) / 60)
+        + " min — click “Get download links” again to re-mint. "
+        + "Concatenate kv parts in order to rebuild the KV JSONL.";
+      expList.appendChild(note);
+      expList.hidden = false;
+    } catch (e) {
+      showError(`Links failed: ${e.message}`);
+    }
+  });
+
+  return () => { stopPoll(); };
 }
 
 // ── Logs panel ─────────────────────────────────────────────────────
