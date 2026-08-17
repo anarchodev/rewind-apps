@@ -496,9 +496,14 @@ export const api = {
     // inbound `default`, in which case the shell falls back to deriving
     // the export from `activation`.
     const exportName = tapesField.export || null;
-    const seed = tapesField.seed != null ? BigInt(tapesField.seed) : 0n;
+    // u64 fields stay as the record's decimal STRINGS — the shell converts
+    // with BigInt() at its use site (which accepts strings losslessly). A
+    // BigInt here would survive the postMessage clone but poison the
+    // shell's sessionStorage bundle cache: JSON.stringify throws on
+    // BigInt, so every refresh of the popup would lose its state.
+    const seed = tapesField.seed != null ? String(tapesField.seed) : "0";
     const timestamp_ns = tapesField.timestamp_ns != null
-      ? BigInt(tapesField.timestamp_ns) : 0n;
+      ? String(tapesField.timestamp_ns) : "0";
     // The JS engine version that ran the captured request
     // (format-versioning-audit.md §4). The replay driver will use this to
     // fetch the matching engine WASM once we ship more than one engine; a
