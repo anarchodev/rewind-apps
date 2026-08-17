@@ -366,9 +366,15 @@ export class CursorEngine {
             }
         }
 
+        // The END-of-run Model view, captured here for the same reason
+        // `outcome` is: this is the only pass that runs the handler to
+        // completion, and every later engine call resets the overlay.
+        const endKv = this._modelViewHere({ replay });
+
         return {
             replay,
             outcome,
+            endKv,
             runStatus,
             events,
             matchingExit: Int32Array.from(matchingExitArr),
@@ -500,7 +506,20 @@ export class CursorEngine {
                     catch { frames = []; }
                     pendingSnapshotJson = null;
                 }
-                results.push({ eventOrdinal: eventIdx, frames });
+                // The handler's view of the Model AT THIS EVENT, taken on
+                // the same stopped run as the frames — the run is paused
+                // mid-flight here, so the overlay holds exactly the writes
+                // performed so far and the kv tape's cursor counts exactly
+                // the reads served so far. Both are per-run mutable state
+                // (`_installReplay` resets them), so they must be captured
+                // HERE and cached with the frames; reading them after
+                // `inspectAt` returns would report the last ordinal of the
+                // window, and a cache hit would report a stale run.
+                results.push({
+                    eventOrdinal: eventIdx,
+                    frames,
+                    kv: this._modelViewHere(mat),
+                });
             }
             if (eventIdx >= hi) return 1;
             return 0;
@@ -516,6 +535,29 @@ export class CursorEngine {
             mat.inspectCache.set(snap.eventOrdinal, snap);
         }
         return results;
+    }
+
+    // The handler's view of the Model at the CURRENT stop of a paused
+    // run. Two halves, because a handler sees two things: what it was
+    // served (the kv tape, consumed in order — `_cursor` is how far)
+    // and what it has written (the overlay, which the host's `kv_get`
+    // consults BEFORE the tape, so a write shadows a read of the same
+    // key exactly as it did live).
+    //
+    // Copies, not references: both are per-run mutable state that keeps
+    // moving after this returns.
+    _modelViewHere(mat) {
+        const overlay = this.M._kvOverlay;
+        const kvTape = mat?.replay?.tapes?.kv;
+        return {
+            // key → value written so far; `null` = deleted.
+            writes: overlay ? new Map(overlay) : new Map(),
+            // How many kv tape entries the run has consumed. The caller
+            // pairs this with the tape to know WHICH reads were served
+            // (and, since every read consumes exactly one entry, how far
+            // through the recorded interaction log the run has got).
+            readCursor: kvTape?._cursor ?? 0,
+        };
     }
 
     _anchorToEventIdx(mat, anchor) {
