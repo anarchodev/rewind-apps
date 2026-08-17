@@ -38,16 +38,32 @@ function safeReturnTo(rt) {
   return iss() + "/"; // fall back to the issuer root
 }
 
-function loginForm(return_to, msg) {
+// HTML-attribute escaping for values interpolated into value="…".
+function escAttr(v) {
+  return String(v)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+// `hint` is the OIDC login_hint: prefill-only data, never authority.
+// The magic-link verify binds the address the POST /login mint
+// confirmed, not the hint, and the form never auto-submits — so an
+// attacker-crafted GET /login?login_hint=… link can prefill a value
+// but can never fire an email on its own.
+function loginForm(return_to, msg, hint) {
   response.status = 200;
   response.headers = { "content-type": "text/html; charset=utf-8" };
-  const rt = String(return_to || "").replace(/"/g, "&quot;");
+  const rt = escAttr(return_to || "");
+  const h = hint ? escAttr(String(hint).slice(0, 320)) : "";
   return "<!doctype html><meta charset=utf-8><title>Sign in</title>" +
     "<h1>Sign in</h1>" +
     (msg ? "<p>" + msg + "</p>" : "") +
     '<form method=post action="/login">' +
     '<input type=hidden name=return_to value="' + rt + '">' +
-    '<input name=email type=email placeholder="you@example.com" required>' +
+    '<input name=email type=email placeholder="you@example.com" required' +
+    (h ? ' value="' + h + '"' : "") + ">" +
     "<button>Email me a sign-in link</button></form>";
 }
 
@@ -63,7 +79,8 @@ function startLogin() {
   const addr = (f.get("email") || "").trim().toLowerCase();
   const return_to = safeReturnTo(f.get("return_to"));
   if (!addr || addr.indexOf("@") < 1) {
-    return loginForm(return_to, "Enter a valid email.");
+    // Re-render with the typed address as the hint so it can be corrected.
+    return loginForm(return_to, "Enter a valid email.", addr);
   }
 
   const opaque = rand();
@@ -141,7 +158,7 @@ export default function () {
 
   if (m === "GET" && path === "/login") {
     const q = new URLSearchParams(request.query || "");
-    return loginForm(q.get("return_to"));
+    return loginForm(q.get("return_to"), null, q.get("login_hint"));
   }
   if (m === "POST" && path === "/login") return startLogin();
   if (m === "GET" && path === "/login/verify") return verifyLogin();

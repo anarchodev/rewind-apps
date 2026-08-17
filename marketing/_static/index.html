@@ -52,16 +52,16 @@
       machine that records every request — all from one email.
     </p>
 
-    <!-- This form is inert by design: the real signup entry is the
-         dashboard's OIDC login (app.rewindjs.com/_rp/login — /start links
-         it), and that exchange must originate at the dashboard with PKCE
-         state, so a static page cannot carry a typed email into the flow.
-         On submit this redirects there and the email is typed once, on the
-         auth page. Making this form the real entry needs a marketing-side
-         handler or an auth-side prefill parameter — neither exists today. -->
+    <!-- The typed email rides the standard OIDC login_hint parameter:
+         /_rp/login forwards it into the /authorize redirect, and the
+         auth login page prefills its email field from it — so the
+         address is typed once, here. The PKCE exchange still has to
+         originate at the dashboard, which is why this is a redirect to
+         /_rp/login and not a POST from a static page. The hint is
+         prefill-only; the magic-link mint happens on the auth page. -->
     <form class="row" style="justify-content: center; gap: 8px; flex-wrap: wrap; max-width: 540px; margin: 0 auto 12px;"
-          onsubmit="event.preventDefault(); window.location.href='https://app.rewindjs.com/_rp/login'">
-      <input type="email" placeholder="you@example.com" required
+          onsubmit="event.preventDefault(); window.location.href='https://app.rewindjs.com/_rp/login?login_hint=' + encodeURIComponent(this.email.value)">
+      <input type="email" name="email" placeholder="you@example.com" required
              style="flex: 1; min-width: 280px; background: var(--mantle); border: 1px solid var(--surface-0);
                     color: var(--text-1); padding: 14px 18px; border-radius: var(--r-lg);
                     font-size: 16px; font-family: var(--font-sans); outline: none;">

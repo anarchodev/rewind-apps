@@ -18,6 +18,27 @@ const record = (email, return_to, exp) => JSON.stringify({ email, return_to, exp
 const s = (kv) => scenario({ now: "2026-07-01T00:00:00Z", seed: 1, kv: kv || {} });
 const wroteMagic = (n) => n.effects.some((e) => e.kind === "write" && String(e.key).indexOf("_oidc/magic/") === 0);
 
+// ── loginForm (GET /login) — login_hint prefill ───────────────────────────
+// The hint is prefill-only: it renders as the input's value and nothing else
+// (no mint, no email — those need the POST).
+const getLogin = (scn, query) => scn.inbound({ method: "GET", path: "/login" + (query || ""), host: HOST });
+
+// login_hint prefills the email input
+const hinted = getLogin(s(), "?login_hint=" + encodeURIComponent("jess@example.com"));
+expect(hinted.status).toBe(200);
+expect(hinted.body).toContain('value="jess@example.com"');
+
+// a hostile hint is attribute-escaped — it cannot break out into markup
+const xss = getLogin(s(), "?login_hint=" + encodeURIComponent('"><script>alert(1)</script>'));
+expect(xss.status).toBe(200);
+expect(xss.body).not.toContain("<script>alert");
+
+// no hint → the form still renders, with no stray "undefined"
+const plain = getLogin(s());
+expect(plain.status).toBe(200);
+expect(plain.body).toMatch(/name=email/);
+expect(plain.body).not.toContain("undefined");
+
 // ── startLogin (POST /login) ──────────────────────────────────────────────
 const postLogin = (scn, form) => scn.inbound({ method: "POST", path: "/login", host: HOST, body: form });
 
