@@ -179,6 +179,22 @@ export const api = {
   leaveAccount(aid) {
     return rest("POST", "/v1/accounts/" + seg(aid) + "/leave");
   },
+  /// Delete the CALLER's personal account — immediate, no grace period.
+  /// `confirm` must be the account email (server-normalized compare). 409
+  /// `sole_owner_of_teams` lists teams to transfer/delete first.
+  deleteAccount(confirm) {
+    return rest("POST", "/v1/account/delete", { confirm });
+  },
+  /// Delete a team account (owner-only). `confirm` must be the team name.
+  /// Destroys every team-owned instance for every member.
+  deleteTeam(aid, confirm) {
+    return rest("DELETE", "/v1/accounts/" + seg(aid), { confirm });
+  },
+  /// The account-rows export: members, roles, instances, billing meta as
+  /// one JSON document (the per-instance data export is startExport).
+  accountExport(aid) {
+    return rest("GET", "/v1/accounts/" + seg(aid) + "/export");
+  },
   /// The UI's "active account" selection (which account new instances land
   /// in / the members page targets). Persisted client-side; falls back to
   /// whoami's `active_account` (the personal account).

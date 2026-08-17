@@ -2,6 +2,7 @@
 import oidc from "@rewind/oidc";
 import email from "@rewind/email";
 import stripe from "@rewind/stripe";
+import schedule from "@rewind/schedule";
 
 function validId(id) {
     return typeof id === "string" && /^[A-Za-z0-9_-]{1,64}$/.test(id);
@@ -369,6 +370,11 @@ function accessibleInstances(userHash) {
 // instance→owner pointers for tenants they already own. Set-if-absent, so it's a
 // no-op after the first call. Called from handleSession + provisionInstance.
 function backfillSelf(userHash, email) {
+    // The deletion tombstone (rove#340): while a deletion is running or
+    // frozen-failed, the lazy materialization below would RESURRECT the
+    // half-erased account on the caller's next session read. Terminal
+    // `done` falls through — that is the re-signup path.
+    if (isDeleting(userHash)) return;
     if (kv.get("account/" + userHash + "/members/" + userHash) === null) {
         kv.set("account/" + userHash + "/members/" + userHash, "owner");
         kv.set("user/" + userHash + "/accounts/" + userHash, "owner");
@@ -410,6 +416,85 @@ function accountName(aid) {
     return null;
 }
 
+// ── Account deletion (rove#340) ─────────────────────────────────────
+// Deletion is a DURABLE JOB in __admin__'s own kv, the `__system/export_run`
+// discipline: the marker IS the job, every activation re-arms a watchdog
+// before doing work, and every step is idempotent under at-least-once
+// firing. Rows:
+//
+//   acctdel/{aid}          → {state: "running"|"failed"|"done",
+//                             phase: "billing"|"instances"|"rows"|"idp",
+//                             is_team, email, requested_by, started_ms,
+//                             updated_ms, finished_ms?, error?,
+//                             cursor?, idp_step?, idp_cursor?}
+//   acctdel/{aid}/inst/{t} → "pending" | "gone" | "failed:{status}"
+//
+// Phases: billing (Stripe cancel-NOW) → instances (one durable CP delete
+// per owned tenant) → rows (page-erase account/{aid}/* + every reverse
+// index) → idp (personal only: sweep the caller's identity rows out of
+// __auth__ and their sessions out of _rp/sess/) → done.
+//
+// The marker doubles as the TOMBSTONE. Non-terminal blocks backfillSelf —
+// the lazy personal-account materialization would otherwise resurrect a
+// half-erased account on the caller's next GET /v1/session — plus session
+// materialization, provisioning, team creation, invite acceptance and
+// deploys. Terminal `done` blocks nothing: a returning user's next login
+// materializes a fresh, empty personal account under the same hash, which
+// IS the re-signup path. `failed` keeps the account frozen until an
+// operator retries (GET /v1/deletions + POST /v1/deletions/{aid}/retry) —
+// half-erased state must never be user-visible or user-mutable.
+//
+// Plain `acctdel/` (no leading underscore): `_`-prefixes are reserved to
+// platform shims (rove-reserved's blanket rule refuses them at kv.set) and
+// this is the admin APP's own schema, like `account/` and `instance/`.
+
+const ACCTDEL = "acctdel/";
+const ACCTDEL_WATCHDOG_S = 60;
+
+function acctdelMarker(aid) {
+    const raw = kv.get(ACCTDEL + aid);
+    if (raw === null) return null;
+    try { return JSON.parse(raw); } catch (_) { return null; }
+}
+
+// Non-terminal marker = the tombstone. `done` deliberately does not block.
+function isDeleting(aid) {
+    const m = acctdelMarker(aid);
+    return m !== null && m.state !== "done";
+}
+
+function acctdelWrite(aid, m) {
+    m.updated_ms = Date.now();
+    kv.set(ACCTDEL + aid, JSON.stringify(m));
+}
+
+// Keyed on the marker, so a re-arm MOVES the one watchdog entry rather
+// than accumulating one per attempt (the webhook_fire discipline).
+function acctdelArm(aid, inSpec) {
+    schedule({ in: inSpec }, "index.mjs.acctdelWake", { aid: aid },
+             { key: ACCTDEL + aid });
+}
+
+function acctdelCancelWatchdog(aid) {
+    // A keyed schedule's id is derived from the key (the schedule
+    // contract), so the cancel needs no stored id.
+    schedule.cancel(crypto.sha256b64url(ACCTDEL + aid));
+}
+
+// Teams the caller is the SOLE owner of — the set that blocks personal
+// deletion. Cascade-deleting a team destroys other members' instances,
+// which a personal typed-confirm cannot authorize; the established
+// `last_owner` guard semantics (leaveAccount) applied to deletion.
+function soleOwnerTeams(caller) {
+    const out = [];
+    for (const aid of accountsForUser(caller)) {
+        if (aid === caller) continue;
+        if (roleInAccount(aid, caller) === "owner" && ownerCount(aid) <= 1)
+            out.push({ aid: aid, name: accountName(aid) });
+    }
+    return out;
+}
+
 // ── Billing state (rove#308) ────────────────────────────────────────
 // The subscription graph lives HERE, in the dashboard tenant's own kv,
 // hanging off the account rows — not in Stripe. Stripe is the payment
@@ -448,6 +533,55 @@ function billingFor(aid) {
 // flow). No Stripe call: this is a pure read of our own rows.
 function getBilling(aid) {
     return billingFor(aid);
+}
+
+// GET /v1/accounts/:aid/export — the account-rows slice of the data export
+// (rove#340): members, roles, pending invites, instances, billing meta, as
+// one synchronous JSON attachment. Per-INSTANCE data (kv + code) has its own
+// job-shaped export; account rows are small enough to hand over inline.
+// Redactions are deliberate: invite tokenHashes never leave (a live invite
+// token's hash is a credential-shaped secret), and the Stripe `item` si_ id +
+// `last_event_ts` are internal plumbing — while customer/subscription ids
+// appear on the customer's own Stripe receipts.
+function accountExport(aid) {
+    const members = kv.prefix("account/" + aid + "/members/", "", 1000).map((e) => ({
+        email: kv.get("account/" + aid + "/email/" + e.key.slice(("account/" + aid + "/members/").length)),
+        role: e.value,
+    }));
+    const pending = kv.prefix("account/" + aid + "/pending/", "", 1000).map((e) => {
+        let p = {}; try { p = JSON.parse(e.value); } catch (_) {}
+        return { email: p.email || null, role: p.role || "member",
+                 invited_ms: p.invited_ms || null, exp_ms: p.exp_ms || null };
+    });
+    const instances = ownedInstances(aid).map((id) => ({
+        id: id, host: kv.get("instance/" + id + "/host"),
+    }));
+    const b = billingFor(aid);
+    let meta = null;
+    const rawMeta = kv.get("account/" + aid + "/meta");
+    if (rawMeta) { try { meta = JSON.parse(rawMeta); } catch (_) {} }
+    response.headers = {
+        "content-type": "application/json",
+        "content-disposition": "attachment; filename=\"rewind-account-" +
+            aid.slice(0, 8) + ".json\"",
+    };
+    return {
+        aid: aid,
+        name: accountName(aid),
+        meta: meta,
+        plan: b.plan,
+        members: members,
+        pending_invites: pending,
+        instances: instances,
+        billing: {
+            customer: b.customer,
+            subscription: b.subscription,
+            status: b.status,
+            period_end: b.period_end,
+            cancel_at_period_end: b.cancel_at_period_end,
+        },
+        exported_at_ms: Date.now(),
+    };
 }
 
 // ── Billing flow (rove#310) — subscribe / change / cancel ───────────
@@ -755,6 +889,7 @@ export function createAccount(name) {
     const nm = String(name == null ? "" : name).trim();
     if (nm.length === 0 || nm.length > 64) return jsonError(400, "invalid name");
     const caller = accountHashFor(a.sub);
+    if (isDeleting(caller)) return jsonError(409, "account deletion in progress");
     backfillSelf(caller, a.sub);
     // Team-account allowance rides the caller's PERSONAL account's plan —
     // your own tier decides how many orgs you may own.
@@ -842,6 +977,10 @@ export function acceptInvite(token) {
     if (caller !== inv.emailHash)
         return jsonError(403, "sign in with the invited email address");
     if (Date.now() > inv.exp_ms) return jsonError(410, "invite expired"); // owner can re-send
+    // Neither side of a deletion accepts invites: not a caller whose own
+    // account is being erased, not a team that is being torn down.
+    if (isDeleting(caller) || isDeleting(inv.aid))
+        return jsonError(409, "account deletion in progress");
     kv.set("account/" + inv.aid + "/members/" + caller, "member");
     kv.set("user/" + caller + "/accounts/" + inv.aid, "member");
     kv.set("account/" + inv.aid + "/email/" + caller, a.sub);
@@ -908,6 +1047,352 @@ export function leaveAccount(aid) {
     return null;
 }
 
+// ── Account deletion entry points + job (rove#340) ──────────────────
+
+// POST /v1/account/delete — delete the CALLER's personal account,
+// immediately (no grace period; the typed confirm is the guard, exactly
+// like deleteInstance's type-the-name). Route class `authed`; the aid is
+// BOUND to the session — there is nothing in the request to confuse.
+// A root M2M grant ({sub:null}) has no personal account and is refused.
+export function requestAccountDeletion(confirm) {
+    const a = request.auth || {};
+    if (!a.sub) return jsonError(401, "unauthenticated");
+    const caller = accountHashFor(a.sub);
+    // Typed confirm = the account email, compared through the ONE
+    // normalization point — " Email@X " confirms email@x.
+    if (typeof confirm !== "string" || userHashFor(confirm) !== caller)
+        return jsonError(400, "to delete your account, confirm with your account email");
+    if (isDeleting(caller)) return jsonError(409, "deletion_in_progress");
+    backfillSelf(caller, a.sub);
+    const sole = soleOwnerTeams(caller);
+    if (sole.length > 0) {
+        // Refuse, never cascade: deleting a team destroys OTHER members'
+        // instances. Transfer ownership or delete the team first.
+        response.status = 409;
+        return { error: "sole_owner_of_teams", teams: sole };
+    }
+    // Leave every team now (member or co-owner with co-owners) — the
+    // leaveAccount row deletes, synchronously, so the job then only ever
+    // touches this account's own rows.
+    for (const aid of accountsForUser(caller)) {
+        if (aid === caller) continue;
+        kv.delete("account/" + aid + "/members/" + caller);
+        kv.delete("account/" + aid + "/email/" + caller);
+        kv.delete("user/" + caller + "/accounts/" + aid);
+    }
+    kv.set(ACCTDEL + caller, JSON.stringify({
+        state: "running", phase: "billing", is_team: false,
+        email: a.sub, requested_by: caller,
+        started_ms: Date.now(), updated_ms: Date.now(),
+    }));
+    acctdelArm(caller, 0);
+    response.status = 202;
+    return { ok: true, deleting: true };
+}
+
+// DELETE /v1/accounts/:aid — delete a TEAM account. Route class
+// `accountOwner`; the typed confirm is the TEAM NAME, because the owner
+// is authorizing the destruction of every member's access and every
+// team-owned instance — that is the point of the confirmation.
+export function deleteTeamAccount(aid, confirm) {
+    if (isPersonalAccount(aid))
+        return jsonError(400, "delete your personal account via /v1/account/delete");
+    const nm = accountName(aid);
+    if (!nm || typeof confirm !== "string" || confirm !== nm)
+        return jsonError(400, "to delete this team, confirm with its name");
+    if (isDeleting(aid)) return jsonError(409, "deletion_in_progress");
+    const a = request.auth || {};
+    kv.set(ACCTDEL + aid, JSON.stringify({
+        state: "running", phase: "billing", is_team: true,
+        email: null, requested_by: a.sub ? accountHashFor(a.sub) : null,
+        started_ms: Date.now(), updated_ms: Date.now(),
+    }));
+    acctdelArm(aid, 0);
+    response.status = 202;
+    return { ok: true, deleting: true, aid: aid };
+}
+
+// The job's single driver — a durable_wake continuation (middleware does
+// not run; request.auth is absent by design). Everything it needs lives in
+// the marker; every branch is idempotent under at-least-once firing.
+export function acctdelWake() {
+    const ctx = request.ctx || {};
+    const aid = ctx.aid;
+    if (typeof aid !== "string" || !aid) return { ok: true };
+    const m = acctdelMarker(aid);
+    // Absent or terminal: let the chain die — a terminal wake fires at
+    // most once more (the already-armed watchdog) and does not re-arm.
+    if (m === null || m.state !== "running") return { ok: true };
+    // Re-arm FIRST (the webhook_fire discipline): this activation's
+    // writeset deletes the fired `_sched/` entry, so a crash below must
+    // still re-fire. Same key ⇒ the entry moves, never accumulates.
+    acctdelArm(aid, ACCTDEL_WATCHDOG_S + "s");
+
+    if (m.phase === "billing") {
+        // Cancel NOW — deletion is immediate (rove#340), unlike the
+        // customer-facing period-end cancel (rove#313's grace applies to
+        // cancellation, not erasure). Durable + idempotency-keyed, so a
+        // watchdog re-fire maps onto the same Stripe request. Fire and
+        // forget: the eventual customer.subscription.deleted webhook
+        // resolves billing/customer/{cus} — by then erased and acked as
+        // unknown (the webhook's deleted-accounts arm), or it downgrades a
+        // plan on instances this job is deleting anyway.
+        const sub = kv.get("account/" + aid + "/billing/subscription");
+        const apiKey = kv.get("stripe_key");
+        if (sub !== null && apiKey) {
+            stripe.client({ apiKey: apiKey }).subscriptions.cancel(sub, {
+                idempotencyKey: "acctdel-cxl-" + aid + "-" + sub,
+            });
+        }
+        m.phase = "instances";
+        // Fall through: the instances phase issues its sends this same
+        // activation — nothing to wait on between the two.
+    }
+
+    if (m.phase === "instances") {
+        // One durable CP delete per owned instance (the pushPlanToTenant
+        // composition: webhook.send at the CP door, the worker attaches the
+        // move-secret). Idempotency-keyed per (account, tenant), so a
+        // re-fire maps onto the same in-flight send instead of racing it.
+        const owned = ownedInstances(aid);
+        let pending = 0;
+        const failed = [];
+        for (const t of owned) {
+            const ik = ACCTDEL + aid + "/inst/" + t;
+            const cur = kv.get(ik);
+            if (cur === null) {
+                kv.set(ik, "pending");
+                webhook.send(CP_DOOR + "delete", {
+                    body: JSON.stringify({ tenant: t }),
+                    headers: { "content-type": "application/json" },
+                    key: "acctdel-del-" + aid + "-" + t,
+                    maxAttempts: 8,
+                    // A send's `on` dispatches the target MODULE's default
+                    // export (cross-module continuation), so the callback
+                    // has its own door module delegating back here.
+                    on: "acctdel_result.mjs",
+                    ctx: { aid: aid, tenant: t },
+                });
+                pending++;
+            } else if (cur === "pending") {
+                pending++;
+            } else if (cur.indexOf("failed:") === 0) {
+                failed.push(t + " (" + cur.slice("failed:".length) + ")");
+            }
+        }
+        if (failed.length > 0) {
+            // An instance the CP refuses terminally freezes the whole job
+            // (state=failed) rather than erasing the rows a retry needs to
+            // re-authorize — half-erased must never be the resting state.
+            m.state = "failed";
+            m.error = "instance delete failed: " + failed.join(", ");
+            acctdelWrite(aid, m);
+            acctdelCancelWatchdog(aid);
+            return { ok: true };
+        }
+        if (pending > 0) {
+            // Sends in flight; their terminal callbacks advance the phase.
+            // The re-armed watchdog above covers a lost callback.
+            acctdelWrite(aid, m);
+            return { ok: true };
+        }
+        m.phase = "rows";
+        m.cursor = "";
+    }
+
+    if (m.phase === "rows") {
+        // Page-erase account/{aid}/*, harvesting each row's reverse index
+        // BEFORE deleting it: members → user/{h}/accounts/{aid}, pending
+        // invites → the global invite/{tokenHash}, the billing customer →
+        // billing/customer/{cus}, straggler instance rows → their pointers.
+        const pre = "account/" + aid + "/";
+        const page = kv.prefix(pre, m.cursor || "", 1000);
+        for (const e of page) {
+            const rest = e.key.slice(pre.length);
+            if (rest.indexOf("members/") === 0) {
+                kv.delete("user/" + rest.slice("members/".length) + "/accounts/" + aid);
+            } else if (rest.indexOf("pending/") === 0) {
+                try { kv.delete("invite/" + JSON.parse(e.value).tokenHash); } catch (_) {}
+            } else if (rest === "billing/customer") {
+                kv.delete("billing/customer/" + e.value);
+            } else if (rest.indexOf("instances/") === 0) {
+                // Normally cleared by onAcctdelCpDelete; a legacy row with
+                // no live tenant still needs its pointers dropped.
+                const t = rest.slice("instances/".length);
+                kv.delete("instance/" + t + "/owner");
+                kv.delete("instance/" + t + "/host");
+            }
+            kv.delete(e.key);
+        }
+        if (page.length >= 1000) {
+            m.cursor = page[page.length - 1].key;
+            acctdelWrite(aid, m);
+            acctdelArm(aid, 0); // full page — continue immediately
+            return { ok: true };
+        }
+        if (m.is_team) return acctdelFinish(aid, m);
+        m.phase = "idp";
+        m.idp_step = 0;
+        m.idp_cursor = "";
+    }
+
+    if (m.phase === "idp") return acctdelIdpStep(aid, m);
+    // Unknown phase (a marker from a newer schema after a rollback):
+    // freeze loudly rather than guess.
+    m.state = "failed";
+    m.error = "unknown phase " + m.phase;
+    acctdelWrite(aid, m);
+    acctdelCancelWatchdog(aid);
+    return { ok: true };
+}
+
+// IdP erasure (personal accounts): sweep the user's identity out of
+// __auth__ — sessions, live magic links, the send cooldown, and every
+// token record carrying their sub — plus the dashboard's own _rp/sess/
+// rows. All the token rows are keyed by OPAQUE TOKEN, not by user, so
+// this is a prefix scan with a payload match, one bounded page per
+// activation (cursor + step in the marker). Scan cost is bounded by
+// historical traffic, not TTLs — `_oidc/session/` rows never expire
+// (rove#594 is the GC); deletion pays that page walk once.
+//
+// The steps are (prefix, kv-home) pairs; `null` home = __admin__'s own kv.
+const ACCTDEL_IDP_STEPS = [
+    ["_rp/sess/", null],
+    ["_oidc/session/", "__auth__"],
+    ["_oidc/magic/", "__auth__"],
+    ["_oidc/code/default/", "__auth__"],
+    ["_oidc/at/default/", "__auth__"],
+    ["_oidc/rt/default/", "__auth__"],
+    ["_oidc/device/default/", "__auth__"],
+    ["_oidc/device_user/default/", "__auth__"],
+];
+
+// A row belongs to the user when its JSON payload names them — `sub` for
+// sessions/tokens, `email` for magic links. Unparseable rows are left
+// alone: they are someone's live state until proven otherwise.
+function acctdelRowMatches(value, addr) {
+    try {
+        const v = JSON.parse(value);
+        return v !== null && (v.sub === addr || v.email === addr);
+    } catch (_) { return false; }
+}
+
+function acctdelIdpStep(aid, m) {
+    const addr = m.email;
+    if (typeof addr !== "string" || !addr) return acctdelFinish(aid, m);
+    const step = m.idp_step || 0;
+    if (step >= ACCTDEL_IDP_STEPS.length) return acctdelFinish(aid, m);
+    const prefix = ACCTDEL_IDP_STEPS[step][0];
+    const home = ACCTDEL_IDP_STEPS[step][1];
+    const store = home === null ? kv : platform.scope(home).kv;
+    const page = store.prefix(prefix, m.idp_cursor || "", 1000);
+    for (const e of page) {
+        if (acctdelRowMatches(e.value, addr)) store.delete(e.key);
+    }
+    if (page.length >= 1000) {
+        m.idp_cursor = page[page.length - 1].key;
+    } else {
+        m.idp_step = step + 1;
+        m.idp_cursor = "";
+        if (m.idp_step >= ACCTDEL_IDP_STEPS.length) {
+            // Last direct-keyed row: the magic-link send cooldown.
+            platform.scope("__auth__").kv.delete(
+                "_oidc/magic_cooldown/" + crypto.sha256(addr));
+            return acctdelFinish(aid, m);
+        }
+    }
+    acctdelWrite(aid, m);
+    acctdelArm(aid, 0); // more to sweep — continue immediately
+    return { ok: true };
+}
+
+function acctdelFinish(aid, m) {
+    // Drop the per-instance bookkeeping; the marker itself STAYS as the
+    // audit tombstone (`done` blocks nothing — re-signup materializes a
+    // fresh personal account lazily).
+    const rows = kv.prefix(ACCTDEL + aid + "/inst/", "", 1000);
+    for (const e of rows) kv.delete(e.key);
+    m.state = "done";
+    m.phase = "done";
+    m.finished_ms = Date.now();
+    acctdelWrite(aid, m);
+    acctdelCancelWatchdog(aid);
+    return { ok: true };
+}
+
+// Terminal result of one instance's durable CP delete (send_callback —
+// fires ONCE, delivered or given-up after the retry budget). Dispatched
+// through `acctdel_result.mjs` (webhook.send's `on` runs a module's
+// default export); exported so that door can delegate here.
+export function onAcctdelCpDelete() {
+    const ctx = request.ctx || {};
+    const aid = ctx.aid;
+    const t = ctx.tenant;
+    if (!aid || !t) return { ok: true };
+    const m = acctdelMarker(aid);
+    if (m === null || m.state !== "running") return { ok: true };
+    const ik = ACCTDEL + aid + "/inst/" + t;
+    const status = request.status || 0;
+    // 204 = deleted; 404 = already gone (a retried job converges).
+    if (status === 204 || status === 404) {
+        kv.delete("account/" + aid + "/instances/" + t);
+        kv.delete("instance/" + t + "/owner");
+        kv.delete("instance/" + t + "/host");
+        kv.set(ik, "gone");
+        // Kick the driver now rather than waiting out the watchdog — when
+        // this was the last pending instance, the next fire advances to
+        // the rows phase.
+        acctdelArm(aid, 0);
+    } else {
+        // The send burned its whole retry budget (webhook.send terminal
+        // semantics), so this is a real refusal or a dead CP — freeze.
+        kv.set(ik, "failed:" + status);
+        m.state = "failed";
+        m.error = "instance " + t + " delete failed with status " + status +
+            " after " + ((request.activation && request.activation.attempts) || "?") +
+            " attempts";
+        acctdelWrite(aid, m);
+    }
+    return { ok: true };
+}
+
+// ── Deletion ops surface (root-only) ────────────────────────────────
+// A `failed` deletion freezes the account and waits for a human; these
+// two verbs are how the human sees it and resumes it.
+export function listDeletions() {
+    const rows = kv.prefix(ACCTDEL, "", 1000);
+    const out = [];
+    for (const e of rows) {
+        const rest = e.key.slice(ACCTDEL.length);
+        if (rest.indexOf("/") !== -1) continue; // per-instance bookkeeping
+        let m = {};
+        try { m = JSON.parse(e.value); } catch (_) {}
+        out.push({ aid: rest, state: m.state, phase: m.phase,
+                   is_team: !!m.is_team, started_ms: m.started_ms,
+                   updated_ms: m.updated_ms, finished_ms: m.finished_ms || null,
+                   error: m.error || null });
+    }
+    return { deletions: out };
+}
+
+export function retryDeletion(aid) {
+    const m = acctdelMarker(aid);
+    if (m === null) return jsonError(404, "no such deletion");
+    if (m.state !== "failed") return jsonError(409, "not failed");
+    // Reset failed instances to unsent (the same idempotency keys re-map
+    // onto fresh sends) and re-enter the instances phase.
+    const rows = kv.prefix(ACCTDEL + aid + "/inst/", "", 1000);
+    for (const e of rows) {
+        if (e.value.indexOf("failed:") === 0) kv.delete(e.key);
+    }
+    m.state = "running";
+    m.phase = "instances";
+    delete m.error;
+    acctdelWrite(aid, m);
+    acctdelArm(aid, 0);
+    return { ok: true, aid: aid };
+}
+
 // POST ?fn=provisionInstance, args [name, account?]. Identity is the
 // OIDC-verified id_token `sub` the RP guard put on request.auth — NOT a
 // client-supplied field (closes the old signup trust-the-body gap). Creates the
@@ -939,6 +1424,7 @@ export function provisionInstance(name, account) {
     const caller = accountHashFor(sub);
     backfillSelf(caller, sub);
     const aid = (typeof account === "string" && account) ? account : caller;
+    if (isDeleting(aid)) return jsonError(409, "account deletion in progress");
     if (!isActiveMember(aid, caller)) {
         return jsonError(403, "not a member of that account");
     }
@@ -1029,6 +1515,13 @@ function handleSession() {
     const a = request.auth || {};
     if (!a.sub) return { is_root: !!a.is_root, sub: null, accounts: [], active_account: null, owned: [] };
     const h = accountHashFor(a.sub);
+    // Mid-deletion the session must not rebuild anything: report the
+    // deletion instead so the SPA renders "deletion in progress" rather
+    // than an empty dashboard that invites re-provisioning.
+    if (isDeleting(h)) {
+        return { is_root: !!a.is_root, sub: a.sub, deleting: true,
+                 accounts: [], active_account: null, owned: [] };
+    }
     backfillSelf(h, a.sub);
     const pre = "user/" + h + "/accounts/";
     const accounts = kv.prefix(pre, "", 1000).map((e) => {
@@ -1197,6 +1690,12 @@ function deployGate(body) {
         if (!canAccess(accountHashFor(auth.sub), b.tenant)) {
             jsonError(403, "not your instance"); return null;
         }
+    }
+    // A deploy racing the owning account's deletion would stage into a
+    // tenant the CP is tearing down — refuse while the job runs.
+    const owner = kv.get("instance/" + b.tenant + "/owner");
+    if (owner !== null && isDeleting(owner)) {
+        jsonError(409, "account deletion in progress"); return null;
     }
     return b;
 }
@@ -1769,8 +2268,11 @@ function handleHistory(tenant) {
     const auth = request.auth || {};
     if (!auth.sub) return jsonError(401, "unauthenticated");
     if (!validId(tenant)) return jsonError(400, "invalid tenant");
-    if (!auth.is_root &&
-        ownedInstances(accountHashFor(auth.sub)).indexOf(tenant) === -1) {
+    // `canAccess` — the same reach primitive every other tenant route
+    // uses, so a team MEMBER reads history like they read logs and kv
+    // (the old ownedInstances check saw only the caller's personal
+    // account and 403'd members of the owning team).
+    if (!auth.is_root && !canAccess(accountHashFor(auth.sub), tenant)) {
         return jsonError(403, "not your instance");
     }
     const sk = platform.scope(tenant).kv;
@@ -1845,6 +2347,12 @@ const ROUTES = [
     ["PUT",    "/v1/accounts/:aid/members/:h",  "accountOwner",  (c) => setMemberRole(c.params.aid, c.params.h, c.body.role)],
     ["DELETE", "/v1/accounts/:aid/members/:h",  "accountOwner",  (c) => removeMember(c.params.aid, c.params.h)],
     ["POST",   "/v1/accounts/:aid/leave",       "authed",        (c) => leaveAccount(c.params.aid)],
+    // account deletion + account-rows export (rove#340)
+    ["POST",   "/v1/account/delete",            "authed",        (c) => requestAccountDeletion(c.body.confirm)],
+    ["DELETE", "/v1/accounts/:aid",             "accountOwner",  (c) => deleteTeamAccount(c.params.aid, c.body && c.body.confirm)],
+    ["GET",    "/v1/deletions",                 "root",          (c) => listDeletions()],
+    ["POST",   "/v1/deletions/:aid/retry",      "root",          (c) => retryDeletion(c.params.aid)],
+    ["GET",    "/v1/accounts/:aid/export",      "accountMember", (c) => accountExport(c.params.aid)],
     ["GET",    "/v1/accounts/:aid/billing",     "accountMember", (c) => getBilling(c.params.aid)],
     ["GET",    "/v1/billing/config",            "authed",        (c) => billingConfigPk()],
     ["POST",   "/v1/accounts/:aid/billing/subscribe", "accountOwner", (c) => subscribeBilling(c.params.aid, c.body.tier)],
