@@ -74,6 +74,70 @@ const evil = postLogin(s(), "email=jess@example.com&return_to=" + encodeURICompo
 const evilMt = JSON.parse(evil.body).magic_link.split("mt=")[1];
 expect(evil).toHaveWritten(MK(evilMt), { return_to: ISS + "/" });
 
+// ── one-submission entry: cross-origin return_to via the client registry ──
+// The static marketing page POSTs /login directly with a dashboard
+// return_to. safeReturnTo accepts a cross-origin return_to iff its origin
+// is a registered OIDC client's — the same allowlist RP-initiated logout
+// uses for post_logout_redirect_uri.
+const CFG = {
+  "_oidc/config/default": JSON.stringify({
+    clients: [{ client_id: "admin-dashboard", redirect_uris: ["https://app.${ISSUER_PARENT}/_rp/callback"] }],
+    login_path: "/login",
+  }),
+};
+const APP_RT = "https://app.rewindjs.com/_rp/login"; // registered origin, RP-chosen path
+
+// registered client origin → stored verbatim in the magic record
+const xo = postLogin(s(CFG), "email=jess@example.com&return_to=" + encodeURIComponent(APP_RT));
+const xoMt = JSON.parse(xo.body).magic_link.split("mt=")[1];
+expect(xo).toHaveWritten(MK(xoMt), { return_to: APP_RT });
+
+// same return_to with NO client registry configured → the provider throws,
+// safeReturnTo catches and rejects: issuer root
+const noreg = postLogin(s(), "email=jess@example.com&return_to=" + encodeURIComponent(APP_RT));
+const noregMt = JSON.parse(noreg.body).magic_link.split("mt=")[1];
+expect(noreg).toHaveWritten(MK(noregMt), { return_to: ISS + "/" });
+
+// registry present but an unregistered origin → still the issuer root
+const unreg = postLogin(s(CFG), "email=jess@example.com&return_to=" + encodeURIComponent("https://evil.example.com/steal"));
+const unregMt = JSON.parse(unreg.body).magic_link.split("mt=")[1];
+expect(unreg).toHaveWritten(MK(unregMt), { return_to: ISS + "/" });
+
+// ── per-address send cooldown (email path only) ───────────────────────────
+const NOW = Date.parse("2026-07-01T00:00:00Z"); // the scenario clock
+const CD = (a) => "_oidc/magic_cooldown/" + crypto.sha256(a);
+const wroteCooldown = (n) => n.effects.some((e) => e.kind === "write" && String(e.key).indexOf("_oidc/magic_cooldown/") === 0);
+
+// a send 10s ago → the identical "Check your email" page, but nothing is
+// minted and nothing is sent (the earlier link still works; the identical
+// response means no enumeration and no bombing amplification)
+const cooled = postLogin(
+  s({ resend_key: "re_test", [CD("jess@example.com")]: String(NOW - 10 * 1000) }),
+  "email=jess@example.com&return_to=" + encodeURIComponent(ISS + "/"),
+);
+expect(cooled.status).toBe(200);
+expect(cooled.body).toMatch(/Check your email/);
+expect(wroteMagic(cooled)).toBe(false);
+expect(cooled.effects.some((e) => e.kind === "write" && String(e.key).indexOf("_send/owed/") === 0)).toBe(false);
+
+// a send 120s ago → outside the window: the email goes out and the
+// cooldown timestamp is refreshed
+const warmed = postLogin(
+  s({ resend_key: "re_test", [CD("jess@example.com")]: String(NOW - 120 * 1000) }),
+  "email=jess@example.com&return_to=" + encodeURIComponent(ISS + "/"),
+);
+expect(warmed).toHaveSent("email", { to: ["jess@example.com"] });
+expect(wroteMagic(warmed)).toBe(true);
+expect(wroteCooldown(warmed)).toBe(true);
+
+// dev seam unaffected: with no Resend key the cooldown never applies
+// (there is no email to bomb) — the magic_link JSON still comes back
+const devCooled = postLogin(
+  s({ [CD("jess@example.com")]: String(NOW - 10 * 1000) }),
+  "email=jess@example.com&return_to=" + encodeURIComponent(ISS + "/"),
+);
+expect(JSON.parse(devCooled.body).magic_link).toContain(ISS + "/login/verify?mt=");
+
 // ── verifyLogin (GET /login/verify) ───────────────────────────────────────
 const verify = (scn, mt, sid) => scn.inbound({
   method: "GET",
