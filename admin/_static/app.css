@@ -786,6 +786,10 @@ button.danger:disabled {
 }
 
 .kv-table .kv-actions button.danger {
+  /* Outline style: the global `button.danger` paints a solid --danger
+     fill, and without this reset the per-row override of `color` alone
+     yields danger-on-danger — illegible. Keep fill for hover only. */
+  background: transparent;
   color: var(--danger);
   border-color: var(--danger);
 }
