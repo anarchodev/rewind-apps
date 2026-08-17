@@ -104,13 +104,28 @@ const SEAMS = [
   },
 ];
 
+// The hop in view reads BOTH keys the seam before it touched, and
+// writes one of its own — one row per blame outcome that matters, in
+// the state pane below.
+// `default`, not a named export: a send_callback activation dispatches
+// the default export (`exportForActivation`), and a handler the epilogue
+// cannot find simply never runs — leaving an empty pane that looks like
+// a handler which read nothing.
+const HANDLER = `export default function () {
+  try { kv.get("stock/sku-9"); } catch (e) {}
+  try { kv.get("order/1042"); } catch (e) {}
+  kv.set("cart/mine", "1");
+  return "x";
+}
+`;
+
 const BUNDLE = {
   request_id: "req_0100000000000002", deployment_id: "dep_d41f0cabcdef1234",
   tenant_id: "acme", saga_id: "sg-demo", activation: "send_callback",
   entry_path: "handlers/webhooks.mjs",
-  entry_source: "export function onDelivery() { return 'x'; }\n",
+  entry_source: HANDLER,
   modules: [
-    { path: "handlers/webhooks.mjs", source: "export function onDelivery() { return 'x'; }\n" },
+    { path: "handlers/webhooks.mjs", source: HANDLER },
   ],
   app_imports: {}, packages: [], seed: "1",
   timestamp_ns: "1786940002300000000", js_engine_version: 1, tape_blobs: {},
@@ -291,6 +306,59 @@ check("a drag past the start of this hop clamps to it, never into another hop",
   dragged.playhead >= anchor.left - 0.01 && /^hop 2\/4 · /.test(dragged.chip) &&
   dragged.hash === "#/acme/req_0100000000000002",
   `${dragged.playhead} · ${dragged.chip} · ${dragged.hash}`);
+
+// ── Blame: who wrote the value this hop was served ───────────────────
+//
+// The same seam scan, read from the other direction. A mark asks "what
+// did this seam do to me?"; a chip in the state pane asks "who did this
+// to THIS key?" — and following either lands in the same place.
+// At the end of the run every read has happened — the drag above left
+// the playhead at the hop's first event, where the handler has
+// correctly seen nothing yet.
+await page.click('.transport__controls button[aria-label="Jump to end"]');
+await page.waitForSelector("#state-kv .statepane__row", { timeout: 30000 });
+const kvRows = await page.$$eval("#state-kv .statepane__row", (els) => els.map((e) => ({
+  key: e.querySelector(".statepane__key")?.textContent || "",
+  chip: e.querySelector(".statepane__origin")?.textContent || "",
+  title: e.querySelector(".statepane__origin")?.title || "",
+  tag: e.querySelector(".statepane__origin")?.tagName || "",
+  blame: !!e.querySelector(".statepane__origin--blame"),
+})));
+const rowFor = (k) => kvRows.find((r) => r.key === k);
+
+const written = rowFor("stock/sku-9");
+check("a value written in the seam before this hop names its writer",
+  written?.blame && written.chip === "POST /inventory" && written.tag === "BUTTON",
+  JSON.stringify(written));
+check("the blame chip says what it found and what following it does",
+  /wrote stock\/sku-9/.test(written?.title || "") &&
+  /open it in its own saga viewer/.test(written?.title || ""), written?.title);
+
+// The mistake that would make every chip untrustworthy: the seam's
+// OTHER activation only read this key, and must never be named as
+// having written it.
+const observed = rowFor("order/1042");
+check("a key the seam only READ is not blamed on its reader",
+  observed && !observed.blame && observed.chip === "read", JSON.stringify(observed));
+check("and the pane says why there is no name — a scanned seam, nothing wrote it",
+  /nothing in the seam before this hop wrote it/.test(observed?.title || ""),
+  observed?.title);
+
+const own = rowFor("cart/mine");
+check("a key this handler wrote stays 'you' — it is reading its own value",
+  own && own.chip === "you" && !own.blame, JSON.stringify(own));
+
+// Following a blame chip is the same jump as a seam mark, and equally
+// must not disturb the window that asked.
+const anchorBefore = page.url();
+const [blamePopup] = await Promise.all([
+  page.waitForEvent("popup", { timeout: 10000 }),
+  page.click("#state-kv .statepane__origin--blame"),
+]);
+check("following a blame chip opens the writer in its own viewer",
+  blamePopup.url().endsWith("#/acme/req_0100000000000021"), blamePopup.url());
+check("the window that asked keeps its own anchor", page.url() === anchorBefore, page.url());
+await blamePopup.close();
 
 // Following a MARK is a new window anchored at that activation — and it
 // must never disturb the window that asked. (With no opener, as here,
