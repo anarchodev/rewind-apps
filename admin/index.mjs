@@ -493,7 +493,16 @@ function subscribeBilling(aid, tier) {
     if (b.status !== null && BILLING_ACTIVE_STATUSES[b.status])
         return jsonError(409, "already subscribed — change the plan instead");
     const sk = stripe.client({ apiKey: apiKey });
-    const ctx = { aid: aid, tier: tier, price: price, cus: b.customer, link: false };
+    // The idempotency key is scoped by the PRIOR subscription (or "first"):
+    // it must change when a previous attempt dies, or Stripe's 24h idempotent
+    // replay hands the next subscribe the dead attempt's response — old
+    // subscription, canceled payment intent, stale client_secret ("This
+    // PaymentIntent's payment_method could not be updated… status of
+    // canceled"). Keying on the prior sub id keeps double-submits of the SAME
+    // attempt idempotent (both read the same prior state) while a new attempt
+    // after cancellation/expiry gets a fresh key.
+    const ctx = { aid: aid, tier: tier, price: price, cus: b.customer, link: false,
+                  prev: b.subscription || "first" };
     if (b.customer === null) {
         // No Stripe customer yet: create one, then chain to the incomplete
         // subscription. The link rows are written in the TERMINAL hop.
@@ -512,7 +521,7 @@ function issueIncompleteSubscription(sk, ctx) {
         { customer: ctx.cus, items: [{ price: ctx.price }],
           metadata: { tier: ctx.tier, aid: ctx.aid } },
         { on: "onBillingSubscription", ctx: ctx,
-          idempotencyKey: "subinc-" + ctx.aid + "-" + ctx.tier });
+          idempotencyKey: "subinc-" + ctx.aid + "-" + ctx.tier + "-" + ctx.prev });
 }
 
 function stripeHopFailed(label) {

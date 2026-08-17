@@ -270,6 +270,12 @@ expect(sub1).toHaveFetched(/api\.stripe\.com\/v1\/customers/);
 const hop2 = sub1.fetch(/v1\/customers/).resolve({ status: 200, done: true, body: j({ id: "cus_new" }) });
 expect(hop2.disposition).toBe("held");
 expect(hop2).toHaveFetched(/api\.stripe\.com\/v1\/subscriptions/);
+// First-ever attempt: the idempotency key is scoped by the prior
+// subscription ("first" when none) — a static per-(aid,tier) key would make
+// Stripe's 24h idempotent replay serve a dead attempt's canceled payment
+// intent to the next subscribe.
+const subFx = hop2.effects.filter((e) => e.kind === "fetch" && /v1\/subscriptions/.test(e.url))[0];
+expect(subFx.headers["Idempotency-Key"]).toBe("subinc-" + A + "-pro-first");
 const fin = hop2.fetch(/v1\/subscriptions/).resolve({ status: 200, done: true, body: j({
   id: "sub_new", status: "incomplete", customer: "cus_new",
   items: { data: [{ id: "si_new" }] },
@@ -304,6 +310,11 @@ const reSub = wLapsed.inbound({ method: "POST", path: "/v1/accounts/" + TEAM + "
   host: "app.rewindjs.com", body: j({ tier: "pro" }), session: { id: "al" } });
 expect(reSub.disposition).toBe("held");
 expect(reSub).toHaveFetched(/api\.stripe\.com\/v1\/subscriptions/);
+// Resubscribe after a dead subscription: the key carries the DEAD sub's id,
+// so it differs from the original attempt's key and Stripe creates a fresh
+// subscription instead of replaying the corpse.
+const reSubFx = reSub.effects.filter((e) => e.kind === "fetch" && /v1\/subscriptions/.test(e.url))[0];
+expect(reSubFx.headers["Idempotency-Key"]).toBe("subinc-" + TEAM + "-pro-sub_456");
 
 // Owner-only + tier validation.
 expect(w.inbound({ method: "POST", path: "/v1/accounts/" + TEAM + "/billing/subscribe",
