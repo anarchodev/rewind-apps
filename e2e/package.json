@@ -15,7 +15,8 @@
     "check:model": "node model-view-check.mjs",
     "check:engine": "node model-view-engine-check.mjs",
     "check:response": "node replay-response-check.mjs",
-    "check": "npm run check:surface && npm run check:model && npm run check:response"
+    "check:body": "node body-resolve-check.mjs",
+    "check": "npm run check:surface && npm run check:model && npm run check:response && npm run check:body"
   },
   "devDependencies": {
     "@playwright/test": "^1.49.0"

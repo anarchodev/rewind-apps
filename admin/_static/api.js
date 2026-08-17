@@ -91,7 +91,13 @@ async function originGet(path) {
 // log-server path shape `/v1/{inst}/...`; the chokepoint mounts it under
 // `/v1/logs/`.
 async function logFetch(path) {
-  return originGet(path.replace(/^\/v1\//, "/v1/logs/"));
+  return originGet(logPath(path));
+}
+
+/// The chokepoint mount, on its own so every log call site derives its URL
+/// the same way — including the ones that must NOT throw on a non-2xx.
+function logPath(path) {
+  return path.replace(/^\/v1\//, "/v1/logs/");
 }
 
 /// base64 → Uint8Array (browser-side; statics + tape decode).
@@ -100,6 +106,94 @@ function decodeB64(s) {
   const bin = atob(s);
   const out = new Uint8Array(bin.length);
   for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  return out;
+}
+
+// ── Out-of-line payload resolution ───────────────────────────────────
+//
+// A recorded payload over the inline cap is NOT in the log record: the
+// record keeps a pointer and the bytes stay in object storage. The
+// `body/{request_id}/{channel}/{index}` door turns that pointer back into
+// bytes, addressed by RAW TAPE ORDINAL within the channel.
+//
+// It is resolved HERE, eagerly, and folded into the bundle — the same
+// shape as the historical module sources, and for the same reason: the
+// replay origin holds no credential (the session cookie is `__Host-`-bound
+// to the dashboard), so the shell cannot reach the door at all. The shell
+// also needs the bytes BEFORE `CursorEngine.materialise`, which memoizes
+// the composed replay and re-runs it on every scrub — a lazy fetch
+// afterwards would have to bust that memo on every UI interaction.
+
+// A per-activation `fetch_responses` tape carries one entry — the chunk
+// this activation delivers — but the shell reads the LAST entry, so probe
+// a short run and stop at the first ordinal the door does not know. The
+// cap bounds a record whose channel is longer than expected; it is not a
+// correctness boundary, since only the last entry is ever read.
+const FETCH_PROBE_LIMIT = 4;
+
+/// Resolve ONE recorded payload. Returns the door's VERDICT, never a
+/// throw: an unresolvable payload is a fact the shell has to show (409 —
+/// recorded as nothing; 410 — no longer stored; 503 — no content store),
+/// and an exception here would flatten it back into the silently-empty
+/// body this door exists to eliminate.
+async function resolveBody(instance_id, request_id, channel, index) {
+  const path = logPath(`/v1/${seg(instance_id)}/body/${seg(request_id)}/${channel}/${index}`);
+  let res;
+  try {
+    res = await fetch(adminBase() + path, { credentials: "same-origin" });
+  } catch (e) {
+    return { status: 0, error: String(e?.message || e) };
+  }
+  if (!res.ok) {
+    const txt = await res.text().catch(() => "");
+    return { status: res.status, error: (txt || res.statusText || "").trim() };
+  }
+  const j = await res.json().catch(() => null);
+  if (!j || typeof j.bytes_b64 !== "string") {
+    return { status: res.status, error: "the door returned no bytes" };
+  }
+  // `source` is HOW it resolved (pool | content | carried | empty) — the
+  // shell repeats it when it has to explain what it is showing.
+  return {
+    status: 200,
+    source: j.source || "unknown",
+    len: j.len ?? 0,
+    bytes: decodeB64(j.bytes_b64) ?? new Uint8Array(0),
+  };
+}
+
+/// Every address this record's replay might need, keyed `"{channel}/{index}"`.
+///
+/// The dashboard does not parse RTAP, so it cannot see which entries are
+/// out of line — it asks by ordinal and lets the door answer. An entry
+/// whose bytes rode the tape comes back as `source: "carried"`, which is
+/// inert (the shell already has those bytes from the tape blob); the probe
+/// exists for the entries that did not.
+async function resolveRecordBodies(instance_id, record, tapesField) {
+  const out = {};
+  const rid = String(record.request_id ?? "");
+  if (!rid) return out;
+
+  const jobs = [];
+  // trigger_payload/0 — the activation's Msg: an inbound request body, or
+  // a continuation's `{"ctx": …}` envelope. Skipped when the record
+  // already carries the body inline, which is the common case.
+  if (tapesField.trigger_payload_tape_b64 && !tapesField.request_body_b64) {
+    jobs.push(["trigger_payload", 0]);
+  }
+  // fetch_responses — only a `fetch_chunk` activation takes its payload
+  // from this channel; every other kind reads it from somewhere else.
+  if (tapesField.fetch_responses_tape_b64 && record.activation === "fetch_chunk") {
+    for (let i = 0; i < FETCH_PROBE_LIMIT; i++) jobs.push(["fetch_responses", i]);
+  }
+
+  for (const [channel, index] of jobs) {
+    const r = await resolveBody(instance_id, rid, channel, index);
+    // 404 on `fetch_responses` means the channel ended — stop probing
+    // rather than recording a run of phantom failures.
+    if (r.status === 404 && channel === "fetch_responses") break;
+    out[channel + "/" + index] = r;
+  }
   return out;
 }
 
@@ -595,6 +689,17 @@ export const api = {
     // attributable. 0 = unknown (pre-stamp / non-handler record).
     const js_engine_version = tapesField.js_engine_version ?? 0;
     const bodyBytes = decodeB64(tapesField.request_body_b64);
+    // Out-of-line payloads, resolved through the body door and keyed by
+    // tape address. Best-effort as a WHOLE (a door outage must not stop a
+    // replay from opening) but never per-entry: each address that was
+    // asked for is present, carrying either bytes or the door's refusal,
+    // so the shell can tell "not asked" from "asked and unresolvable".
+    let resolvedBodies = {};
+    try {
+      resolvedBodies = await resolveRecordBodies(instance_id, record, tapesField);
+    } catch (_) {
+      resolvedBodies = {};
+    }
 
     return {
       request_id: record.request_id,
@@ -637,6 +742,12 @@ export const api = {
       entry_fn: exportName,
       activation_bytes: activationBytes,
       activation_bytes_truncated: !!tapesField.activation_bytes_truncated,
+      // `{channel}/{index}` → {status:200, source, len, bytes} for a
+      // resolved payload, or {status, error} for one the door refused.
+      // The `bytes` Uint8Arrays survive the shell's sessionStorage bundle
+      // cache (its replacer/reviver round-trips typed arrays at any depth);
+      // nothing here is a BigInt, which that cache flattens to a string.
+      resolved_bodies: resolvedBodies,
       sources_unavailable: sourcesUnavailable,
       historical_manifest_missing: sourcesUnavailable,
     };
