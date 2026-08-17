@@ -668,8 +668,13 @@ function fmtDuration(ns) {
     return `${Math.round(n / 60e9)} min`;
 }
 
+// Wall-clock ns → local time. Deliberately NOT BigInt: these arrive as
+// bare JSON numbers (already past f64's exact range), and a BigInt()
+// of a fractional value throws — a rail that crashes takes the whole
+// viewer with it, to gain sub-millisecond digits nobody reads.
 function fmtClock(ns) {
-    const ms = Number(BigInt(ns || 0) / 1000000n);
+    const ms = Math.round(Number(ns || 0) / 1e6);
+    if (!Number.isFinite(ms)) return "—";
     const d = new Date(ms);
     return d.toLocaleTimeString([], { hour12: false }) +
         "." + String(d.getMilliseconds()).padStart(3, "0").slice(0, 1);
