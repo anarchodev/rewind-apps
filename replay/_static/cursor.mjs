@@ -56,6 +56,8 @@ export class CursorEngine {
         this._oomLimit = Module.cwrap("arena_oom_limit",       "number", []);
         this._scanCache = new WeakMap();
         this._matCache  = new WeakMap();
+        this._readLog   = [];
+        this._hookInputIndex();
     }
 
     _decoder() {
@@ -94,6 +96,9 @@ export class CursorEngine {
         // replays ensures one replay's writes don't leak into the
         // next.
         this.M._kvOverlay = new Map();
+        // Per-run like the overlay: the reads recorded for the LAST
+        // stop must not leak into the next one.
+        this._readLog = [];
         // §9: seed the per-context PRNG from the captured request's
         // seed. `arena_set_random_seed(seed_lo, seed_hi)` splits the
         // 64-bit seed across two u32 args (WASM ABI). Zero is the
@@ -369,7 +374,11 @@ export class CursorEngine {
         // The END-of-run Model view, captured here for the same reason
         // `outcome` is: this is the only pass that runs the handler to
         // completion, and every later engine call resets the overlay.
-        const endKv = this._modelViewHere({ replay });
+        // Flagged as the END: the handler has finished, so every
+        // entry in the interaction log has run and the conservative
+        // mid-run cut (which stops at the last confirmed kv op) would
+        // wrongly withhold a trailing effect here.
+        const endKv = { ...this._modelViewHere(), end: true };
 
         return {
             replay,
@@ -518,7 +527,7 @@ export class CursorEngine {
                 results.push({
                     eventOrdinal: eventIdx,
                     frames,
-                    kv: this._modelViewHere(mat),
+                    kv: this._modelViewHere(),
                 });
             }
             if (eventIdx >= hi) return 1;
@@ -538,26 +547,73 @@ export class CursorEngine {
     }
 
     // The handler's view of the Model at the CURRENT stop of a paused
-    // run. Two halves, because a handler sees two things: what it was
-    // served (the kv tape, consumed in order — `_cursor` is how far)
-    // and what it has written (the overlay, which the host's `kv_get`
-    // consults BEFORE the tape, so a write shadows a read of the same
-    // key exactly as it did live).
+    // run. Two halves, because a handler sees two things: what it has
+    // written (the overlay, which the host consults BEFORE the recorded
+    // inputs, so a write shadows a read of the same key exactly as it
+    // did live) and what it has been served (the keys it has actually
+    // read, in order).
     //
-    // Copies, not references: both are per-run mutable state that keeps
-    // moving after this returns.
-    _modelViewHere(mat) {
+    // Copies, not references: both keep moving after this returns.
+    _modelViewHere() {
         const overlay = this.M._kvOverlay;
-        const kvTape = mat?.replay?.tapes?.kv;
         return {
             // key → value written so far; `null` = deleted.
             writes: overlay ? new Map(overlay) : new Map(),
-            // How many kv tape entries the run has consumed. The caller
-            // pairs this with the tape to know WHICH reads were served
-            // (and, since every read consumes exactly one entry, how far
-            // through the recorded interaction log the run has got).
-            readCursor: kvTape?._cursor ?? 0,
+            // Keys read from the recorded inputs so far, in order.
+            // NOT a tape cursor: the host answers reads by KEY out of an
+            // index, so no cursor exists to read. (The tapes carry a
+            // `_cursor` field that looks like one — nothing ever moves
+            // it. Reading it was this pane's original bug.)
+            reads: this._readLog ? this._readLog.slice() : [],
         };
+    }
+
+    // Record, in order, every key the running handler reads from the
+    // recorded inputs.
+    //
+    // The host serves reads out of `Module._inputIndex` — Maps keyed by
+    // key, built LAZILY on the run's first read — after consulting the
+    // overlay. So a read of a key the handler already wrote never
+    // arrives here, which is correct: that is a read of its own value,
+    // and capture elides it from the tape for the same reason.
+    //
+    // Hooked as a property setter rather than by wrapping after a run,
+    // because the index does not exist until the first read: this way
+    // the very first pass is instrumented too, and the index's own
+    // construction rules (first-occurrence wins, which ops are indexed)
+    // stay in the one place that owns them.
+    _hookInputIndex() {
+        const self = this;
+        const wrapMap = (m) => (!m || typeof m.get !== "function") ? m : new Proxy(m, {
+            get(t, p, r) {
+                if (p === "get") {
+                    return (k) => { (self._readLog ||= []).push(k); return t.get(k); };
+                }
+                const v = Reflect.get(t, p, r);
+                return typeof v === "function" ? v.bind(t) : v;
+            },
+        });
+        let held;
+        try {
+            Object.defineProperty(this.M, "_inputIndex", {
+                configurable: true,
+                get: () => held,
+                set: (v) => {
+                    if (v && !v.__roveHooked) {
+                        v.kvGet = wrapMap(v.kvGet);
+                        v.kvPrefix = wrapMap(v.kvPrefix);
+                        v.__roveHooked = true;
+                    }
+                    held = v;
+                },
+            });
+        } catch (_) {
+            // A future glue that makes the slot non-configurable simply
+            // leaves reads unrecorded; the pane then shows writes only
+            // and says the read side is unavailable, rather than
+            // inventing one.
+            this._readsUnavailable = true;
+        }
     }
 
     _anchorToEventIdx(mat, anchor) {

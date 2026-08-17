@@ -678,9 +678,13 @@ function fmtDuration(ns) {
 // of a fractional value throws — a rail that crashes takes the whole
 // viewer with it, to gain sub-millisecond digits nobody reads.
 function fmtClock(ns) {
-    const ms = Math.round(Number(ns || 0) / 1e6);
+    // A missing timestamp is not 1970: `Number(undefined || 0)` would
+    // render a confident-looking clock for a hop that carries no time.
+    if (ns == null || Number(ns) === 0) return "—";
+    const ms = Math.round(Number(ns) / 1e6);
     if (!Number.isFinite(ms)) return "—";
     const d = new Date(ms);
+    if (Number.isNaN(d.getTime())) return "—";
     return d.toLocaleTimeString([], { hour12: false }) +
         "." + String(d.getMilliseconds()).padStart(3, "0").slice(0, 1);
 }
@@ -781,10 +785,15 @@ function renderTapeRail(saga, anchorId, onSelectHop) {
         btn.appendChild(r1);
 
         const r2 = el("div", { className: "tape__hop-r2 t-mono-sm" });
-        r2.appendChild(el("span", {
-            className: "badge " + (h.status >= 500 ? "badge--err" : "badge--ok"),
-            text: String(h.status || 0),
-        }));
+        // The real 2xx/3xx/4xx/5xx split — a 404 badged green reads as
+        // a hop that went fine. A hop with no recorded status gets no
+        // badge rather than a fabricated 0.
+        if (h.status) {
+            r2.appendChild(el("span", {
+                className: "badge " + badgeKindFor(h.status),
+                text: String(h.status),
+            }));
+        }
         r2.appendChild(document.createTextNode(
             (h.method ? h.method + " " : "") + (h.path || "")));
         btn.appendChild(r2);
@@ -1520,6 +1529,10 @@ async function inspectAndRenderVars(eventOrdinal) {
     // No frame is alive at the trailing FUNC_EXIT. Show an empty-state
     // and skip the engine round-trip.
     if (!ev || (ev.kind === "FUNC_EXIT" && eventOrdinal === state.mat.events.length - 1)) {
+        // Claim the sequence FIRST: an inspect already in flight for an
+        // earlier ordinal would otherwise still match and repaint this
+        // pane with mid-run state after we have settled on the end.
+        ++inspectSeq;
         renderVariablesEmpty("(no frame alive)");
         // The run has finished here: the LAST stop is the end state,
         // which is exactly what materialise's pass-1 overlay holds.
@@ -1590,7 +1603,7 @@ function endOfRunModelView() {
 // What the handler can SEE at this stop, and what it has queued.
 //
 // `kv` is the snapshot `inspectAt` took on the stopped run
-// (`{writes, readCursor}`); null means we have no exact stop for this
+// (`{writes, reads}`); null means we have no exact stop for this
 // playhead yet, and the pane says so rather than showing a state from
 // somewhere else in the run — a stale view here is indistinguishable
 // from a true one, which is the failure that would make the pane
@@ -1606,9 +1619,15 @@ function renderStatePane(kv) {
         return;
     }
 
-    const kvEntries = state.mat?.replay?.tapes?.kv?.entries || [];
+    // rtap hands back a plain ARRAY of entries per channel — there is
+    // no `.entries` property, and reading one yields
+    // `Array.prototype.entries` (a function, and truthy, so a `|| []`
+    // fallback never fires). That mistake made this pane throw on
+    // every render.
+    const kvTape = state.mat?.replay?.tapes?.kv;
+    const kvEntries = Array.isArray(kvTape) ? kvTape : [];
     const rows = foldModelView({
-        kvEntries, readCursor: kv.readCursor, writes: kv.writes,
+        kvEntries, reads: kv.reads, writes: kv.writes,
     });
 
     $.stateKv.replaceChildren();
@@ -1643,8 +1662,8 @@ function renderStatePane(kv) {
     // only after its writes commit — so "pending" is literal.
     if (!$.stateEffects) return;
     const log = state.mat?.outcome?.effects || [];
-    const { cut, confident } = cutInteractionLog(log, {
-        readCursor: kv.readCursor, writes: kv.writes,
+    const { cut, confident, complete } = cutInteractionLog(log, {
+        reads: kv.reads, writes: kv.writes, end: kv.end === true,
     });
     const fx = pendingEffects(log, confident ? cut : log.length, kv.writes);
 
@@ -1665,7 +1684,12 @@ function renderStatePane(kv) {
     if ($.effectsSub) {
         // When neither signal pins the stop, say the list is the whole
         // hop's rather than let it read as "queued by now".
-        $.effectsSub.textContent = confident ? "queued by this point" : "this hop (position unknown)";
+        // "queued by this point" would claim a completeness the cut
+        // does not have: it stops at the last CONFIRMED kv entry, so
+        // effects after that are withheld on purpose.
+        $.effectsSub.textContent = !confident ? "this hop (position unknown)"
+            : complete ? "queued by this point"
+            : "queued through the last confirmed step";
     }
 }
 

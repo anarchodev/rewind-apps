@@ -12,7 +12,8 @@
     "report": "playwright show-report",
     "check:surface": "node epilogue-surface-check.mjs",
     "check:tape": "node tape-rail-check.mjs",
-    "check:model": "node model-view-check.mjs"
+    "check:model": "node model-view-check.mjs",
+    "check:engine": "node model-view-engine-check.mjs"
   },
   "devDependencies": {
     "@playwright/test": "^1.49.0"

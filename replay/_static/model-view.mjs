@@ -28,6 +28,10 @@ const HARNESS_PREFIX = "__rove_store/";
 const OUTPUT_KEY = "__replay_output__";
 
 const KV_OP_GET = 0, KV_OP_PREFIX = 3;
+// Read outcomes (src/tape/root.zig `KvOutcome`, mirrored in rtap).
+// `not_found` is a different fact from `err`/`refused`, and the pane
+// must not flatten them into one word.
+const KV_OK = 0, KV_NOT_FOUND = 1, KV_REFUSED = 3;
 
 export function isInternalKey(k) {
     return typeof k !== "string" || k === OUTPUT_KEY || k.startsWith(HARNESS_PREFIX);
@@ -53,44 +57,71 @@ export function durableEffectFor(key) {
 
 /// Fold the handler's view of the Model at a stop.
 ///
-/// `kvEntries` are the parsed kv tape entries (rtap), `readCursor` how
-/// many of them the run consumed, `writes` the overlay snapshot
-/// (key → value, `null` = deleted).
+/// `kvEntries` is the kv tape (rtap returns a plain ARRAY of entries —
+/// it has no `.entries` property, and reading one silently yields
+/// `Array.prototype.entries`), `reads` the keys the run has read so
+/// far in order, `writes` the overlay snapshot (key → value, `null` =
+/// deleted).
 ///
 /// Rows carry WHERE the value came from, because that distinction is
 /// the whole diagnostic value: `you` means this handler put it there,
 /// `read` means the handler was served it and someone else owns it.
-export function foldModelView({ kvEntries = [], readCursor = 0, writes = new Map() }) {
+export function foldModelView({ kvEntries = [], reads = [], writes = new Map() }) {
     const rows = new Map();
 
-    // Reads first: the values the handler was served, in the order it
-    // asked. A prefix scan contributes every row it returned — those
-    // are keys the handler saw.
-    const consumed = kvEntries.slice(0, Math.max(0, readCursor));
-    for (const e of consumed) {
+    // Index the recorded inputs the way the HOST does — by key, first
+    // occurrence wins — because that is what a read was actually
+    // served.
+    const byKey = new Map();
+    const prefixByKey = new Map();
+    for (const e of Array.isArray(kvEntries) ? kvEntries : []) {
+        if (!e || isInternalKey(e.key)) continue;
         if (e.op === KV_OP_PREFIX) {
-            for (const r of e.results || []) {
+            if (!prefixByKey.has(e.key)) prefixByKey.set(e.key, e);
+        } else if (e.op === KV_OP_GET && !byKey.has(e.key)) {
+            byKey.set(e.key, e);
+        }
+    }
+
+    // Reads first, in the order the handler asked. A prefix scan
+    // contributes every row it returned — those are keys it saw.
+    for (const key of Array.isArray(reads) ? reads : []) {
+        if (typeof key !== "string" || isInternalKey(key)) continue;
+        const scan = prefixByKey.get(key);
+        if (scan) {
+            for (const r of scan.results || []) {
                 if (isInternalKey(r.key)) continue;
-                rows.set(r.key, { key: r.key, value: r.value, origin: "read", deleted: false });
+                rows.set(r.key, { key: r.key, value: r.value, origin: "read", state: "ok" });
             }
             continue;
         }
-        if (e.op !== KV_OP_GET || isInternalKey(e.key)) continue;
-        // outcome != ok means the handler was served "absent", which is
-        // itself a fact it acted on.
-        const absent = e.outcome !== 0;
+        const e = byKey.get(key);
+        // A read the recorded inputs cannot answer. Saying so is the
+        // point: the alternative is rendering it as absent, which
+        // asserts something about the tenant's data that the capture
+        // does not contain.
+        if (!e) {
+            rows.set(key, { key, value: null, origin: "read", state: "unrecorded" });
+            continue;
+        }
+        // The outcome is itself the fact the handler acted on — and
+        // "not found" is a different claim from "the read failed".
+        const state = e.outcome === KV_OK ? "ok"
+            : e.outcome === KV_NOT_FOUND ? "absent"
+            : e.outcome === KV_REFUSED ? "refused"
+            : "error";
         rows.set(e.key, {
             key: e.key,
-            value: absent ? null : e.value,
+            value: state === "ok" ? e.value : null,
             origin: "read",
-            deleted: absent,
+            state,
         });
     }
 
     // Writes shadow reads — the engine's own precedence.
     for (const [k, v] of writes) {
         if (isInternalKey(k)) continue;
-        rows.set(k, { key: k, value: v, origin: "you", deleted: v === null });
+        rows.set(k, { key: k, value: v, origin: "you", state: v === null ? "deleted" : "ok" });
     }
 
     return [...rows.values()].sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
@@ -107,21 +138,34 @@ const KV_LOG_KINDS = new Set(["read", "write", "delete"]);
 ///
 ///   · the overlay — replaying the log's writes/deletes must reproduce
 ///     it exactly;
-///   · the read cursor — the number of tape-consuming reads. A read of
-///     a key the handler already wrote consumes NOTHING (the engine
-///     answers it from the overlay, and capture elides it from the
-///     tape for the same reason), so the simulation skips those too.
+///   · the reads — the keys the run has actually read, in order. A read
+///     of a key the handler already wrote reaches no recorded input
+///     (the engine answers it from the overlay, and capture elides it
+///     for the same reason), so the simulation skips those too.
 ///
 /// The last prefix that satisfies BOTH is the cut. If nothing
-/// satisfies both — a shape neither signal can pin, e.g. a hop that
-/// neither read nor wrote — the caller is told (`confident: false`)
-/// so it can say the position is unknown rather than assert one.
-export function cutInteractionLog(log = [], { readCursor = 0, writes = new Map() } = {}) {
+/// satisfies both — a shape neither signal can pin — the caller is
+/// told (`confident: false`) so it can say the position is unknown
+/// rather than assert one.
+///
+/// `complete` says the cut reached the end of the log, i.e. every
+/// effect the hop ever emitted is included. It matters because the cut
+/// stops at the last CONFIRMED kv entry: trailing effects after it are
+/// deliberately withheld (claiming a promise the handler has not made
+/// is the one error worth avoiding here), so a caller must not label a
+/// short list as "everything queued by now".
+export function cutInteractionLog(log = [], { reads = [], writes = new Map(), end = false } = {}) {
+    // At the END of the run nothing is in doubt: the handler has
+    // finished, so every logged entry has run. The conservative
+    // mid-run cut below would withhold a trailing effect here and the
+    // pane would report 'none queued' for a hop that queued one.
+    if (end) return { cut: log.length, confident: true, complete: true };
     const real = new Map();
     for (const [k, v] of writes) if (!isInternalKey(k)) real.set(k, v);
+    const readKeys = (Array.isArray(reads) ? reads : []).filter((k) => !isInternalKey(k));
 
     const sim = new Map();
-    let taped = 0;
+    let served = 0;
     let cut = -1;
 
     const matches = () => {
@@ -134,34 +178,32 @@ export function cutInteractionLog(log = [], { readCursor = 0, writes = new Map()
     };
 
     // The empty prefix is a candidate too: a stop before anything ran.
-    if (taped === readCursor && matches()) cut = 0;
+    if (served === readKeys.length && matches()) cut = 0;
 
     for (let i = 0; i < log.length; i++) {
         const e = log[i] || {};
-        if (!KV_LOG_KINDS.has(e.kind)) {
-            // A non-kv effect moves neither signal, so nothing here can
-            // confirm it ran. It is included only when a LATER kv entry
-            // is confirmed (everything before a confirmed point ran) —
-            // never on its own. Claiming a trailing effect had fired
-            // would be the pane inventing a promise the handler has not
-            // made yet, which is the one error that matters here.
-            continue;
-        }
+        if (!KV_LOG_KINDS.has(e.kind)) continue;
+        // A cross-store op (`platform.scope(x).kv`) logs a BARE key
+        // while the write lands namespaced under `__rove_store/` — which
+        // the overlay comparison strips. Simulating it would put a key
+        // in `sim` that `real` can never contain, freezing the cut for
+        // the rest of the log.
+        if (e.store) continue;
+        if (isInternalKey(e.key)) continue;
         if (e.kind === "read") {
-            if (isInternalKey(e.key)) continue;
             // Read-your-write: served from the overlay, off-tape.
             if (!sim.has(e.key)) {
-                if (taped >= readCursor) break; // this read has not run yet
-                taped++;
+                if (served >= readKeys.length) break; // has not run yet
+                served++;
             }
-        } else if (!isInternalKey(e.key)) {
+        } else {
             sim.set(e.key, e.kind === "delete" ? null : e.value);
         }
-        if (taped === readCursor && matches()) cut = i + 1;
+        if (served === readKeys.length && matches()) cut = i + 1;
     }
 
-    if (cut < 0) return { cut: log.length, confident: false };
-    return { cut, confident: true };
+    if (cut < 0) return { cut: log.length, confident: false, complete: false };
+    return { cut, confident: true, complete: cut >= log.length };
 }
 
 const EFFECT_LABELS = {
