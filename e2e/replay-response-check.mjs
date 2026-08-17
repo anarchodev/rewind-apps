@@ -130,6 +130,39 @@ check("next() is held with no wire body", [held.held, held.body], [true, null]);
 check("a held hop still reports what the handler set (prod discarded it)",
   [held.status, held.headers], [201, { "x-a": "b" }]);
 
+// ── a thrown handler (worker_dispatch + response_building.thrownBody) ──
+//
+// None of the rules above apply on the throw path: the worker discards the
+// handler-set head and serves a bare 500. Deriving a thrown response through
+// the ordinary rules would report a status, headers and a body prod never
+// sent — and would fold them into the digest.
+
+const threw = (msg, response = {}, effects = []) =>
+  deriveWireResponse("whatever the handler returned", response, effects, "inbound", msg);
+
+check("a throw is 500 with the shared thrown body",
+  [threw("Error: boom").status, threw("Error: boom").body],
+  [500, "handler threw: Error: boom\n"]);
+
+check("an empty exception still gets a stable non-empty body",
+  threw("").body, "handler threw\n");
+
+check("the handler-set head is DISCARDED on a throw",
+  [threw("Error: boom", { status: 201, headers: { "x-a": "b" }, cookies: ["a=1"] }).status,
+   threw("Error: boom", { status: 201, headers: { "x-a": "b" }, cookies: ["a=1"] }).headers,
+   threw("Error: boom", { status: 201, headers: { "x-a": "b" }, cookies: ["a=1"] }).cookies],
+  [500, {}, []]);
+
+check("buffered stream chunks do NOT prepend to a thrown body",
+  threw("Error: boom", {}, [{ kind: "stream", data: "head-" }]).body,
+  "handler threw: Error: boom\n");
+
+check("a throw is flagged threw, not held",
+  [threw("Error: boom").threw, threw("Error: boom").held], [true, false]);
+
+check("a successful run is flagged neither",
+  [wire("x").threw, wire("x").held], [false, false]);
+
 // ── the epilogue actually uses it ───────────────────────────────────
 //
 // The derivation is only load-bearing if the generated epilogue calls
@@ -145,13 +178,19 @@ const epilogue = buildRequestEpilogue({
 
 for (const needle of [
   "const __deriveWire = function deriveWireResponse(",  // embedded by source
-  "__deriveWire(globalThis.__replay_result, globalThis.response, __effectLog, D.kind)",
+  "__deriveWire(globalThis.__replay_result, globalThis.response, __effectLog, D.kind, __threw && __threw.message)",
   "__dg.response(__wire.status, __wire.body)",          // one derivation, digest included
+  // The handler runs inside a catch, and the exception rides the parked
+  // output. Without this a throwing record parks nothing and the shell
+  // reports "did not complete" — on the records people replay most.
+  "} catch (e) {",
+  "__threw = { message: String(e), stack:",
+  "error: __threw,",
 ]) {
   if (!epilogue.includes(needle)) failures.push(`the epilogue never does: ${needle}`);
 }
 
-for (const field of ["status", "held", "headers", "cookies", "body", "bodyB64", "binary", "isJson"]) {
+for (const field of ["status", "held", "threw", "headers", "cookies", "body", "bodyB64", "binary", "isJson"]) {
   if (!epilogue.includes(`${field}: __wire.`)) {
     failures.push(`the parked output drops \`${field}\` — the response panel reads it`);
   }

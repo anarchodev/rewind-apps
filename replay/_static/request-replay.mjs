@@ -291,6 +291,16 @@ function foldKvRefusals(entries) {
 ///   - buffered `stream.write` chunks ship AHEAD of the body on a first-hop
 ///     HTTP terminal (`dispatcher.prependStreamChunks`).
 ///
+/// `thrown` is the exception's ToString when the handler (or its middleware)
+/// threw. Prod's throw path does not go through any of the rules above: the
+/// worker discards the handler-set head entirely and serves 500 with
+/// `handler threw: {ToString}\n` and NO headers at all
+/// (`worker_dispatch` → `response_builder.setSimpleResponse`, whose body comes
+/// from the same `response_building.thrownBody` the digest folds). Buffered
+/// stream chunks do not prepend either — that only happens on the success
+/// path. Deriving a thrown response through the ordinary rules would invent a
+/// status, headers and a body prod never sent.
+///
 /// `held` is `next(...)`: the connection stays open and prod ships nothing
 /// yet, so there is no wire response for this hop — the vetted status and
 /// headers are returned anyway because they are what the handler set and
@@ -304,7 +314,19 @@ function foldKvRefusals(entries) {
 /// source into the arena run (`deriveWireResponse.toString()`), so it may not
 /// close over anything in this module. That is also what makes it directly
 /// unit-testable from node (`e2e/replay-response-check.mjs`).
-export function deriveWireResponse(result, responseGlobal, effects, activationKind) {
+export function deriveWireResponse(result, responseGlobal, effects, activationKind, thrown) {
+    if (thrown !== undefined && thrown !== null) {
+        // `thrownBody`'s empty-exception fallback, verbatim: a failed format
+        // must still produce a stable, non-empty body rather than a silent
+        // 500 with nothing in it.
+        const msg = String(thrown);
+        return {
+            held: false, threw: true, status: 500, headers: {}, cookies: [],
+            body: msg.length ? "handler threw: " + msg + "\n" : "handler threw\n",
+            bodyB64: null, binary: false, isJson: false,
+        };
+    }
+
     const raw = responseGlobal || {};
 
     let status = raw.status;
@@ -361,7 +383,7 @@ export function deriveWireResponse(result, responseGlobal, effects, activationKi
 
     const held = !!(result && typeof result === "object" && result.__rove_disposition === "next");
     if (held) {
-        return { held: true, status, headers, cookies, body: null, bodyB64: null, binary: false, isJson: false };
+        return { held: true, threw: false, status, headers, cookies, body: null, bodyB64: null, binary: false, isJson: false };
     }
 
     const isBytes = result instanceof Uint8Array;
@@ -426,6 +448,7 @@ export function deriveWireResponse(result, responseGlobal, effects, activationKi
     const binary = body instanceof Uint8Array;
     return {
         held: false,
+        threw: false,
         status,
         headers,
         cookies,
@@ -724,7 +747,22 @@ export function buildRequestEpilogue({ record = {}, requestReads = null, bodyByt
         // Mirrors src/replay/epilogue.zig, which mirrors
         // module_execution.runMiddleware — a malformed middleware is a loud
         // 500, not a skipped gate.
+        // The handler runs INSIDE a try. A JS exception is an outcome prod
+        // serves (500 + `handler threw: …`), not an outcome that stops the
+        // replay: without this the run parked nothing, so the shell reported
+        // "did not complete" and no digest — on exactly the records people
+        // replay most. The offline sim has always caught; this is the third
+        // engine catching up.
+        //
+        // It cannot swallow a REPLAY DIVERGENCE. That verdict is HOST-side
+        // (`__rove_poison` → module linear memory) and brakes the run through
+        // the runtime's interrupt, which unwinds uncatchably — no JS `catch`,
+        // this one included, ever sees it. So a poisoned run still dies with
+        // nothing parked, which is exactly how an undeclared read is meant to
+        // surface.
         "  let __short = false;\n" +
+        "  let __threw = null;\n" +
+        "  try {\n" +
         "  if (typeof __rove_mw !== \"undefined\" && __rove_mw) {\n" +
         "    if (typeof __rove_mw.before !== \"function\") {\n" +
         "      globalThis.response = { status: 500, headers: {}, cookies: [] };\n" +
@@ -754,12 +792,29 @@ export function buildRequestEpilogue({ record = {}, requestReads = null, bodyByt
         "      globalThis.__replay_result = 'module export \"' + D.fn + '\" not found or not a function\\n';\n" +
         "    }\n" +
         "  }\n" +
+        "  } catch (e) {\n" +
+        // `message` is the exception's ToString, not its `.message` — prod's
+        // spelling. The worker's `takeExceptionMessage` records `Error: boom`
+        // on the log record and in the wire body; a bare `boom` would drop the
+        // error CLASS, which is often the whole diagnosis (SyntaxError vs
+        // TypeError vs a thrown string).
+        "    __threw = { message: String(e), stack: String((e && e.stack) || \"\") };\n" +
+        "    globalThis.__replay_result = null;\n" +
+        // Prod rolls the txn back on a throw, so the handler's writes and
+        // effects never happened. Mark them — reads and console lines are not
+        // outputs, and stream frames may already be on the wire (prod flushes
+        // eagerly), so those stay. This does NOT unfold them from the digest,
+        // and must not: the fold happens at push time here exactly as the
+        // worker folds each interaction as the handler performs it, so a
+        // rolled-back write is in prod's digest too.
+        "    for (const __e of __effectLog) {\n" +
+        "      if (__e.kind !== \"read\" && __e.kind !== \"log\" && __e.kind !== \"stream\") __e.rolledBack = true;\n" +
+        "    }\n" +
+        "  }\n" +
         // Park the RE-EXECUTED outcome on the host's kv side channel: kv.set
         // writes into the shell's overlay, never the tape, so the host can
         // read back what THIS run produced and compare it against what the
-        // capture recorded. Written only on the success path — a handler
-        // that throws leaves the key absent, which the shell reports as
-        // "did not complete" rather than as a bogus match.
+        // capture recorded.
         "  const __ser = (v) => { if (v === undefined || v === null) return null; if (typeof v === \"string\") return v; try { return JSON.stringify(v); } catch (_) { return String(v); } };\n" +
         // The WIRE response — what prod would have shipped, not the handler's
         // raw intent. Both the digest and the shell's response panel read it,
@@ -768,7 +823,7 @@ export function buildRequestEpilogue({ record = {}, requestReads = null, bodyByt
         // faithful reproduction. `deriveWireResponse` is embedded by source
         // because the arena run cannot import this module.
         "  const __deriveWire = " + deriveWireResponse.toString() + ";\n" +
-        "  const __wire = __deriveWire(globalThis.__replay_result, globalThis.response, __effectLog, D.kind);\n" +
+        "  const __wire = __deriveWire(globalThis.__replay_result, globalThis.response, __effectLog, D.kind, __threw && __threw.message);\n" +
         // Close the digest with the run's own wire response — the last element.
         //
         // NOT for a PARK. `next(...)` holds the connection and has no response
@@ -790,7 +845,7 @@ export function buildRequestEpilogue({ record = {}, requestReads = null, bodyByt
         // received, the result is what the handler returned, and they differ
         // whenever prod transformed one into the other (JSON-stringified,
         // byte-passed, stream-prefixed).
-        "  __rove_park_output(JSON.stringify({ status: __wire.status, held: __wire.held, headers: __wire.headers, cookies: __wire.cookies, body: __wire.binary ? null : __wire.body, bodyB64: __wire.bodyB64, binary: __wire.binary, isJson: __wire.isJson, result: __ser(globalThis.__replay_result), effects: __effectLog, digest: __dg ? __dg.hex() : null, divergence: __rove_divergence() }));\n" +
+        "  __rove_park_output(JSON.stringify({ status: __wire.status, held: __wire.held, threw: __wire.threw, error: __threw, headers: __wire.headers, cookies: __wire.cookies, body: __wire.binary ? null : __wire.body, bodyB64: __wire.bodyB64, binary: __wire.binary, isJson: __wire.isJson, result: __ser(globalThis.__replay_result), effects: __effectLog, digest: __dg ? __dg.hex() : null, divergence: __rove_divergence() }));\n" +
         "})();\n"
     );
 }

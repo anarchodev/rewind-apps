@@ -1895,8 +1895,12 @@ function selectModule(path) {
 //   "match"      — re-ran and produced the capture's status
 //   "mismatch"   — re-ran and produced a DIFFERENT status (the capture is
 //                  fine; the replay's inputs or environment are not)
-//   "incomplete" — the run never reached the end (threw, or was stopped),
-//                  so there is nothing to compare
+//   "incomplete" — the run never reached the end, so there is nothing to
+//                  compare. NOT a plain handler throw: prod serves a throw
+//                  (500 + `handler threw: …`), the epilogue catches it and
+//                  parks that response, and a faithful replay of a 500 is a
+//                  match. This is a run that was CUT — exhausted arena,
+//                  interrupt, or a replay divergence.
 //   "unknown"    — the capture carries no status to compare against
 function readFidelity(bundle, mat) {
     const capturedStatus = bundle.response?.status ?? null;
@@ -2007,9 +2011,21 @@ const RESP_TRUST = {
         cls: "badge--warn",
         title: "the capture carries no interaction digest (recorded before digests shipped), so nothing checks this response against production",
     },
+    offTape: {
+        label: "fiction — the replay read off-tape",
+        cls: "badge--diverged",
+        title: "the run observed an input the original never read, so everything downstream of that read is the replay's own invention",
+    },
 };
 
-function respTrust(f) {
+function respTrust(f, out) {
+    // The host-side divergence verdict outranks every other signal. An
+    // off-tape read does not throw — it poisons the run and hands back
+    // absent — so a diverged run can finish, produce a response, and even
+    // land on a digest that matches. Everything after that read is fiction,
+    // and a "verified" badge over it is the exact claim this panel exists
+    // not to make.
+    if (out?.divergence) return RESP_TRUST.offTape;
     if (!f) return RESP_TRUST.unverified;
     if (f.digestVerdict === "match") return RESP_TRUST.verified;
     if (f.digestVerdict === "mismatch" || f.verdict === "mismatch") return RESP_TRUST.diverged;
@@ -2058,9 +2074,11 @@ function renderResponse(bundle, mat, f) {
     $.respBody.replaceChildren();
 
     // The run never reached its end, so there is no replayed response to
-    // show. Say what the CAPTURE recorded instead, labelled as captured —
-    // a handler that threw is exactly when someone opens this panel, and
-    // an empty box would read as "it returned nothing".
+    // show. Say what the CAPTURE recorded instead, labelled as captured.
+    // A thrown handler does NOT land here — a throw is an outcome prod
+    // serves, so the epilogue catches it and parks a real 500. What lands
+    // here is a run that was CUT: an exhausted arena, an interrupt, or a
+    // replay divergence, none of which production experienced.
     if (!out) {
         const why = f?.run?.oom ? `arena exhausted (${f.run.oomUsed}/${f.run.oomLimit} bytes)`
                   : f?.threw ? "the handler threw"
@@ -2114,13 +2132,19 @@ function renderResponse(bundle, mat, f) {
         return;
     }
 
-    const trust = respTrust(f);
+    const trust = respTrust(f, out);
     const bytes = wireByteLength(out);
 
     $.respSummary.appendChild(el("span", {
         className: "badge " + badgeKindFor(out.status),
         text: String(out.status),
     }));
+    // A throw is a response production SERVES, so it gets the same trust
+    // treatment as any other — a faithful replay of a 500 is a match, not a
+    // failure to replay. The badge says which kind of 500 this is.
+    if (out.threw) {
+        $.respSummary.appendChild(el("span", { className: "badge badge--warn", text: "threw" }));
+    }
     const ct = (out.headers || {})["content-type"];
     if (ct) $.respSummary.appendChild(el("span", { className: "t-mono t-dim", text: ct }));
     $.respSummary.appendChild(el("span", {
@@ -2144,7 +2168,25 @@ function renderResponse(bundle, mat, f) {
         rows.push([k + (auto ? " (auto)" : ""), v, auto ? "t-dim" : ""]);
     }
     for (const c of out.cookies || []) rows.push(["set-cookie", c]);
-    $.respBody.appendChild(respSection("Wire", rows, "(no headers)"));
+    const wireSec = respSection("Wire", rows, "(no headers)");
+    // Name WHAT diverged. "fiction" without the read that caused it leaves
+    // the reader with a verdict and no way to act on it.
+    if (out.divergence) {
+        wireSec.appendChild(el("span", {
+            className: "t-meta c-error",
+            text: String(out.divergence),
+        }));
+    }
+    if (out.threw) {
+        // Worth stating rather than leaving as an absence: a handler that
+        // set a status and headers before throwing sees NONE of them
+        // shipped, and "no headers" alone reads as "the handler set none".
+        wireSec.appendChild(el("span", {
+            className: "t-meta t-dimmer",
+            text: "a throw discards the handler's response head — prod serves a bare 500",
+        }));
+    }
+    $.respBody.appendChild(wireSec);
 
     const sec = el("div", { className: "resp__section" });
     sec.appendChild(el("span", {
@@ -2162,12 +2204,27 @@ function renderResponse(bundle, mat, f) {
     // JSON-stringified, byte-passed, or prefixed with buffered
     // stream.write chunks. Saying so keeps "what I returned" and "what
     // was sent" from being read as the same thing.
-    if (out.isJson || out.binary || (!out.binary && out.result != null && out.result !== out.body)) {
+    if (!out.threw
+        && (out.isJson || out.binary || (!out.binary && out.result != null && out.result !== out.body))) {
         sec.appendChild(el("span", {
             className: "t-meta t-dimmer",
             text: out.binary ? "returned Uint8Array — shipped as raw bytes"
                 : out.isJson ? "returned an object — shipped as JSON.stringify"
                 : "the wire body differs from the return value (buffered stream.write chunks ship first)",
+        }));
+    }
+    // The exception behind the 500. The wire body carries its ToString
+    // already; the stack is what the body cannot say, and it is the reason
+    // someone opened this panel.
+    if (out.threw && out.error) {
+        sec.appendChild(el("span", {
+            className: "t-eyebrow",
+            text: "Thrown",
+            style: { marginTop: "var(--sp-3)" },
+        }));
+        sec.appendChild(el("pre", {
+            className: "resp__payload c-error",
+            text: out.error.stack || out.error.message || "(no message)",
         }));
     }
     $.respBody.appendChild(sec);
