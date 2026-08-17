@@ -138,6 +138,25 @@
       <ol class="stream__list" id="event-stream">
         <li class="stream__empty t-meta t-dim">(waiting for handler to run…)</li>
       </ol>
+
+      <!-- State at playhead — what this handler can SEE at this point
+           in the replay, and what it has promised to do. Both are read
+           off the stopped run: the kv overlay holds the writes made so
+           far, the kv tape's cursor says how many reads were served.
+           Deliberately NOT "the tenant's database": a replay only knows
+           keys this handler touched. -->
+      <div class="statepane" id="state-pane">
+        <div class="statepane__head row-sb">
+          <span class="t-eyebrow">State at playhead</span>
+          <span class="t-meta t-dimmer" id="state-sub">keys this handler touched</span>
+        </div>
+        <ul class="statepane__kv" id="state-kv"></ul>
+        <div class="statepane__head row-sb">
+          <span class="t-eyebrow">Pending effects</span>
+          <span class="t-meta t-dimmer" id="effects-sub"></span>
+        </div>
+        <ul class="statepane__fx" id="state-effects"></ul>
+      </div>
     </aside>
 
   </div>

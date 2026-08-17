@@ -33,6 +33,7 @@ import { buildTapesFromBlobs } from "./rtap.mjs";
 import { buildRequestEpilogue, exportForActivation, deriveActivationSurface, resolveMiddleware, MIDDLEWARE_PATHS, REPLAY_OUTPUT_KEY } from "./request-replay.mjs";
 import { SYSTEM_MODULES } from "./arena-system-modules.js";
 import { CursorEngine } from "./cursor.mjs";
+import { foldModelView, cutInteractionLog, pendingEffects } from "./model-view.mjs";
 import getArenaJs from "./qjs_arena_wasm.js";
 
 // The JS engine version of the arenajs WASM bundled with this replayer
@@ -52,6 +53,10 @@ const $ = {
     stack:           document.getElementById("stack-frames"),
     nextErrorBtn:    document.getElementById("next-error-btn"),
     nextErrorLabel:  document.getElementById("next-error-label"),
+    stateKv:         document.getElementById("state-kv"),
+    stateSub:        document.getElementById("state-sub"),
+    stateEffects:    document.getElementById("state-effects"),
+    effectsSub:      document.getElementById("effects-sub"),
     tapeList:        document.getElementById("tape-list"),
     tapeLogsLink:    document.getElementById("tape-logs-link"),
     filePick:        document.getElementById("file-pick"),
@@ -1516,6 +1521,9 @@ async function inspectAndRenderVars(eventOrdinal) {
     // and skip the engine round-trip.
     if (!ev || (ev.kind === "FUNC_EXIT" && eventOrdinal === state.mat.events.length - 1)) {
         renderVariablesEmpty("(no frame alive)");
+        // The run has finished here: the LAST stop is the end state,
+        // which is exactly what materialise's pass-1 overlay holds.
+        renderStatePane(endOfRunModelView());
         return;
     }
 
@@ -1526,6 +1534,7 @@ async function inspectAndRenderVars(eventOrdinal) {
     const cached = state.mat.inspectCache.get(eventOrdinal);
     if (cached && cached.frames && cached.frames.length > 0) {
         renderVariablesFrames(cached.frames);
+        renderStatePane(cached.kv || null);
         return;
     }
 
@@ -1563,6 +1572,100 @@ async function inspectAndRenderVars(eventOrdinal) {
         renderVariablesFrames(exact.frames);
     } else if (!snap) {
         renderVariablesEmpty("(no frames)");
+    }
+    // The Model view rides the SAME stopped run as the frames — no
+    // second round-trip, and it is exact wherever the frames are.
+    if (exact) renderStatePane(exact.kv || null);
+}
+
+// The end-of-run view: `materialise` pass 1 is the only pass that runs
+// the handler to completion, so its overlay + fully-consumed tape are
+// the final state. Captured once at boot (every later engine call
+// resets both), which is why this reads from `state.endKv` rather than
+// the engine.
+function endOfRunModelView() {
+    return state.endKv || null;
+}
+
+// What the handler can SEE at this stop, and what it has queued.
+//
+// `kv` is the snapshot `inspectAt` took on the stopped run
+// (`{writes, readCursor}`); null means we have no exact stop for this
+// playhead yet, and the pane says so rather than showing a state from
+// somewhere else in the run — a stale view here is indistinguishable
+// from a true one, which is the failure that would make the pane
+// worse than absent.
+function renderStatePane(kv) {
+    if (!$.stateKv) return;
+    if (!kv) {
+        $.stateKv.replaceChildren(el("li", {
+            className: "statepane__empty t-meta", text: "(reading state…)",
+        }));
+        if ($.stateEffects) $.stateEffects.replaceChildren();
+        if ($.effectsSub) $.effectsSub.textContent = "";
+        return;
+    }
+
+    const kvEntries = state.mat?.replay?.tapes?.kv?.entries || [];
+    const rows = foldModelView({
+        kvEntries, readCursor: kv.readCursor, writes: kv.writes,
+    });
+
+    $.stateKv.replaceChildren();
+    if (rows.length === 0) {
+        $.stateKv.appendChild(el("li", {
+            className: "statepane__empty t-meta",
+            text: "(nothing read or written yet)",
+        }));
+    }
+    for (const r of rows) {
+        const li = el("li", { className: "statepane__row t-mono-sm" });
+        li.appendChild(el("span", { className: "statepane__key", text: r.key, title: r.key }));
+        li.appendChild(r.deleted
+            ? el("span", { className: "statepane__val statepane__val--gone", text: "absent" })
+            : el("span", { className: "statepane__val", text: String(r.value), title: String(r.value) }));
+        li.appendChild(el("span", {
+            className: "statepane__origin statepane__origin--" + r.origin,
+            text: r.origin === "you" ? "you" : "read",
+            title: r.origin === "you"
+                ? "this handler wrote it — a read of this key sees this value"
+                : "the handler was served this value; another saga owns it",
+        }));
+        $.stateKv.appendChild(li);
+    }
+    if ($.stateSub) {
+        $.stateSub.textContent = rows.length
+            ? `${rows.length} key${rows.length === 1 ? "" : "s"} · this handler's view`
+            : "this handler's view";
+    }
+
+    // Effects are the Cmd half: queued during the activation, released
+    // only after its writes commit — so "pending" is literal.
+    if (!$.stateEffects) return;
+    const log = state.mat?.outcome?.effects || [];
+    const { cut, confident } = cutInteractionLog(log, {
+        readCursor: kv.readCursor, writes: kv.writes,
+    });
+    const fx = pendingEffects(log, confident ? cut : log.length, kv.writes);
+
+    $.stateEffects.replaceChildren();
+    if (fx.length === 0) {
+        $.stateEffects.appendChild(el("li", {
+            className: "statepane__empty t-meta", text: "(none queued yet)",
+        }));
+    }
+    for (const e of fx) {
+        const li = el("li", { className: "statepane__row t-mono-sm" });
+        li.appendChild(el("span", { className: "statepane__fxkind", text: e.label }));
+        li.appendChild(el("span", {
+            className: "statepane__key", text: e.detail, title: e.key || e.detail,
+        }));
+        $.stateEffects.appendChild(li);
+    }
+    if ($.effectsSub) {
+        // When neither signal pins the stop, say the list is the whole
+        // hop's rather than let it read as "queued by now".
+        $.effectsSub.textContent = confident ? "queued by this point" : "this hop (position unknown)";
     }
 }
 
@@ -1688,6 +1791,10 @@ const state = {
     // summaries. Null when the opener sent none (older dashboard, or
     // a record with no saga context); the rail says so.
     saga: null,
+    // The completed run's Model view (`materialise` pass 1). The state
+    // pane falls back to it at the end of the run, where the handler is
+    // done and the view is final.
+    endKv: null,
     // Provenance authority (see isCustomerLoc): a trace event is
     // customer code iff its file is a bundle module AND its line is
     // inside that module's shipped source — the appended epilogue runs
@@ -2043,6 +2150,9 @@ async function main() {
     }
 
     state.mat = mat;
+    // The completed run's view — the only pass that ran the handler to
+    // the end, so the end state must be taken from it (see cursor.mjs).
+    state.endKv = mat.endKv || null;
     // Diagnostic hook for the playwright smoke (and anyone poking
     // around in DevTools): the smoke can assert that varSnapshots
     // was actually populated by materialise() without us having to

@@ -165,6 +165,17 @@ const crumb = (await page.textContent(".crumb, #crumb").catch(() => "")) || "";
 check("the crumb names the saga, the unit of playback",
   crumb.includes("sagas") && crumb.includes("sg-demo"), crumb.replace(/\s+/g, " ").trim());
 
+// The state pane's scaffolding. Its CONTENT comes from a stopped
+// engine run (covered by e2e/model-view-check.mjs for the rules, and
+// by the prod replay specs end-to-end), but the markup it renders into
+// has to exist or the pane silently never appears.
+const paneHeads = await page.$$eval("#state-pane .t-eyebrow", (els) => els.map((e) => e.textContent.trim()));
+check("the state pane is wired, with both halves",
+    paneHeads.includes("State at playhead") && paneHeads.includes("Pending effects"),
+    JSON.stringify(paneHeads));
+check("the state pane has its two lists",
+    (await page.$("#state-kv")) !== null && (await page.$("#state-effects")) !== null);
+
 // Hop switching is a NAVIGATION: URLs are saga-addressed, so the hop
 // in view survives a refresh and can be linked to.
 await page.click("#tape-list .tape__hop >> nth=2");
