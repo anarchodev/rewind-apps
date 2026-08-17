@@ -1076,7 +1076,14 @@ function handleLogQuery(path, qs) {
     const tenant = rest.slice(0, slash);
     const sub = rest.slice(slash + 1);
     if (!validId(tenant)) return jsonError(400, "invalid tenant");
-    if (sub !== "list" && sub !== "count" && !sub.startsWith("show/")) {
+    // The saga-viewer routes carry the same tenant-scoped read
+    // authority as list/show: `window` (the exec-seq tape view),
+    // `saga/{id}` (one saga's hops + gap summaries), `seam` (the
+    // interference scan between two hops).
+    if (
+        sub !== "list" && sub !== "count" && sub !== "window" &&
+        sub !== "seam" && !sub.startsWith("show/") && !sub.startsWith("saga/")
+    ) {
         return jsonError(404, "no such log route");
     }
     // Membership is derived from the SESSION, never from the path: the tenant

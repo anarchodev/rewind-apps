@@ -220,6 +220,20 @@ expect(pending.effects.some((e) => e.kind === "fetch")).toBe(false); // refused 
 expect(logCall("/v1/logs/logapp/show/r1", "ca").status).toBe(403);
 expect(logCall("/v1/logs/logapp/show/r1", "al").disposition).toBe("held");
 
+// The saga-viewer routes ride the same gate: window (the tape view),
+// saga/{id} (hops + gaps), seam (the interference scan). A member
+// reads; a non-member's refusal is identical to every other route's.
+expect(logCall("/v1/logs/logapp/window", "al").disposition).toBe("held");
+expect(logCall("/v1/logs/logapp/saga/sg1", "al").disposition).toBe("held");
+expect(logCall("/v1/logs/logapp/seam", "al").disposition).toBe("held");
+expect(logCall("/v1/logs/logapp/window", "ca").status).toBe(403);
+expect(logCall("/v1/logs/logapp/saga/sg1", "ca").status).toBe(403);
+expect(logCall("/v1/logs/logapp/seam", "ca").status).toBe(403);
+// An unknown sub-route still 404s — the whitelist did not become a pass-through.
+expect(logCall("/v1/logs/logapp/nope", "al").status).toBe(404);
+// Bare `saga/` (no id) is not a route.
+expect(logCall("/v1/logs/logapp/saga", "al").status).toBe(404);
+
 // A tenant no one in this fixture owns: the operator still reads across
 // tenants, and the customer's refusal is identical to the one above — so the
 // door never answers "does this tenant exist?".
