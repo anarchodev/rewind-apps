@@ -91,7 +91,7 @@ failing.
 | `check:surface` | the epilogue's installed request surface |
 | `check:tape` | the tape rail — the saga window as a list of hops |
 | `check:scrubber` | the saga-spanning scrubber: hop segments, seam bands, where each interference mark is placed, and the state pane's blame chips |
-| `check:handshake` | the dashboard ↔ viewer seam: that the seam scans are issued, capped, and drawn — and that following a mark opens a second viewer |
+| `check:handshake` | the dashboard ↔ viewer seam: that the seam scans are issued, capped, and drawn; that following a mark opens a second viewer; and that the window extends **only** when the reader asks it to |
 | `check:model` | the Model view's rules, including who the value a hop was served is blamed on |
 | `check:engine` | those rules against what the WASM arena really produces |
 | `check:response` | the wire response the shell derives from a re-execution |

@@ -850,6 +850,33 @@ export const api = {
         return;
       }
 
+      // Extending the window: the viewer holds a PREFIX of the saga and
+      // wants what comes after it — because more hops have landed since
+      // it opened, or because the window API paged at 100 and the rest
+      // was never fetched. Both are the same query. It asks; nothing
+      // here polls (rove#589, "the window extends only when the reader
+      // asks").
+      if (e.data?.kind === "replay:tail") {
+        const sagaId = e.data.saga_id;
+        if (!sagaId) return;
+        try {
+          const saga = await api.getSaga(instance_id, sagaId,
+            { after_seq: e.data.after_seq ?? "0" });
+          // A saga the index no longer has answers 404 → null. Say so,
+          // rather than reporting an empty page, which the viewer would
+          // render as "no new hops".
+          if (!saga) throw new Error("this saga is no longer in the log window");
+          const seams = await scanSeams(instance_id, saga);
+          popup.postMessage({ kind: "replay:tail:result", saga, seams }, replayOrigin);
+        } catch (err) {
+          popup.postMessage({
+            kind: "replay:tail:result",
+            error: String(err?.message || err),
+          }, replayOrigin);
+        }
+        return;
+      }
+
       if (e.data?.kind !== "replay:ready") return;
       const want = e.data.request_id || request_id;
       try {

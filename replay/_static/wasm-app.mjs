@@ -330,6 +330,109 @@ function navigateToHop(hop) {
     window.location.reload();
 }
 
+// Ask the dashboard for this saga's hops after `afterSeq`. This backs
+// the rail's "check for new hops", which is the ONLY thing that extends
+// the window: a replay is a stopped run, and nothing on this page moves
+// unless the reader moves it (rove#589, "the window extends only when
+// the reader asks"). No timer, no auto-follow.
+function requestTail(sagaId, afterSeq) {
+    const origin = expectedDashboardOrigin();
+    if (!window.opener || window.opener.closed) {
+        return Promise.reject(new Error(
+            "no dashboard session in this tab — reopen this record from the dashboard"));
+    }
+    window.opener.postMessage(
+        { kind: "replay:tail", saga_id: sagaId, after_seq: String(afterSeq) }, origin);
+    return new Promise((resolve, reject) => {
+        const timer = setTimeout(() => {
+            window.removeEventListener("message", onMsg);
+            reject(new Error("the dashboard did not answer (10s)"));
+        }, 10_000);
+        function onMsg(e) {
+            if (e.origin !== origin || e.source !== window.opener) return;
+            if (e.data?.kind !== "replay:tail:result") return;
+            clearTimeout(timer);
+            window.removeEventListener("message", onMsg);
+            if (e.data.error) reject(new Error(e.data.error));
+            else resolve({ saga: e.data.saga ?? null, seams: e.data.seams ?? [] });
+        }
+        window.addEventListener("message", onMsg);
+    });
+}
+
+// The exec_seq to ask from, so the page arrives with its seams already
+// counted.
+//
+// The window API counts `gaps[i]` between `hops[i]` and `hops[i+1]` of
+// ONE page — "seams across a page boundary are the client's to stitch"
+// (`src/log_server/standalone.zig`). Stitching would mean inventing a
+// count for the seam joining the hops held to the hops arriving, so the
+// request OVERLAPS BY ONE instead: ask from the second-to-last hop, and
+// that seam comes back counted by the server, with a hop we already
+// hold as its left edge.
+function tailCursor(hops) {
+    if (!Array.isArray(hops) || hops.length < 2) return "0";
+    return String(hops[hops.length - 2].exec_seq ?? "0");
+}
+
+// Fold a forward page into the window already held. Returns
+// `{saga, added}`, or `{error}` when the page cannot be joined without
+// inventing something.
+//
+// `gaps.length === hops.length - 1` is the alignment the rail draws
+// from, so a merge that broke it would put seams between the wrong hops
+// — a false claim about who ran when, and worse than refusing to
+// extend.
+function mergeSagaPage(held, page) {
+    const heldHops = Array.isArray(held?.hops) ? held.hops : [];
+    const pageHops = Array.isArray(page?.hops) ? page.hops : [];
+    const pageGaps = Array.isArray(page?.gaps) ? page.gaps : [];
+    // The roll-up refreshes even when no hop does: a saga can close
+    // between two checks, and the end cap must stop saying "open as of".
+    const base = {
+        ...held,
+        saga: page?.saga ?? held?.saga,
+        next_cursor: page?.next_cursor ?? null,
+    };
+
+    const have = new Set(heldHops.map((h) => h.request_id));
+    const firstNew = pageHops.findIndex((h) => !have.has(h.request_id));
+    if (firstNew < 0) return { saga: base, added: 0 };
+    // The overlap hop is absent, so the seam joining the two runs was
+    // never counted and cannot be. Refuse, rather than splice two hops
+    // together as though nothing ran between them.
+    if (firstNew === 0 && heldHops.length > 0) {
+        return { error: "the saga window moved — reload to resync" };
+    }
+
+    return {
+        saga: {
+            ...base,
+            hops: [...heldHops, ...pageHops.slice(firstNew)],
+            // `gaps[firstNew - 1]` is the seam between the last hop held
+            // and the first new one — the one the overlap was for.
+            gaps: [...(held?.gaps ?? []), ...pageGaps.slice(firstNew - 1)],
+        },
+        added: pageHops.length - firstNew,
+    };
+}
+
+// Merge newly scanned seams, keyed by the bounds they were scanned over
+// (never by position — an absent scan must not slide another seam's
+// interference under this one). Existing entries win: a seam already
+// scanned is not rescanned into a different answer.
+function mergeSeams(held, incoming) {
+    const out = Array.isArray(held) ? [...held] : [];
+    const key = (s) => String(s.after_seq) + ":" + String(s.before_seq);
+    const have = new Set(out.map(key));
+    for (const s of Array.isArray(incoming) ? incoming : []) {
+        if (!s || have.has(key(s))) continue;
+        have.add(key(s));
+        out.push(s);
+    }
+    return out;
+}
+
 // A seam mark names an activation of ANOTHER saga. Opening it is a NEW
 // viewer window anchored at that activation — never at its saga's start,
 // and never a move of this window's playhead: foreign marks are
@@ -765,7 +868,7 @@ const KIND_CLASS = {
 // prefixed request_id of the hop currently materialised. Absent saga
 // (an older opener, or a record with no saga context) degrades to a
 // one-row rail naming the anchor — never an empty rail.
-function renderTapeRail(saga, anchorId, onSelectHop) {
+function renderTapeRail(saga, anchorId, onSelectHop, tail) {
     if (!$.tapeList) return;
     $.tapeList.replaceChildren();
 
@@ -863,10 +966,43 @@ function renderTapeRail(saga, anchorId, onSelectHop) {
     // explicitly NOT a liveness signal, so an unclosed saga says so
     // rather than claiming an end it never saw.
     const last = hops[hops.length - 1];
-    $.tapeList.appendChild(cap(
+    const endCap = cap(
         closed ? "end · " + fmtClock(saga.saga.closed_at_ns)
                : "open as of " + fmtClock(last.received_ns),
-        "end"));
+        "end");
+
+    // The window this rail draws is a PREFIX in two ways: hops that
+    // landed after it was fetched, and hops the window API's page cap
+    // never returned (`next_cursor`). Both ask the same question — what
+    // comes after what I hold — and both are answered only when the
+    // reader asks for it. Nothing here polls: a rail that rearranged
+    // itself under someone mid-scrub would be the one part of a stopped
+    // run that moves on its own.
+    const more = saga.next_cursor != null;
+    if (tail?.onCheck && (!closed || more)) {
+        const btn = el("button", {
+            className: "tape__check",
+            text: "check for new hops",
+            title: more
+                ? "the window API paged — there are more hops after the ones shown"
+                : "fetch any hops recorded since this window was read",
+        });
+        btn.disabled = !!tail.checking;
+        btn.addEventListener("click", () => tail.onCheck());
+        endCap.appendChild(btn);
+    }
+    // The outcome of the last check outlives the button — a saga that
+    // closed between checks loses the button, and "no new hops · the
+    // saga closed" is exactly the answer worth keeping on screen.
+    const msg = tail?.status ?? (more ? "more after this" : "");
+    if (msg) {
+        endCap.appendChild(el("span", {
+            className: "tape__check-status t-meta t-dim",
+            text: msg,
+            title: more && !tail?.status ? "this rail is a page, not the whole saga" : "",
+        }));
+    }
+    $.tapeList.appendChild(endCap);
 
     // Unstamped hops have no tape position and are not given a fake
     // one — they ride as an addendum below the bracket.
@@ -1883,6 +2019,71 @@ function endOfRunModelView() {
     return state.endKv || null;
 }
 
+// Redraw everything the saga window feeds, after the window changed.
+//
+// The playhead is deliberately untouched. The reader asked whether
+// there is more, not to be taken to it — so the rail rescales (every
+// hop segment narrows as hops arrive) while the playhead stays on the
+// same EVENT of the same hop. Its pixel position moves because the
+// ruler changed, not because the position did.
+function redrawSaga() {
+    const tail = {
+        onCheck: checkForNewHops,
+        status: state.tailStatus,
+        checking: state.tailChecking,
+    };
+    renderTapeRail(state.saga, state.bundle.request_id, navigateToHop, tail);
+    state.sagaLayout = buildSagaLayout(state.saga, state.seams, state.bundle.request_id);
+    renderSagaRail(state.sagaLayout, navigateToHop, openForeignActivation);
+    if (state.mat) renderScrubber(state.mat, state.playhead);
+}
+
+// "Check for new hops" — the only thing that extends the window.
+async function checkForNewHops() {
+    const sagaId = state.bundle?.saga_id;
+    const hops = state.saga?.hops || [];
+    if (!sagaId || hops.length === 0 || state.tailChecking) return;
+
+    state.tailChecking = true;
+    state.tailStatus = "checking…";
+    redrawSaga();
+
+    let page;
+    try {
+        page = await requestTail(sagaId, tailCursor(hops));
+    } catch (err) {
+        state.tailChecking = false;
+        state.tailStatus = String(err.message || err);
+        redrawSaga();
+        return;
+    }
+
+    const merged = mergeSagaPage(state.saga, page.saga);
+    state.tailChecking = false;
+    if (merged.error) {
+        state.tailStatus = merged.error;
+        redrawSaga();
+        return;
+    }
+
+    state.saga = merged.saga;
+    state.seams = mergeSeams(state.seams, page.seams);
+    // A refresh of this tab reads the cache, so the extended window has
+    // to go back into it — otherwise a reload silently undoes the check.
+    cacheBundle({ bundle: state.bundle, saga: state.saga, seams: state.seams });
+
+    const closedNow = Number(state.saga.saga?.closed_at_ns || 0) > 0;
+    const outcome = merged.added > 0
+        ? `+${merged.added} hop${merged.added === 1 ? "" : "s"}`
+        : closedNow ? "no new hops · the saga closed" : "no new hops";
+    // A page that filled its cap leaves more behind it. Saying only
+    // "+8 hops" would read as "and that is all of them".
+    state.tailStatus = state.saga.next_cursor != null
+        ? outcome + " · more after this"
+        : outcome;
+    redrawSaga();
+}
+
 // A read's blame chip: who wrote the value this hop was served.
 //
 // Found ⇒ a link. Following it opens that activation in its own saga
@@ -2156,6 +2357,12 @@ const state = {
     // The scrubber's saga geometry (buildSagaLayout): hop segments, seam
     // bands, and the anchor segment the playhead lives inside.
     sagaLayout: null,
+    // The last "check for new hops" outcome, and whether one is in
+    // flight. Held here rather than on the DOM so it survives the
+    // rail's redraw — including the redraw that removes the button
+    // because the saga turned out to have closed.
+    tailStatus: null,
+    tailChecking: false,
     // The completed run's Model view (`materialise` pass 1). The state
     // pane falls back to it at the end of the run, where the handler is
     // done and the view is final.
@@ -2589,12 +2796,10 @@ async function main() {
     // engine boots, before this hop replays. The saga's shape is
     // index data; materialising a hop is the expensive part, and the
     // rail must not wait on it.
-    renderTapeRail(saga, bundle.request_id, navigateToHop);
     // The scrubber's saga geometry rides the same index data, so it
     // draws in the same pre-engine pass: the hop in view gets its
     // statement ticks later, when there is a run to tick.
-    state.sagaLayout = buildSagaLayout(saga, state.seams, bundle.request_id);
-    renderSagaRail(state.sagaLayout, navigateToHop, openForeignActivation);
+    redrawSaga();
     if ($.tapeLogsLink) {
         const inst = currentInstanceId();
         $.tapeLogsLink.href = inst
