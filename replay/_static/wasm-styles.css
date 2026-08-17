@@ -29,8 +29,8 @@
 .replay {
   height: 100vh;
   display: grid;
-  /* appbar / stack / main / [resize handle] / transport / vars */
-  grid-template-rows: 48px 36px 1fr 6px auto auto;
+  /* appbar / stack / main / [resize handle] / transport / response / vars */
+  grid-template-rows: 48px 36px 1fr 6px auto auto auto;
   background: var(--base);
   overflow: hidden;
 }
@@ -789,6 +789,78 @@
   font-weight: 500;
   font-variant-numeric: tabular-nums;
 }
+
+/* ---------- Response panel (bottom) ----------
+   The terminal of the timeline: what the re-executed handler put on the
+   wire. Structurally a sibling of the variables drawer — same <details>
+   affordance, same mantle surface — but a FIXED small height rather than
+   the drawer's resizable one, because its content is bounded (a status,
+   a handful of headers, one body) and it must not compete with the
+   source viewport for the page. The body scrolls internally instead. */
+
+.resp {
+  background: var(--mantle);
+  border-top: var(--border-1);
+  flex-shrink: 0;
+}
+.resp summary { list-style: none; cursor: pointer; }
+.resp summary::-webkit-details-marker { display: none; }
+
+.resp__head {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-4);
+  padding: var(--sp-3) var(--sp-6);
+  user-select: none;
+  transition: background var(--motion-fast) var(--ease-out);
+}
+.resp__head:hover { background: var(--surface-0); }
+
+.resp__chev {
+  display: inline-block;
+  width: 12px;
+  color: var(--text-3);
+  transition: transform var(--motion-fast) var(--ease-out);
+}
+.resp:not([open]) .resp__chev { transform: rotate(-90deg); }
+
+.resp__body {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.6fr);
+  gap: var(--sp-8);
+  padding: var(--sp-2) var(--sp-6) var(--sp-6);
+  max-height: 200px;
+  overflow-y: auto;
+}
+/* Narrow viewports: the head/body split stops earning its column. */
+@media (max-width: 900px) {
+  .resp__body { grid-template-columns: minmax(0, 1fr); }
+}
+
+.resp__section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  min-width: 0;
+}
+
+/* The body bytes, verbatim. `pre-wrap` because a JSON body is one long
+   line and a horizontal scrollbar inside a 200px panel is unreadable. */
+.resp__payload {
+  margin: 0;
+  padding: var(--sp-3);
+  background: var(--base);
+  border: var(--border-1);
+  border-radius: var(--r-sm);
+  font-family: var(--font-mono);
+  font-size: var(--fs-mono-sm);
+  color: var(--text-0);
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 132px;
+  overflow-y: auto;
+}
+.resp__payload--empty { color: var(--text-3); font-style: italic; }
 
 /* ---------- Variables drawer (bottom) ---------- */
 
