@@ -36,20 +36,33 @@ function rand() {
 // RP-initiated logout's post_logout_redirect_uri does; that is what
 // lets a static page POST this login form directly (the one-submission
 // entry) and have the verify 302 land on the RP, where PKCE completes
-// on the now-live IdP session. The try/catch matters: with no client
-// registry configured the check rejects instead of throwing, so the
-// config-less GET /login keeps rendering.
+// on the now-live IdP session.
+//
+// The catch is deliberately NARROW: only "no client registry
+// configured" (a fresh issuer — oidc.provider's own error) downgrades
+// to a rejection, so the config-less GET /login keeps rendering.
+// Anything else thrown here — e.g. a stale registry-resolved oidc
+// package missing isRegisteredClientOrigin — is an infallibility
+// violation and must surface as the 500 it is; swallowing it converts
+// a deployment bug into a silent wrong-redirect.
 function safeReturnTo(rt) {
   const base = iss() + "/";
   if (typeof rt === "string" && (rt === iss() || rt.indexOf(base) === 0)) {
     return rt;
   }
-  if (typeof rt === "string") {
+  if (typeof rt === "string" && rt.indexOf("://") > 0) {
+    let provider = null;
     try {
-      if (oidc.provider("default").isRegisteredClientOrigin(rt)) return rt;
-    } catch (_) {
-      // missing/broken client registry → reject like any unknown origin
+      provider = oidc.provider("default");
+    } catch (e) {
+      if (!/^oidc\.provider:/.test((e && e.message) || "")) throw e;
     }
+    if (provider && provider.isRegisteredClientOrigin(rt)) return rt;
+    // Rejected cross-origin return_to: make it observable (tape/logs
+    // capture console) without writing state on a public path. Origin
+    // only, truncated — never echo attacker-length input.
+    console.warn("safeReturnTo: rejected off-registry return_to " +
+      String(rt).split("/").slice(0, 3).join("/").slice(0, 128));
   }
   return iss() + "/"; // fall back to the issuer root
 }
@@ -196,6 +209,27 @@ function verifyLogin() {
 export default function () {
   const path = (request.path || "").split("?")[0];
   const m = request.method;
+
+  // The issuer root is a browser-reachable landing, never a bare 404:
+  // safeReturnTo's fallback 302s here, and stray visitors type it.
+  // Bounce to the parent origin (the site one DNS label up — the
+  // marketing site on the platform deployment), derived from
+  // request.host per §0 — no compiled-in domain. A host with no parent
+  // label (bare hostname) renders a minimal sign-in link instead of
+  // redirecting to itself.
+  if (m === "GET" && (path === "/" || path === "")) {
+    const host = request.host || "";
+    const dot = host.indexOf(".");
+    if (dot >= 0) {
+      response.status = 302;
+      response.headers = { location: "https://" + host.slice(dot + 1) + "/" };
+      return null;
+    }
+    response.status = 200;
+    response.headers = { "content-type": "text/html; charset=utf-8" };
+    return "<!doctype html><meta charset=utf-8><title>Sign in</title>" +
+      '<p><a href="/login">Sign in</a></p>';
+  }
 
   if (m === "GET" && path === "/login") {
     const q = new URLSearchParams(request.query || "");

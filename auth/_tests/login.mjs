@@ -173,3 +173,24 @@ expect(verify(s({ [MK("tok-ns")]: record("jess@example.com", ISS + "/", FAR) }),
 const red = verify(s({ [MK("tok-evil")]: record("jess@example.com", "https://evil.example.com/x", FAR) }), "tok-evil", "sid1");
 expect(red.status).toBe(302);
 expect(red.response.headers.location).toBe(ISS + "/");
+
+// ── the issuer root is a landing, never a bare 404 ────────────────────────
+// safeReturnTo's fallback 302s to "/", and stray visitors type it. A dotted
+// host bounces one DNS label up (the marketing site on the platform
+// deployment); a bare hostname renders a minimal sign-in link instead of
+// redirecting to itself.
+const root = s().inbound({ method: "GET", path: "/", host: HOST });
+expect(root.status).toBe(302);
+expect(root.response.headers.location).toBe("https://rewindjs.com/");
+const bare = s().inbound({ method: "GET", path: "/", host: "localhost" });
+expect(bare.status).toBe(200);
+expect(bare.body).toMatch(/href="\/login"/);
+
+// ── a rejected off-registry return_to is observable, origin only ──────────
+// The rejection must be visible in tape/logs (a silent fallback once hid a
+// stale-package deployment bug), but never echo the full attacker-supplied
+// URL — the warn carries the origin alone.
+const rej = postLogin(s(CFG), "email=jess@example.com&return_to=" + encodeURIComponent("https://evil.example.com/steal"));
+const rejWarns = rej.effects.filter((e) => e.kind === "log" && e.level === "warn").map((e) => e.message);
+expect(rejWarns.some((m) => m.indexOf("safeReturnTo") >= 0 && m.indexOf("https://evil.example.com") >= 0)).toBe(true);
+expect(rejWarns.some((m) => m.indexOf("/steal") >= 0)).toBe(false);
