@@ -74,6 +74,29 @@ async function route() {
       location.hash = "#/login";
       return;
     }
+    // Mid-deletion (rove#340) the server reports {deleting:true} and
+    // materializes nothing — render the interstitial instead of nudging a
+    // half-erased account toward #/provision (which would 409 anyway).
+    if (who.deleting) {
+      if (typeof currentTeardown === "function") {
+        try { currentTeardown(); } catch {}
+      }
+      currentTeardown = null;
+      const root = document.getElementById("app");
+      root.replaceChildren();
+      const box = document.createElement("div");
+      box.className = "deleting-interstitial";
+      box.innerHTML = `
+        <h1>Account deletion in progress</h1>
+        <p>Your account and its data are being erased. This usually takes
+          under a minute. You can close this page.</p>
+        <p><button type="button" class="logout">Sign out</button></p>`;
+      box.querySelector(".logout").addEventListener("click", () => {
+        window.location.assign("/_rp/logout?return_to=" + encodeURIComponent("/#/login"));
+      });
+      root.appendChild(box);
+      return;
+    }
     // A signed-in non-operator with no instance in ANY account they belong
     // to is nudged to provision their first one; everyone else is kept off
     // the provisioning page.
