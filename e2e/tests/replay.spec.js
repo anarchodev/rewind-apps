@@ -115,4 +115,25 @@ test("replay shell loads an existing request end-to-end", async ({ page }) => {
     );
   }
   expect(problems, "replay-origin asset load failures").toEqual([]);
+
+  // Refresh survival: the shell caches the posted bundle in
+  // sessionStorage, so a reload of the popup must reboot the SAME record
+  // with no opener. Close the dashboard page FIRST — with it open a
+  // reload could limp through a re-handshake (or hit the dashboard's
+  // one-shot listener as a 10s "bundle timeout"), and a silent
+  // cache-write failure would go unseen. This is the path a user hits
+  // by refreshing the replay tab after the dashboard tab is gone; a
+  // real prod record exercises the full bundle (u64 seed/timestamp,
+  // tape blobs), which the offline smoke's fixture only approximates.
+  const cached = await popup.evaluate(
+    () => !!sessionStorage.getItem("replay:bundle:" + (location.hash || "#")),
+  );
+  expect(cached, "bundle cached for refresh").toBe(true);
+  await page.close();
+  await popup.reload({ waitUntil: "domcontentloaded" });
+  await expect(popup.locator("#source-state")).toHaveText(
+    /completed · \d+ event\(s\)/,
+    { timeout: 90_000 },
+  );
+  dbg("popup refreshed from cache:", await popup.locator("#source-state").innerText());
 });

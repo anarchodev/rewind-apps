@@ -207,9 +207,19 @@ function cachedBundle() {
 function cacheBundle(bundle) {
     // Best-effort: a bundle past the sessionStorage quota simply isn't
     // cached — the tab still works, only its refresh loses state and
-    // shows the reopen guidance.
-    try { sessionStorage.setItem(bundleCacheKey(), JSON.stringify(bundle)); }
-    catch { /* quota exceeded */ }
+    // shows the reopen guidance. BigInts (u64 seed/timestamp_ns from an
+    // older dashboard) serialize as decimal strings — lossless, because
+    // every consumer normalizes with BigInt() at its use site. Without
+    // the replacer JSON.stringify THROWS on a BigInt, and a silent catch
+    // here kills refresh for every record. Warn on failure so the next
+    // cache-write regression is visible in the console instead of
+    // masquerading as a quota limit.
+    try {
+        sessionStorage.setItem(bundleCacheKey(), JSON.stringify(bundle,
+            (_k, v) => typeof v === "bigint" ? v.toString() : v));
+    } catch (e) {
+        console.warn("replay: bundle not cached — refresh will lose state:", e);
+    }
 }
 
 function awaitBundle() {
