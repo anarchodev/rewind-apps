@@ -14,6 +14,14 @@ name: replay-checks
 #                             digest it compares against the capture, so a
 #                             drifted rule reports divergences as agreement
 #                             and agreements as divergence.
+#   model-view-check        — what the handler can see at the playhead.
+#
+# `npm run check` in e2e/ runs the same three; they are separate steps here so
+# a failure names itself in the job summary.
+#
+# `tape-rail-check.mjs` is deliberately NOT in this lane: it drives the shell
+# through playwright, so it needs an install and a browser download and stops
+# being the always-on check this job is for.
 #
 # The stronger cross-engine gate — replay a record captured from a real
 # worker and compare digests — is rove's `interaction_digest_smoke_v2.py`,
@@ -23,15 +31,15 @@ on:
   pull_request:
     paths:
       - "replay/**"
-      - "e2e/epilogue-surface-check.mjs"
-      - "e2e/replay-response-check.mjs"
+      - "e2e/*-check.mjs"
+      - "e2e/package.json"
       - ".github/workflows/replay-checks.yml"
   push:
     branches: [main]
     paths:
       - "replay/**"
-      - "e2e/epilogue-surface-check.mjs"
-      - "e2e/replay-response-check.mjs"
+      - "e2e/*-check.mjs"
+      - "e2e/package.json"
       - ".github/workflows/replay-checks.yml"
   workflow_dispatch: {}
 
@@ -56,3 +64,6 @@ jobs:
       - name: Wire-response derivation check
         working-directory: e2e
         run: node replay-response-check.mjs
+      - name: Model-view check
+        working-directory: e2e
+        run: node model-view-check.mjs
