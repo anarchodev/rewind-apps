@@ -590,12 +590,27 @@
     },
     blob: {
       // jsBlobPresign (bindings/blob.zig): hash = 64 lowercase hex; a
-      // present ttl must land in 1..604800 after ToInt32.
-      presign: function(hash, ttl, ct){
+      // present ttl must land in 1..604800 after ToInt32; pool (arg 4) is a
+      // closed set; target (arg 5, the `platform.scope(t).blob` shims) is
+      // admin-only — the sim mirrors the throw, keyed on the same platform
+      // grant the scope object itself uses.
+      presign: function(hash, ttl, ct, pool, target){
         if (typeof hash !== "string") throw new TypeError("blob.url requires a hash string");
         if (!/^[0-9a-f]{64}$/.test(hash)) throw new TypeError("blob.url: hash must be 64 lowercase hex chars");
         if (ttl !== undefined && ttl !== null) { var t = Number(ttl) | 0; if (t < 1 || t > 604800) throw new TypeError("blob.url: ttl must be 1..604800 seconds"); }
-        return "https://sim.invalid/blob/" + hash + (ttl != null ? "?ttl=" + ttl : "");
+        var subdir = "app-blobs";
+        if (pool !== undefined && pool !== null && typeof pool === "string") {
+          if (pool === "exports" || pool === "file-blobs") subdir = pool;
+          else if (pool !== "app-blobs") throw new TypeError("blob presign: unknown pool");
+        }
+        if (target !== undefined && target !== null && typeof target === "string") {
+          // Same admin predicate as the platform.* gate above: authored
+          // worlds opt in via `scenario({admin:true})`; a captured world is
+          // proof the call was admitted live.
+          if (!globalThis.__rove_captured && globalThis.kv.get(NS_STORE + "admin") !== "1") throw new TypeError("blob presign: scoped presign is admin-only");
+          return "https://sim.invalid/" + target + "/" + subdir + "/" + hash + (ttl != null ? "?ttl=" + ttl : "");
+        }
+        return "https://sim.invalid/" + (subdir === "app-blobs" ? "blob/" : subdir + "/") + hash + (ttl != null ? "?ttl=" + ttl : "");
       },
       write: function(){}, seal: function(){ return {}; },
       // `blob.receive(on)` (own-tenant) and `platform.scope(id).blob.receive`
@@ -1696,6 +1711,7 @@ globalThis.URLSearchParams = URLSearchParams;
   // `blob.receive` native — `platform.scope(t).blob.receive` lowers to a
   // cross-tenant streamed upload (extra target + ctx args, admin-gated).
   const sysBlobReceive = _system.blob.receive;
+  const sysBlobPresign = _system.blob.presign;
 
   // Fail loud on a retired option spelling. Each shim keeps its own copy —
   // the helper in after.js is inside that file's IIFE. Silence here is worse
@@ -1724,10 +1740,14 @@ globalThis.URLSearchParams = URLSearchParams;
      * @returns {{kv:object, blob:object, deploy:object}}
      *   - `kv` — `{get, set, delete, prefix}`, the same as the global
      *     {@link kv}, bound to instance `id`.
-     *   - `blob` — `{get(hash, {on}), receive({on, ctx})}`: cross-tenant blob
-     *     READ (resumes `on` with the bytes) + STREAMED write (pipe the inbound
-     *     body straight into `id`'s file-blobs, no JS buffering). There is no
-     *     sync `put` — cross-tenant writes stream via `receive`.
+     *   - `blob` — `{get(hash, {on}), receive({on, ctx}), exportUrl(hash,
+     *     {ttl}), fileUrl(hash, {ttl, contentType})}`: cross-tenant blob READ
+     *     (resumes `on` with the bytes), STREAMED write (pipe the inbound
+     *     body straight into `id`'s file-blobs, no JS buffering), and the
+     *     sync presign twins of {@link blob.exportUrl} / {@link blob.fileUrl}
+     *     over `id`'s pools (export download links + bundle file links —
+     *     rove#340). There is no sync `put` — cross-tenant writes stream via
+     *     `receive`.
      *   - `deploy` — `{stampManifest(entries), readManifest(dep)}`: write/read a
      *     deployment manifest in `id`'s deployments/ from composed `entries`
      *     (`[{path, kind, source_hex, bytecode_hex?, content_type?}]`);
@@ -1774,6 +1794,23 @@ globalThis.URLSearchParams = URLSearchParams;
           "http://rove-blob-read.internal/" + id + "/blob/" + hash,
           fetch_opts,
         );
+      };
+      // Cross-tenant presign twins of `blob.exportUrl` / `blob.fileUrl` —
+      // sync, admin-only (the native's target arg is gated on the platform
+      // grant). The dashboard mints a customer's export-part links and the
+      // bundle manifest's per-file links from these; the signed prefix comes
+      // from `id`'s resolved storage handle (id + incarnation), never from
+      // this argument (rove#340).
+      s.blob.exportUrl = function (hash, opts) {
+        opts = opts || {};
+        return sysBlobPresign(hash, opts.ttl != null ? opts.ttl : null, null,
+                              "exports", id);
+      };
+      s.blob.fileUrl = function (hash, opts) {
+        opts = opts || {};
+        return sysBlobPresign(hash, opts.ttl != null ? opts.ttl : null,
+                              opts.contentType != null ? opts.contentType : null,
+                              "file-blobs", id);
       };
       // deploy.stampManifest is the deploy's STAGING BARRIER — it lowers to
       // a bound after.fetch (not a native sync call) so it resumes your handler
@@ -3355,6 +3392,33 @@ globalThis.blob = {
     // by the engine and has no such marker, so the check would fail every
     // legitimate call.
     return sysBlob.presign(hash, opts.ttl != null ? opts.ttl : null, null, "exports");
+  },
+
+  /**
+   * Presign a deployed file's bytes — the `file-blobs/` twin of
+   * {@link blob.url}. An export artifact's bundle part (the deployment
+   * manifest) references each handler source and static asset by its
+   * content hash in the tenant's own immutable `file-blobs/` store; this
+   * turns those hashes into download URLs, so the code slice of an export
+   * ships pointers rather than copies (rove#340).
+   *
+   * @param {string} hash - A source/static hash from a deployment manifest.
+   * @param {object} [opts]
+   * @param {number} [opts.ttl] - Validity in seconds (default 300,
+   *   max 604800 = 7 days).
+   * @param {string} [opts.contentType] - Signed response Content-Type
+   *   override (S3 returns exactly this).
+   * @returns {string} The presigned URL.
+   */
+  fileUrl(hash, opts) {
+    opts = opts || {};
+    assertHash(hash, "blob.fileUrl");
+    // No `_assertMaterialized`: file-blobs are written by the deploy path,
+    // not through `blob.put`, so there is no `_blob/pending/{hash}` marker
+    // to check (the same posture as `blob.exportUrl`).
+    return sysBlob.presign(hash, opts.ttl != null ? opts.ttl : null,
+                           opts.contentType != null ? opts.contentType : null,
+                           "file-blobs");
   },
 
   /**
