@@ -230,6 +230,23 @@ export const api = {
     return rest("PUT", "/v1/domains/" + seg(host), { instance_id });
   },
 
+  // ── Instance data export (rove#340) ───────────────────────────────
+  // The artifact is a set of content-addressed parts (KV as JSONL, plus
+  // the deployed code bundle's manifest); links are presigned and
+  // TTL-bounded — re-request to re-mint.
+  startExport(id) {
+    return rest("POST", "/v1/instances/" + seg(id) + "/export");
+  },
+  listExports(id) {
+    return rest("GET", "/v1/instances/" + seg(id) + "/export");
+  },
+  getExport(id, eid) {
+    return rest("GET", "/v1/instances/" + seg(id) + "/export/" + seg(eid));
+  },
+  getExportLinks(id, eid) {
+    return rest("GET", "/v1/instances/" + seg(id) + "/export/" + seg(eid) + "/links");
+  },
+
   // ── Per-tenant KV (nested under the instance; no X-Rove-Scope) ────
   listKv(instance_id, { prefix = "", cursor = "", limit = 100 } = {}) {
     const qs = new URLSearchParams({ prefix, cursor, limit: String(limit) }).toString();

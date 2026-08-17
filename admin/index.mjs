@@ -3,6 +3,7 @@ import oidc from "@rewind/oidc";
 import email from "@rewind/email";
 import stripe from "@rewind/stripe";
 import schedule from "@rewind/schedule";
+import exportLib from "@rewind/export";
 
 function validId(id) {
     return typeof id === "string" && /^[A-Za-z0-9_-]{1,64}$/.test(id);
@@ -2299,6 +2300,92 @@ function handleHistory(tenant) {
     };
 }
 
+// ── Instance data export (rove#340) ─────────────────────────────────
+// The dashboard runs a customer's export FOR them: `@rewind/export`'s
+// verbs bound to the target's `platform.scope(t)` handle. The rows a
+// cross-tenant `start` writes are identical to a self-start's, and the
+// engine arms the target tenant's durable wake at commit (the
+// target-envelope sched-write arm), so the job begins immediately on
+// whichever node leads the target's group. Route authz is the standard
+// tenant classes — reach over a tenant's export is exactly reach over
+// the tenant.
+//
+// The artifact: content-addressed parts in the target's unmetered
+// `exports/` pool. KV parts are JSONL; a `kind:"bundle"` part is the
+// deployment manifest, whose per-file hashes presign out of the
+// target's immutable file-blobs (fileUrl). Links are TTL-bounded —
+// re-request to re-mint.
+
+const EXPORT_LINK_TTL_S = 300;
+
+// Newest-first export list, metadata only (never part hashes as
+// authority — links mint server-side from the marker).
+function exportMeta(id, st) {
+    return {
+        id: id,
+        state: st.state || null,
+        started_at: st.started_at || null,
+        finished_at: st.finished_at || null,
+        bytes: st.bytes || 0,
+        entries: st.entries || 0,
+        parts: Array.isArray(st.parts) ? st.parts.length : 0,
+        bundle: st.bundle || null,
+        error: st.error || null,
+    };
+}
+
+function listExports(tenant) {
+    const rows = platform.scope(tenant).kv.prefix("_export/", "", 100);
+    const out = [];
+    for (const e of rows) {
+        let st = null;
+        try { st = JSON.parse(e.value); } catch (_) { continue; }
+        out.push(exportMeta(e.key.slice("_export/".length), st));
+    }
+    // `started_at` descending — the UI leads with the newest.
+    out.sort((a, b) => (b.started_at || 0) - (a.started_at || 0));
+    return { tenant: tenant, exports: out };
+}
+
+function startExport(tenant) {
+    const scoped = exportLib.forScope(platform.scope(tenant));
+    // One at a time per tenant: a second concurrent walk doubles the S3
+    // writes for zero information — the artifact is a snapshot either way.
+    const rows = platform.scope(tenant).kv.prefix("_export/", "", 100);
+    for (const e of rows) {
+        try {
+            if (JSON.parse(e.value).state === "running")
+                return jsonError(409, "an export is already running");
+        } catch (_) { /* unparseable marker cannot be running */ }
+    }
+    const id = scoped.start({ bundle: true });
+    response.status = 202;
+    return { id: id };
+}
+
+function getExport(tenant, eid) {
+    if (typeof eid !== "string" || !eid) return jsonError(400, "bad export id");
+    const st = exportLib.forScope(platform.scope(tenant)).get(eid);
+    if (st === null) return jsonError(404, "no such export");
+    return exportMeta(eid, st);
+}
+
+function getExportLinks(tenant, eid) {
+    if (typeof eid !== "string" || !eid) return jsonError(400, "bad export id");
+    const scope = platform.scope(tenant);
+    const st = exportLib.forScope(scope).get(eid);
+    if (st === null) return jsonError(404, "no such export");
+    if (st.state !== "done") return jsonError(409, "export not finished");
+    const parts = Array.isArray(st.parts) ? st.parts : [];
+    const links = parts.map((p) => ({
+        hash: p.hash,
+        bytes: p.bytes || 0,
+        kind: p.kind || "kv",
+        url: scope.blob.exportUrl(p.hash, { ttl: EXPORT_LINK_TTL_S }),
+    }));
+    return { id: eid, ttl_seconds: EXPORT_LINK_TTL_S, links: links };
+}
+
 // ── REST router ─────────────────────────────────────────────────────
 //
 // One declarative table IS the whole admin surface: METHOD + path pattern →
@@ -2333,6 +2420,10 @@ const ROUTES = [
     ["GET",    "/v1/instances/:id",             "tenant",        (c) => getInstance(c.params.id)],
     ["DELETE", "/v1/instances/:id",             "tenant",        (c) => deleteInstance(c.params.id, c.body && c.body.confirm)],
     ["POST",   "/v1/instances/:id/release",     "tenant",        (c) => publishRelease(c.params.id, c.body.dep_id)],
+    ["POST",   "/v1/instances/:id/export",      "tenant",        (c) => startExport(c.params.id)],
+    ["GET",    "/v1/instances/:id/export",      "tenantRead",    (c) => listExports(c.params.id)],
+    ["GET",    "/v1/instances/:id/export/:eid", "tenantRead",    (c) => getExport(c.params.id, c.params.eid)],
+    ["GET",    "/v1/instances/:id/export/:eid/links", "tenantRead", (c) => getExportLinks(c.params.id, c.params.eid)],
     ["GET",    "/v1/instances/:id/kv",          "tenantRead",    (c) => kvRead(c.params.id, c.query)],
     ["PUT",    "/v1/instances/:id/kv",          "tenantWrite",   (c) => kvSet(c.params.id, c.body.key, c.body.value)],
     ["DELETE", "/v1/instances/:id/kv",          "tenantWrite",   (c) => kvDelete(c.params.id, c.query.key)],
