@@ -189,11 +189,15 @@
       <button class="btn btn--ghost btn--icon" aria-label="Jump to end" title="Jump to end (End)"        disabled>⟫</button>
     </div>
 
-    <div class="scrubber" role="slider" aria-label="Replay timeline"
+    <div class="scrubber" role="slider" aria-label="Saga timeline"
          aria-valuemin="1" aria-valuemax="1" aria-valuenow="1">
       <div class="scrubber__track">
+        <!-- The saga's shape: one segment per hop, a band per seam, and
+             the seams' interfering activations as marks. Drawn from the
+             saga window alone, before the engine boots. -->
+        <span id="scrubber-segments"></span>
         <div class="scrubber__played" id="scrubber-played" style="width: 0;"></div>
-        <!-- Ticks injected by JS into #scrubber-ticks -->
+        <!-- The hop in view: statement ticks, injected into #scrubber-ticks -->
         <span id="scrubber-ticks"></span>
         <div class="scrubber__playhead" id="scrubber-playhead" style="left: 0; display: none;">
           <div class="scrubber__playhead-line"></div>

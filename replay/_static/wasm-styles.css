@@ -715,11 +715,123 @@
   border-radius: 2px;
 }
 
+/* ---------- The saga's shape on the rail ---------- */
+
+/* The rail spans the SAGA: a segment per hop, a band per seam. Only the
+   anchor hop is materialised, so it alone is solid — the others read as
+   places the saga went that this window has not loaded. */
+
+.scrubber__seg {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  border-radius: 2px;
+  padding: 0;
+  border: 0;
+}
+
+.scrubber__seg--hop {
+  background: var(--surface-1);
+}
+
+.scrubber__seg--hop.is-anchor {
+  background: var(--surface-2);
+  box-shadow: 0 0 0 1px color-mix(in oklab, var(--c-brand) 45%, transparent);
+}
+
+/* A hop this window can navigate to. It is a control, so it gets the
+   affordance — but a whisper of one: the rail is read far more often
+   than it is clicked. */
+.scrubber__seg-btn {
+  cursor: pointer;
+  transition: background var(--motion-fast) var(--ease-out);
+}
+.scrubber__seg-btn:hover,
+.scrubber__seg-btn:focus-visible {
+  background: var(--surface-2);
+  outline: none;
+}
+.scrubber__seg-btn:focus-visible {
+  box-shadow: 0 0 0 2px var(--c-brand);
+}
+
+/* A seam — the open interval where OTHER sagas ran. Hatched rather than
+   filled: nothing of this saga executed here, and a solid band would
+   read as more of the same tape. */
+.scrubber__seam {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  border-radius: 2px;
+  background: repeating-linear-gradient(
+    135deg,
+    var(--surface-0) 0 3px,
+    transparent 3px 6px
+  );
+}
+
+/* Nobody scanned this seam. Dimmer still — "not examined" is a
+   different claim from "nothing found", and the rail must not let the
+   two look alike. */
+.scrubber__seam--unscanned {
+  opacity: 0.4;
+}
+
+/* The scan hit its cap: what is drawn here is a floor, not a total. */
+.scrubber__seam--truncated {
+  border-right: 1px dashed var(--c-warn);
+}
+
+/* An interfering activation, at its true position in the seam. It sits
+   BELOW the track — statement ticks own the space above, and the two
+   are different kinds of claim: one is where the handler was, the other
+   is what the world did while it wasn't running. */
+.scrubber__mark {
+  position: absolute;
+  top: 7px;
+  width: 7px;
+  height: 7px;
+  padding: 0;
+  border: 0;
+  border-radius: 1px;
+  transform: translateX(-3.5px) rotate(45deg);
+  cursor: pointer;
+  transition: transform var(--motion-fast) var(--ease-out);
+}
+.scrubber__mark:hover,
+.scrubber__mark:focus-visible {
+  transform: translateX(-3.5px) rotate(45deg) scale(1.35);
+  outline: none;
+}
+.scrubber__mark:focus-visible {
+  box-shadow: 0 0 0 2px var(--c-brand);
+}
+
+/* They WROTE what this saga's next hop reads — the blame direction. */
+.scrubber__mark--wrote { background: var(--c-write); }
+/* They READ what this saga's previous hop wrote. */
+.scrubber__mark--read  { background: var(--c-read); }
+
+/* Placed by even spacing, not by a measured stamp distance (a seam
+   across a leadership change, or the seam before the saga's first hop).
+   The order is true; the spacing is not, and the hollow centre says so. */
+.scrubber__mark--unplaced {
+  background: transparent;
+  box-shadow: inset 0 0 0 1.5px var(--c-write);
+}
+.scrubber__mark--unplaced.scrubber__mark--read {
+  box-shadow: inset 0 0 0 1.5px var(--c-read);
+}
+
 /* The played portion — a brand-tinted gradient from the start to the
-   playhead. */
+   playhead. Purely decorative, so it lets the pointer through: it is
+   painted OVER the saga's segments, and a fill that ate their clicks
+   would make hops and seam marks unfollowable exactly as the playhead
+   advanced across them. */
 .scrubber__played {
   position: absolute;
   top: 0; left: 0; bottom: 0;
+  pointer-events: none;
   background: linear-gradient(
     to right,
     var(--c-brand) 0%,

@@ -69,6 +69,7 @@ const $ = {
     stream:          document.getElementById("event-stream"),
     respSummary:     document.getElementById("resp-summary"),
     respBody:        document.getElementById("resp-body"),
+    scrubberSegments: document.getElementById("scrubber-segments"),
     scrubberTicks:   document.getElementById("scrubber-ticks"),
     scrubberPlayed:  document.getElementById("scrubber-played"),
     scrubberPlayhead: document.getElementById("scrubber-playhead"),
@@ -244,10 +245,13 @@ function cacheBundle(bundle) {
     }
 }
 
-// The opener answers with `{bundle, saga}` — the anchor hop's replay
-// bundle plus this saga's window (hops + gap summaries). The saga half
-// is optional: an older dashboard sends only `bundle`, and the viewer
-// degrades to a single-hop rail rather than failing.
+// The opener answers with `{bundle, saga, seams}` — the anchor hop's
+// replay bundle, this saga's window (hops + gap summaries), and the
+// interference scan of each seam that had anything in it. Everything
+// past `bundle` is optional: an older dashboard sends only `bundle`,
+// and the viewer degrades to a single-hop rail rather than failing.
+// An absent seam scan renders as "not scanned", never as a quiet seam —
+// silence and unexamined are different claims.
 //
 // The cache key is the URL fragment, which is saga-addressed
 // (#/{instance}/{request_id}); a hop switch rewrites the fragment, so
@@ -288,7 +292,11 @@ function awaitBundle() {
             if (e.data?.kind !== "replay:bundle") return;
             clearTimeout(timer);
             window.removeEventListener("message", onMsg);
-            const payload = { bundle: e.data.bundle, saga: e.data.saga ?? null };
+            const payload = {
+                bundle: e.data.bundle,
+                saga: e.data.saga ?? null,
+                seams: e.data.seams ?? null,
+            };
             cacheBundle(payload);
             resolve(payload);
         }
@@ -320,6 +328,33 @@ function navigateToHop(hop) {
     window.location.hash =
         `#/${encodeURIComponent(inst)}/${encodeURIComponent(hop.request_id)}`;
     window.location.reload();
+}
+
+// A seam mark names an activation of ANOTHER saga. Opening it is a NEW
+// viewer window anchored at that activation — never at its saga's start,
+// and never a move of this window's playhead: foreign marks are
+// annotations on this saga, not positions in it.
+//
+// The dashboard does the opening. The session lives there and only
+// there, so it is the only side that can compose a bundle; this window
+// asks, and its own anchor is left untouched.
+function openForeignActivation(row) {
+    if (!row?.request_id) return;
+    if (window.opener && !window.opener.closed) {
+        window.opener.postMessage(
+            { kind: "replay:open", request_id: row.request_id },
+            expectedDashboardOrigin());
+        return;
+    }
+    // No opener — this tab is replaying from its refresh cache. Open the
+    // saga-addressed URL anyway: the new tab has no bundle and says so,
+    // pointing back at the dashboard, which beats a click that does
+    // nothing.
+    const inst = currentInstanceId();
+    if (!inst) return;
+    window.open(
+        `${window.location.origin}/#/${encodeURIComponent(inst)}/${encodeURIComponent(row.request_id)}`,
+        "_blank", "noopener");
 }
 
 // ── Bundle helpers ───────────────────────────────────────────────────
@@ -954,6 +989,184 @@ function renderEventStream(mat, playhead) {
     });
 }
 
+// ── The saga-spanning scrubber ───────────────────────────────────────
+//
+// The rail is the SAGA, not one hop: a segment per hop, a narrower band
+// per seam between them. Only the anchor hop is materialised — a hop's
+// tape is self-contained and loads lazily — so only its segment carries
+// statement ticks and holds the playhead. The other hop segments are
+// navigation, the seams are annotation.
+//
+// Hop segments are EQUAL width rather than proportional to each hop's
+// work: only the anchor's event count is known here, so a proportional
+// rail would draw one width it measured and N it invented.
+const SEAM_WEIGHT = 0.45; // a seam band, relative to one hop segment
+
+// The saga's shape as rail geometry: `segs` in tape order, each with a
+// `[start,end]` percentage, plus the anchor segment the playhead lives
+// in. Null when there is no saga window — the caller then keeps the
+// plain single-hop rail.
+function buildSagaLayout(saga, seams, anchorId) {
+    const hops = Array.isArray(saga?.hops) ? saga.hops : [];
+    if (hops.length === 0) return null;
+    const gaps = Array.isArray(saga.gaps) ? saga.gaps : [];
+    // A seam's scan is matched to its gap by the bounds it was scanned
+    // over, never by position: an absent or capped scan must not slide
+    // another seam's interference under this one.
+    const scanFor = (g) => (Array.isArray(seams) ? seams : []).find(
+        (s) => String(s.after_seq) === String(g.after_seq) &&
+               String(s.before_seq) === String(g.before_seq)) || null;
+
+    const segs = [];
+    hops.forEach((h, i) => {
+        segs.push({
+            kind: "hop", hop: h, index: i, weight: 1,
+            isAnchor: h.request_id === anchorId,
+        });
+        const g = gaps[i];
+        if (g && i < hops.length - 1) {
+            segs.push({ kind: "seam", gap: g, scan: scanFor(g), weight: SEAM_WEIGHT });
+        }
+    });
+
+    const total = segs.reduce((a, s) => a + s.weight, 0);
+    let at = 0;
+    for (const s of segs) {
+        s.start = (at / total) * 100;
+        at += s.weight;
+        s.end = (at / total) * 100;
+    }
+    return {
+        segs,
+        hops,
+        anchor: segs.find((s) => s.kind === "hop" && s.isAnchor) ?? null,
+    };
+}
+
+// Where each interfering activation sits INSIDE its seam: its true tape
+// position, interpolated between the seam's bounds. A stamp is
+// `term << 40 | counter`, so that interpolation only measures distance
+// WITHIN one term — across a leadership change the counter restarts and
+// there is no distance to measure, and the seam before the saga's first
+// hop (`after_seq` 0) has no lower bound at all. Both fall back to even
+// spacing: true order, no fabricated spacing.
+function markPositions(seg) {
+    const rows = seg.scan?.interacting ?? [];
+    if (rows.length === 0) return [];
+    const span = seg.end - seg.start;
+    const even = () => rows.map((row, i) => ({
+        row, pct: seg.start + ((i + 1) / (rows.length + 1)) * span, placed: false,
+    }));
+
+    let lo, hi;
+    try {
+        lo = BigInt(seg.gap.after_seq || 0);
+        hi = BigInt(seg.gap.before_seq || 0);
+    } catch { return even(); }
+    if (lo <= 0n || hi <= lo) return even();
+    if ((lo >> EXEC_SEQ_TERM_SHIFT) !== (hi >> EXEC_SEQ_TERM_SHIFT)) return even();
+
+    const width = hi - lo;
+    const out = [];
+    for (const row of rows) {
+        let v;
+        try { v = BigInt(row.exec_seq || 0); } catch { return even(); }
+        if (v <= lo || v >= hi) return even();
+        // BigInt has no fractional divide — take the ratio in basis points.
+        const frac = Number(((v - lo) * 10000n) / width) / 10000;
+        out.push({ row, pct: seg.start + frac * span, placed: true });
+    }
+    return out;
+}
+
+function markTitle(row) {
+    const where = ((row.method ? row.method + " " : "") + (row.path || "")).trim();
+    const parts = [`${row.activation || "activation"}${where ? " · " + where : ""}`];
+    if (row.wrote?.length) parts.push("wrote " + row.wrote.join(", "));
+    if (row.read?.length) parts.push("read " + row.read.join(", "));
+    if (row.keys_truncated) parts.push("(more keys than the match cap — a floor, not a total)");
+    parts.push("open this activation in its own saga");
+    return parts.join(" — ");
+}
+
+// The seam's own title: what ran there, and — where the scan could not
+// see all of it — that the number is a floor. A seam nobody scanned
+// says "not scanned"; rendering it as a quiet band would read as a
+// finding.
+function seamTitle(seg) {
+    const g = seg.gap;
+    const quiet = `${g.truncated ? g.count + "+" : g.count} activation(s) · ${fmtDuration(g.quiet_ns)}`;
+    if (!seg.scan) return `${quiet} — not scanned for interference`;
+    const hits = seg.scan.interacting?.length ?? 0;
+    const bits = [quiet, hits === 0 ? "none touched this saga's keys" : `${hits} touched this saga's keys`];
+    if (seg.scan.scan_truncated) bits.push("the scan hit its cap — more may lie here");
+    if (seg.scan.skipped_no_tape) bits.push(`${seg.scan.skipped_no_tape} could not be probed (no capture)`);
+    return bits.join(" — ");
+}
+
+// Draw the saga's shape. Runs from the saga window + seam scans alone,
+// BEFORE the engine boots: the shape is index data, materialising a hop
+// is the expensive part, and the rail must not wait on it.
+function renderSagaRail(layout, onSelectHop, onOpenActivation) {
+    if (!$.scrubberSegments) return;
+    $.scrubberSegments.replaceChildren();
+    // One hop is the whole rail — the plain per-hop scrubber, with no
+    // segmentation to draw.
+    if (!layout || layout.hops.length < 2) return;
+
+    for (const seg of layout.segs) {
+        const box = { left: seg.start.toFixed(3) + "%", width: (seg.end - seg.start).toFixed(3) + "%" };
+
+        if (seg.kind === "hop") {
+            const h = seg.hop;
+            const label = `hop ${seg.index + 1}/${layout.hops.length} · ${h.activation || "inbound"}` +
+                ((h.method ? " · " + h.method + " " : " · ") + (h.path || "")).trimEnd();
+            if (seg.isAnchor) {
+                // The hop in view is not a button: it is the drag
+                // surface, and a control here would swallow the gesture.
+                $.scrubberSegments.appendChild(el("div", {
+                    className: "scrubber__seg scrubber__seg--hop is-anchor",
+                    style: box,
+                    title: label + " — the hop in view",
+                }));
+            } else {
+                const b = el("button", {
+                    className: "scrubber__seg scrubber__seg--hop scrubber__seg-btn",
+                    style: box,
+                    title: label + " — replay this hop",
+                    attrs: { "aria-label": label },
+                });
+                b.addEventListener("click", (ev) => { ev.stopPropagation(); onSelectHop(h); });
+                $.scrubberSegments.appendChild(b);
+            }
+            continue;
+        }
+
+        $.scrubberSegments.appendChild(el("div", {
+            className: "scrubber__seam" + (seg.scan ? "" : " scrubber__seam--unscanned") +
+                (seg.scan?.scan_truncated ? " scrubber__seam--truncated" : ""),
+            style: box,
+            title: seamTitle(seg),
+        }));
+
+        for (const m of markPositions(seg)) {
+            // Which direction the interference ran: they WROTE what the
+            // next hop reads (the "I read 5, who wrote 5?" blame), or
+            // they READ what the previous hop wrote.
+            const wrote = (m.row.wrote?.length ?? 0) > 0;
+            const mark = el("button", {
+                className: "scrubber__mark " + (wrote ? "scrubber__mark--wrote" : "scrubber__mark--read") +
+                    (m.placed ? "" : " scrubber__mark--unplaced"),
+                style: { left: m.pct.toFixed(3) + "%" },
+                title: markTitle(m.row),
+                attrs: { "aria-label": markTitle(m.row) },
+            });
+            mark.addEventListener("click", (ev) => { ev.stopPropagation(); onOpenActivation(m.row); });
+            $.scrubberSegments.appendChild(mark);
+        }
+    }
+}
+
 // Scrubber rail in CUSTOMER-event space: the rail represents the
 // ordered customer-owned events (frame provenance above). Raw
 // event-index space is dominated by engine events — the epilogue setup
@@ -968,7 +1181,7 @@ function renderEventStream(mat, playhead) {
 // The chip + transport time stay in visible-scan grain — the
 // rail-position is "where am I in the handler's run," the chip is
 // "which named scan event am I past."
-function pctForEventIdx(mat, eventIdx) {
+function hopPctForEventIdx(mat, eventIdx) {
     const e0 = Math.max(0, Math.min(mat.events.length - 1, eventIdx));
     const own = ownEventIndex(mat);
     if (own) {
@@ -978,6 +1191,16 @@ function pctForEventIdx(mat, eventIdx) {
     const total = mat.events.length;
     if (total <= 1) return 50;
     return (e0 / (total - 1)) * 100;
+}
+
+// …folded into the anchor hop's segment of the saga rail. Customer-event
+// space is the hop's INTERIOR; the saga layout says where that interior
+// sits on a rail that also carries the saga's other hops and its seams.
+function pctForEventIdx(mat, eventIdx) {
+    const hopPct = hopPctForEventIdx(mat, eventIdx);
+    const a = state.sagaLayout?.anchor;
+    if (!a) return hopPct;
+    return a.start + (hopPct / 100) * (a.end - a.start);
 }
 
 function renderScrubber(mat, playhead) {
@@ -1004,8 +1227,17 @@ function renderScrubber(mat, playhead) {
 
     const shown = current < 0 ? 0 : current;
     const n = items.length || 1;
+    // The playhead reads in SAGA grain when the saga has more than one
+    // hop: "hop 2/3 · 5/12" — which hop of the saga, and where inside
+    // it. A single-hop saga keeps the bare event position; naming a
+    // "hop 1/1" is ceremony over the only hop there is.
     const chip = $.scrubberPlayhead.querySelector(".scrubber__playhead-chip");
-    if (chip) chip.textContent = `${shown + 1} / ${n}`;
+    if (chip) {
+        const layout = state.sagaLayout;
+        chip.textContent = (layout && layout.anchor && layout.hops.length > 1)
+            ? `hop ${layout.anchor.index + 1}/${layout.hops.length} · ${shown + 1}/${n}`
+            : `${shown + 1} / ${n}`;
+    }
 
     $.transportTime.replaceChildren(
         el("span", { className: "c-brand", text: "event " + (shown + 1) }),
@@ -1285,9 +1517,17 @@ function wireTransport() {
         // Drag maps pixels through the same customer-event space the
         // rail is drawn in (pctForEventIdx) — each customer event owns
         // an equal slice, so every executed line is reachable by drag.
+        // On a multi-hop saga that space is the ANCHOR SEGMENT: the rest
+        // of the rail is other hops (navigation) and seams (annotation),
+        // and stepping moves through this hop's events only. Dragging
+        // past the segment clamps to its ends rather than walking off
+        // into a hop this window has not materialised.
         const eventIdxAt = (clientX) => {
             const rect = $scrubber.getBoundingClientRect();
-            const frac = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
+            let frac = (clientX - rect.left) / rect.width;
+            const a = state.sagaLayout?.anchor;
+            if (a && a.end > a.start) frac = (frac * 100 - a.start) / (a.end - a.start);
+            frac = Math.max(0, Math.min(1, frac));
             const own = ownEventIndex(state.mat);
             if (own && own.length > 0) {
                 return own[Math.round(frac * (own.length - 1))];
@@ -1299,6 +1539,11 @@ function wireTransport() {
 
         $scrubber.addEventListener("mousedown", (ev) => {
             if (!state.mat) return;
+            // A hop segment and a seam mark are controls, not rail: a
+            // mousedown on one is a navigation gesture, and starting a
+            // drag under it would move the playhead on the way to a
+            // click that leaves this window anyway.
+            if (ev.target?.closest?.(".scrubber__seg-btn, .scrubber__mark")) return;
             dragging = true;
             ev.preventDefault();
             setPlayhead(eventIdxAt(ev.clientX));
@@ -1845,6 +2090,12 @@ const state = {
     // summaries. Null when the opener sent none (older dashboard, or
     // a record with no saga context); the rail says so.
     saga: null,
+    // Per-seam interference scans (`/v1/{t}/seam`), matched to gaps by
+    // their bounds. A seam missing from here was not scanned.
+    seams: null,
+    // The scrubber's saga geometry (buildSagaLayout): hop segments, seam
+    // bands, and the anchor segment the playhead lives inside.
+    sagaLayout: null,
     // The completed run's Model view (`materialise` pass 1). The state
     // pane falls back to it at the end of the run, where the handler is
     // done and the view is final.
@@ -2259,15 +2510,16 @@ function renderResponse(bundle, mat, f) {
 }
 
 async function main() {
-    let bundle, saga;
+    let bundle, saga, seams;
     try {
-        ({ bundle, saga } = await awaitBundle());
+        ({ bundle, saga, seams } = await awaitBundle());
     } catch (err) {
         renderError(err);
         return;
     }
     state.bundle = bundle;
     state.saga = saga;
+    state.seams = seams ?? null;
     state.modulePaths = new Set((bundle.modules || []).map(m => m.path));
     state.moduleLineCounts = new Map((bundle.modules || []).map(
         m => [m.path, (m.source || "").split("\n").length]));
@@ -2278,6 +2530,11 @@ async function main() {
     // index data; materialising a hop is the expensive part, and the
     // rail must not wait on it.
     renderTapeRail(saga, bundle.request_id, navigateToHop);
+    // The scrubber's saga geometry rides the same index data, so it
+    // draws in the same pre-engine pass: the hop in view gets its
+    // statement ticks later, when there is a run to tick.
+    state.sagaLayout = buildSagaLayout(saga, state.seams, bundle.request_id);
+    renderSagaRail(state.sagaLayout, navigateToHop, openForeignActivation);
     if ($.tapeLogsLink) {
         const inst = currentInstanceId();
         $.tapeLogsLink.href = inst
