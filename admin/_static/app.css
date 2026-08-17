@@ -360,7 +360,15 @@ button.danger:disabled {
   margin-bottom: 10px;
 }
 .logs-panel .toolbar button { font-size: 13px; padding: 4px 12px; }
-.logs-panel .count { margin-left: auto; }
+/* Filter controls: compact, content-sized — the global input rule's
+   width: 100% would fight the flex row. */
+.logs-panel .toolbar select,
+.logs-panel .toolbar input {
+  width: auto;
+  padding: 4px 8px;
+}
+.logs-panel .toolbar .f-path { width: 13rem; }
+.logs-panel .count { margin-left: auto; white-space: nowrap; }
 
 .logs-panel .table-wrap {
   grid-column: 1;
