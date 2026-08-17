@@ -58,6 +58,23 @@ reddens with `WASM load failed`, suspect that class first
 (`curl -sS -o /dev/null -w "%{size_download}B\n"
 https://replay.rewindjs.com/qjs_arena_wasm.wasm` should print 1050175).
 
+## KV pane: full key lifecycle
+
+`tests/kv.spec.js` drives the instance page's KV tab end-to-end on
+`__auth__` (override with `E2E_KV_INSTANCE`): prefix-filter to `e2e/`,
+create a unique `e2e/kv-<ts>` key, edit it in place, **verify the edit via
+a fresh server listing** (not the already-painted DOM), delete it through
+the confirm() dialog, and verify the key is gone from another fresh
+listing. A `finally` REST delete guarantees no stray key survives a
+mid-test failure.
+
+It also asserts the Delete button's WCAG contrast (text vs. effective
+background) is ≥ 4.5:1 — its first prod run (2026-08-16) failed here at
+ratio 1.0: a broader `button.danger` rule painted a solid `--danger` fill
+under the pane's outline-style `color: var(--danger)` override,
+danger-on-danger. Fixed in `admin/_static/app.css` the same day; the spec
+goes green once the fixed admin bundle is republished.
+
 ## Setup
 
 ```bash
