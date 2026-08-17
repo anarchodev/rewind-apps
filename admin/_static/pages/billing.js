@@ -100,8 +100,12 @@ export function render(root, { goto, api, params, who }) {
   function renderState() {
     const b = billing;
     const live = b.status !== null && ACTIVE[b.status];
+    // The parenthetical qualifies a LIVE subscription ("pro (past_due)"
+    // during grace). A dead one's residual status row (canceled,
+    // incomplete_expired) would otherwise leak into what reads as the
+    // current plan — "free (incomplete_expired)".
     wrap.querySelector(".plan-line").textContent =
-      b.plan + (b.status ? " (" + b.status + ")" : "");
+      b.plan + (live ? " (" + b.status + ")" : "");
     const renew = wrap.querySelector(".renewal-line");
     if (live && b.period_end) {
       renew.hidden = false;
