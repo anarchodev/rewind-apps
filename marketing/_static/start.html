@@ -75,7 +75,9 @@
          magic-link flow at auth.rewindjs.com and lands the signed-in
          user back in the dashboard. The OIDC exchange must originate at
          the dashboard (it carries PKCE state), so this is a link, not a
-         form — the email is typed once, on the auth page. -->
+         form — the email is typed on the auth page. (The home page's
+         hero form instead POSTs the IdP's /login directly with an
+         allowlisted return_to — the one-submission entry.) -->
     <a href="https://app.rewindjs.com/_rp/login" class="btn btn-primary"
        style="padding: 16px 36px; font-size: 17px; border-radius: var(--r-lg);">
       Start free — send me the link

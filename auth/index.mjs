@@ -15,6 +15,8 @@ import email from "@rewind/email";
 
 const MAGIC_TTL_MS = 15 * 60 * 1000; // 15 min, single-use
 const MAGIC_PREFIX = "_oidc/magic/";
+const MAGIC_COOLDOWN_MS = 60 * 1000; // min gap between sends to one address
+const COOLDOWN_PREFIX = "_oidc/magic_cooldown/";
 const SESSION_PREFIX = "_oidc/session/"; // must match oidc cfg.session_path
 
 function iss() {
@@ -27,28 +29,69 @@ function rand() {
   return base64url.encode(b);
 }
 
-// return_to MUST be an absolute URL on THIS issuer (open-redirect
-// defense — the login is otherwise a redirector an attacker could aim
-// anywhere). In practice it's the /authorize URL oidc.js bounced here.
+// return_to must be an absolute URL on THIS issuer, or on a registered
+// OIDC client's origin (open-redirect defense — the login is otherwise
+// a redirector an attacker could aim anywhere). Every browser-bound
+// exit from the IdP answers to the same client-registry allowlist that
+// RP-initiated logout's post_logout_redirect_uri does; that is what
+// lets a static page POST this login form directly (the one-submission
+// entry) and have the verify 302 land on the RP, where PKCE completes
+// on the now-live IdP session. The try/catch matters: with no client
+// registry configured the check rejects instead of throwing, so the
+// config-less GET /login keeps rendering.
 function safeReturnTo(rt) {
   const base = iss() + "/";
   if (typeof rt === "string" && (rt === iss() || rt.indexOf(base) === 0)) {
     return rt;
   }
+  if (typeof rt === "string") {
+    try {
+      if (oidc.provider("default").isRegisteredClientOrigin(rt)) return rt;
+    } catch (_) {
+      // missing/broken client registry → reject like any unknown origin
+    }
+  }
   return iss() + "/"; // fall back to the issuer root
 }
 
-function loginForm(return_to, msg) {
+// HTML-attribute escaping for values interpolated into value="…".
+function escAttr(v) {
+  return String(v)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+// `hint` is the OIDC login_hint: prefill-only data, never authority.
+// The magic-link verify binds the address the POST /login mint
+// confirmed, not the hint, and the form never auto-submits — so an
+// attacker-crafted GET /login?login_hint=… link can prefill a value
+// but can never fire an email on its own.
+function loginForm(return_to, msg, hint) {
   response.status = 200;
   response.headers = { "content-type": "text/html; charset=utf-8" };
-  const rt = String(return_to || "").replace(/"/g, "&quot;");
+  const rt = escAttr(return_to || "");
+  const h = hint ? escAttr(String(hint).slice(0, 320)) : "";
   return "<!doctype html><meta charset=utf-8><title>Sign in</title>" +
     "<h1>Sign in</h1>" +
     (msg ? "<p>" + msg + "</p>" : "") +
     '<form method=post action="/login">' +
     '<input type=hidden name=return_to value="' + rt + '">' +
-    '<input name=email type=email placeholder="you@example.com" required>' +
+    '<input name=email type=email placeholder="you@example.com" required' +
+    (h ? ' value="' + h + '"' : "") + ">" +
     "<button>Email me a sign-in link</button></form>";
+}
+
+// The page a successful email send returns — and, byte-identical, the
+// page a cooldown-suppressed repeat returns, so a caller cannot tell
+// the two apart. escAttr covers text content too (& < > escaped).
+function checkEmailPage(addr) {
+  response.status = 200;
+  response.headers = { "content-type": "text/html; charset=utf-8" };
+  return "<!doctype html><meta charset=utf-8><title>Check your email</title>" +
+    "<p>Check your email — a sign-in link is on its way to " +
+    escAttr(addr) + ".</p>";
 }
 
 // POST /login {email, return_to} → mint a single-use magic token,
@@ -63,7 +106,25 @@ function startLogin() {
   const addr = (f.get("email") || "").trim().toLowerCase();
   const return_to = safeReturnTo(f.get("return_to"));
   if (!addr || addr.indexOf("@") < 1) {
-    return loginForm(return_to, "Enter a valid email.");
+    // Re-render with the typed address as the hint so it can be corrected.
+    return loginForm(return_to, "Enter a valid email.", addr);
+  }
+
+  const resendKey = kv.get("resend_key");
+  const cdKey = COOLDOWN_PREFIX + crypto.sha256(addr);
+  // Per-address send cooldown, on the email path only. POST /login is
+  // public and unauthenticated, so without a floor between sends it is
+  // an inbox-bombing primitive. Inside the window we return the
+  // identical "Check your email" page without minting or sending — the
+  // earlier link still works, and the identical response leaks nothing
+  // (no address enumeration, no amplification). The dev seam (no Resend
+  // key) is exempt: it sends no email, so there is nothing to bomb —
+  // and test/smoke logins re-login the same address within seconds.
+  if (resendKey) {
+    const last = Number(kv.get(cdKey));
+    if (last && Date.now() - last < MAGIC_COOLDOWN_MS) {
+      return checkEmailPage(addr);
+    }
   }
 
   const opaque = rand();
@@ -75,7 +136,6 @@ function startLogin() {
   }));
   const link = iss() + "/login/verify?mt=" + opaque;
 
-  const resendKey = kv.get("resend_key");
   if (resendKey) {
     email.send({
       apiKey: resendKey,
@@ -84,10 +144,8 @@ function startLogin() {
       subject: "Your sign-in link",
       text: "Sign in: " + link + "\n\nThis link expires in 15 minutes.",
     });
-    response.status = 200;
-    response.headers = { "content-type": "text/html; charset=utf-8" };
-    return "<!doctype html><meta charset=utf-8><title>Check your email</title>" +
-      "<p>Check your email for a sign-in link.</p>";
+    kv.set(cdKey, String(Date.now()));
+    return checkEmailPage(addr);
   }
   // No email configured (dev/test): hand the link back directly.
   response.status = 200;
@@ -141,7 +199,7 @@ export default function () {
 
   if (m === "GET" && path === "/login") {
     const q = new URLSearchParams(request.query || "");
-    return loginForm(q.get("return_to"));
+    return loginForm(q.get("return_to"), null, q.get("login_hint"));
   }
   if (m === "POST" && path === "/login") return startLogin();
   if (m === "GET" && path === "/login/verify") return verifyLogin();

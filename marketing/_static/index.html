@@ -52,16 +52,20 @@
       machine that records every request — all from one email.
     </p>
 
-    <!-- This form is inert by design: the real signup entry is the
-         dashboard's OIDC login (app.rewindjs.com/_rp/login — /start links
-         it), and that exchange must originate at the dashboard with PKCE
-         state, so a static page cannot carry a typed email into the flow.
-         On submit this redirects there and the email is typed once, on the
-         auth page. Making this form the real entry needs a marketing-side
-         handler or an auth-side prefill parameter — neither exists today. -->
+    <!-- One submission starts everything: a plain cross-origin HTML
+         POST straight to the IdP's /login — no JS. POST only, never a
+         GET link: nothing prefetchable or drive-by can fire an email,
+         and a per-address cooldown on the IdP bounds inbox-bombing.
+         The IdP accepts the return_to below only because its origin is
+         registered in its OIDC client registry (the same allowlist
+         RP-initiated logout validates post_logout_redirect_uri
+         against). The emailed magic link lands the clicking browser at
+         /_rp/login, where the PKCE handshake completes silently on the
+         now-live IdP session. -->
     <form class="row" style="justify-content: center; gap: 8px; flex-wrap: wrap; max-width: 540px; margin: 0 auto 12px;"
-          onsubmit="event.preventDefault(); window.location.href='https://app.rewindjs.com/_rp/login'">
-      <input type="email" placeholder="you@example.com" required
+          method="post" action="https://auth.rewindjs.com/login">
+      <input type="hidden" name="return_to" value="https://app.rewindjs.com/_rp/login">
+      <input type="email" name="email" placeholder="you@example.com" required
              style="flex: 1; min-width: 280px; background: var(--mantle); border: 1px solid var(--surface-0);
                     color: var(--text-1); padding: 14px 18px; border-radius: var(--r-lg);
                     font-size: 16px; font-family: var(--font-sans); outline: none;">
