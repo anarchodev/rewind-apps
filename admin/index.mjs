@@ -1574,9 +1574,20 @@ function handleLogQuery(path, qs) {
     // authority as list/show: `window` (the exec-seq tape view),
     // `saga/{id}` (one saga's hops + gap summaries), `seam` (the
     // interference scan between two hops).
+    //
+    // `body/{request_id}/{channel}/{index}` resolves ONE recorded payload
+    // that was left out of line: a payload over the inline cap is not in
+    // the record, which keeps a pointer while the bytes stay in object
+    // storage. It is addressed by TAPE ORDINAL, never by a raw
+    // {batch_id, offset} — the body pool is cross-tenant, so the reference
+    // is derived server-side from a record the caller may already read.
+    // That makes it exactly as privileged as `show/{id}`, which hands back
+    // the inline bodies of the same request, so it takes the same gate
+    // below rather than one of its own.
     if (
         sub !== "list" && sub !== "count" && sub !== "window" &&
-        sub !== "seam" && !sub.startsWith("show/") && !sub.startsWith("saga/")
+        sub !== "seam" && !sub.startsWith("show/") && !sub.startsWith("saga/") &&
+        !sub.startsWith("body/")
     ) {
         return jsonError(404, "no such log route");
     }

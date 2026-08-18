@@ -1978,6 +1978,34 @@ function renderFidelity(f) {
     }));
 }
 
+// A payload this replay does not have: the capture recorded it by
+// reference and the reference could not be turned back into bytes. Said
+// in the appbar, next to the fidelity verdict, because it is a fact about
+// the whole run and not about one panel — every line downstream of that
+// read is operating on an input production never gave it.
+//
+// The run itself refuses (the epilogue poisons on the read), so this
+// badge is what turns an otherwise unexplained "did not complete" into a
+// diagnosis. It is rendered even when the handler never reads the payload
+// and the run completes clean: the reader still deserves to know the
+// bundle is short an input.
+function renderPayloadGap(surface) {
+    const gap = surface?.payloadUnresolved;
+    if (!gap || !$.meta) return;
+    $.meta.appendChild(el("span", { className: "t-mute", text: "·" }));
+    $.meta.appendChild(el("span", {
+        className: "badge badge--warn",
+        text: "payload not resolved",
+        title: `the ${gap.channel} entry ${gap.index} of this record is a reference, and ` +
+            `${gap.reason}. The replay refuses to serve a body it does not have.`,
+        attrs: {
+            id: "payload-gap",
+            "data-channel": gap.channel,
+            "data-status": String(gap.status ?? ""),
+        },
+    }));
+}
+
 // ── Response panel ───────────────────────────────────────────────────
 //
 // The terminal of the timeline: what the re-executed handler put on the
@@ -2356,6 +2384,13 @@ async function main() {
         activation: bundle.activation,
         tapes,
         activationBytes: bundle.activation_bytes ?? null,
+        // Payloads the record kept only a POINTER to, resolved by the
+        // dashboard through the body door and folded into the bundle.
+        // This origin holds no credential — the session cookie is
+        // `__Host-`-bound to the dashboard — so the bytes either arrive
+        // with the bundle or not at all, and "not at all" is a refusal
+        // (`surface.payloadUnresolved`), never an empty body.
+        resolvedBodies: bundle.resolved_bodies ?? null,
     });
 
     // Diagnostic hook, like __replay_tapes__: what the tapes yielded for
@@ -2394,6 +2429,10 @@ async function main() {
         middlewarePath,
         tenant: bundle.tenant_id ?? null,
         sagaId: bundle.saga_id ?? null,
+        // A payload recorded by reference that nothing resolved. The
+        // epilogue refuses it instead of handing the handler "" — see
+        // `payloadGone` there.
+        payloadUnresolved: surface.payloadUnresolved,
     });
     const entrySrcWithEpilogue = entrySrc + epilogue;
 
@@ -2483,6 +2522,7 @@ async function main() {
     wireTransport();
     renderAll();
     renderFidelity(state.fidelity);
+    renderPayloadGap(surface);
     renderResponse(bundle, mat, state.fidelity);
     window.__replay_response__ = mat.outcome ?? null;
     inspectAndRenderVars(state.playhead);

@@ -139,7 +139,69 @@ export function resolveMiddleware(moduleSources, activation = "inbound") {
 // "kv", not "kv_wake"; the rest are identity.
 const ACTIVATION_KIND = { kv_wake: "kv" };
 
-export function deriveActivationSurface({ activation = "inbound", tapes = {}, activationBytes = null } = {}) {
+// The activation kinds whose Msg IS the inbound request body. Every other
+// kind takes its payload from somewhere else (a callback envelope, a fetch
+// chunk, a WS frame), so the trigger channel is not its body.
+const INBOUND_KINDS = new Set(["inbound", "inbound_headers", "inbound_chunk"]);
+
+/// What the body door's verdict MEANS, in one sentence a reader can act on.
+/// The status is the verdict — a resolution never comes back as an empty
+/// 200 — so each one gets its own sentence rather than a generic failure.
+function doorReason(r) {
+    const why = {
+        0: "the resolution request never reached the dashboard",
+        400: "the payload address was malformed",
+        403: "this session may not read that tenant's payloads",
+        404: "the record, or that entry of its tape, is not in the log",
+        409: "the payload was recorded as nothing — the capture kept no bytes",
+        410: "the referenced bytes are no longer in storage",
+        413: "the payload is larger than the resolution ceiling",
+        422: "the recorded reference is malformed",
+        503: "no content store is configured, so the reference is unreachable",
+    }[r.status];
+    const detail = String(r.error || "").split("\n")[0].trim();
+    return (why || `the body door answered ${r.status}`) + (detail ? ` (${detail})` : "");
+}
+
+/// Where ONE tape entry's payload actually is. Mirrors rove's
+/// `body_ref.locate` (src/log_server/body_ref.zig) — the same four answers
+/// off the same fields, because the browser and the door must agree on
+/// what a given entry claims before they can agree on what it holds.
+///
+/// `resolvedBodies` is the bundle's `{channel}/{index}` → door verdict map,
+/// addressed by RAW tape ordinal: the door resolves by ordinal, so an index
+/// taken from a filtered list names a different entry than the one asked
+/// about.
+///
+/// Returns `{bytes, source}` where source is `carried` (the bytes rode the
+/// tape), the door's own source (`pool` / `content`), `empty` (the entry
+/// genuinely had no payload), or `unresolved` — which carries a `reason`
+/// and is the one answer a caller must never turn into an empty body.
+export function locatePayload(entry, index, channel, resolvedBodies) {
+    if (entry?.inline_bytes?.length) return { bytes: entry.inline_bytes, source: "carried" };
+    const r = resolvedBodies ? resolvedBodies[channel + "/" + index] : undefined;
+    if (r && r.status === 200 && r.bytes?.length) {
+        return { bytes: r.bytes, source: r.source || "resolved" };
+    }
+    // No bytes here and none resolved. Did the entry CLAIM a payload? A
+    // pool batch id, a content hash, or a non-zero reference length each
+    // say bytes existed; all three absent is a genuinely empty event (a
+    // terminal-only fetch chunk), which is not a failure to report.
+    const claimed = !!entry && (
+        (entry.batch_id ?? 0) !== 0 ||
+        String(entry.content_hash || "").length > 0 ||
+        (entry.ref_len ?? 0) > 0);
+    if (!claimed) return { bytes: null, source: "empty" };
+    return {
+        bytes: null,
+        source: "unresolved",
+        status: r ? r.status : null,
+        reason: r ? doorReason(r)
+            : "the bundle carries no resolution for this payload — reopen the record from the dashboard",
+    };
+}
+
+export function deriveActivationSurface({ activation = "inbound", tapes = {}, activationBytes = null, resolvedBodies = null } = {}) {
     // Prod installs `request.activation = {kind, ...payload}` on EVERY
     // activation, inbound included (globals_request.zig) — a handler that
     // branches on `request.activation.kind` is doing the documented thing.
@@ -149,17 +211,50 @@ export function deriveActivationSurface({ activation = "inbound", tapes = {}, ac
         activation: { kind: ACTIVATION_KIND[activation] ?? activation },
         result: null,
         bodyBytes: null,
+        // Set when this activation's Msg was recorded by reference and
+        // nothing could turn that reference back into bytes. It is the
+        // whole point of the field that it is NOT a null body: a missing
+        // input must reach the run as a refusal, never as a plausible
+        // empty value.
+        payloadUnresolved: null,
     };
-    const trigger = (tapes.trigger_payload || []).filter((e) => e.batch_id === 0 && e.inline_bytes?.length);
+    const triggerEntries = tapes.trigger_payload || [];
     const fetches = tapes.fetch_responses || [];
+
+    // The activation's Msg is the first trigger entry that has, or claims,
+    // a payload — walked by RAW ORDINAL. A pre-filtered list renumbers the
+    // entries, and the body door addresses by ordinal, so a filtered index
+    // asks about a different entry than the one being replayed.
+    let trigger = null;
+    for (let i = 0; i < triggerEntries.length; i++) {
+        const p = locatePayload(triggerEntries[i], i, "trigger_payload", resolvedBodies);
+        if (p.source === "empty") continue;
+        trigger = { index: i, ...p };
+        break;
+    }
+    if (trigger && !trigger.bytes) {
+        out.payloadUnresolved = {
+            channel: "trigger_payload", index: trigger.index,
+            status: trigger.status ?? null, reason: trigger.reason,
+        };
+    }
 
     // The threaded ctx rides a synthesized `{"ctx": …}` envelope.
     let envelope = null;
-    if (trigger.length) {
-        try { envelope = JSON.parse(_decoder.decode(trigger[0].inline_bytes)); }
+    if (trigger?.bytes) {
+        try { envelope = JSON.parse(_decoder.decode(trigger.bytes)); }
         catch (_) { envelope = null; }
     }
     if (envelope && "ctx" in envelope) out.ctx = envelope.ctx;
+
+    // An inbound activation's Msg IS the request body. Only a payload the
+    // RECORD did not carry inline is taken from here: a body under the
+    // inline cap already rides `request_body_b64`, which the shell hands
+    // to the epilogue directly, and re-deriving it would be one more way
+    // for the two to disagree.
+    if (INBOUND_KINDS.has(activation) && trigger?.bytes && trigger.source !== "carried") {
+        out.bodyBytes = trigger.bytes;
+    }
 
     // A send_callback's Msg IS that envelope: `{ctx:{result, context}}`
     // for a result delivery. Split it exactly as prod's install hoist
@@ -193,9 +288,14 @@ export function deriveActivationSurface({ activation = "inbound", tapes = {}, ac
     }
 
     // A bound fetch's result: the last recorded chunk carries the
-    // terminal status; its bytes are the activation's body.
+    // terminal status; its bytes are the activation's body. A chunk over
+    // the inline cap left its bytes in content-addressed storage and the
+    // entry holds only the reference — resolve it by the chunk's own
+    // ordinal, and refuse rather than serve an empty chunk when it cannot
+    // be resolved.
     if (activation === "fetch_chunk" && fetches.length) {
-        const last = fetches[fetches.length - 1];
+        const lastIdx = fetches.length - 1;
+        const last = fetches[lastIdx];
         out.result = {
             status: last.final ? last.terminal_status : null,
             done: last.final,
@@ -203,7 +303,14 @@ export function deriveActivationSurface({ activation = "inbound", tapes = {}, ac
             chunkSeq: last.seq ?? null,
             bodyTruncated: last.body_truncated ?? null,
         };
-        if (last.inline_bytes?.length) out.bodyBytes = last.inline_bytes;
+        const p = locatePayload(last, lastIdx, "fetch_responses", resolvedBodies);
+        if (p.bytes) out.bodyBytes = p.bytes;
+        else if (p.source === "unresolved") {
+            out.payloadUnresolved = {
+                channel: "fetch_responses", index: lastIdx,
+                status: p.status ?? null, reason: p.reason,
+            };
+        }
     }
 
     // ws_message: activationBytes = [opcode][data]. A binary frame's
@@ -233,13 +340,18 @@ export function deriveActivationSurface({ activation = "inbound", tapes = {}, ac
 ///                  query string is derived by splitting `path` on `?`.
 ///   requestReads — parsed `request_reads` entries (rtap.mjs shape),
 ///                  or null/[] for records captured with no reads.
-///   bodyBytes    — Uint8Array | null: the bundle's request_body
-///                  bytes. Only consulted when the tape says the
-///                  handler read the body. ≤16 KB read bodies ride
-///                  inline in the record; larger ones live behind the
-///                  trigger_payload BodyRef and are NOT fetched here
-///                  yet (the epilogue returns "" for them — same
-///                  pre-existing bundle limitation as before).
+///   bodyBytes    — Uint8Array | null: the activation's payload bytes.
+///                  Only consulted when the tape says the handler read
+///                  the body. ≤16 KB read bodies ride inline in the
+///                  record; larger ones live behind the trigger_payload
+///                  BodyRef and are resolved into the bundle through the
+///                  body door before this is built.
+///   payloadUnresolved — the `deriveActivationSurface` marker for a
+///                  payload recorded BY REFERENCE that nothing could
+///                  resolve. Present ⇒ the epilogue refuses the payload
+///                  instead of serving "": a handler reading a body the
+///                  replay does not have is reading fiction, and an empty
+///                  string is the most convincing fiction there is.
 ///   exportName   — the export the activation invokes ("default",
 ///                  "onChunk", "onHeaders", ...). Defaults "default".
 ///   binaryBody   — true for chunk activations (`inbound_chunk` /
@@ -459,7 +571,7 @@ export function deriveWireResponse(result, responseGlobal, effects, activationKi
     };
 }
 
-export function buildRequestEpilogue({ record = {}, requestReads = null, bodyBytes = null, exportName = "default", binaryBody = false, activation = "inbound", ctx = undefined, activationBag = undefined, result = null, middlewarePath = null, tenant = null, sagaId = null, captured = true, kvRefusals = null } = {}) {
+export function buildRequestEpilogue({ record = {}, requestReads = null, bodyBytes = null, exportName = "default", binaryBody = false, activation = "inbound", ctx = undefined, activationBag = undefined, result = null, middlewarePath = null, tenant = null, sagaId = null, captured = true, kvRefusals = null, payloadUnresolved = null } = {}) {
     const reads = foldRequestReads(requestReads);
 
     const rawPath = record.path || "/";
@@ -477,6 +589,14 @@ export function buildRequestEpilogue({ record = {}, requestReads = null, bodyByt
         // (chunk activations record the payload structurally, not
         // via the getter).
         bodyRead: reads.bodyRead || bodyBytes != null,
+        // The capture recorded a payload BY REFERENCE and nothing could
+        // resolve it. `bodyRead` above is true whenever the handler read
+        // the body, so without this the payload accessors would hand back
+        // "" — a lost input wearing the shape of an empty one, which is
+        // the failure this field exists to make impossible.
+        payloadGone: payloadUnresolved
+            ? String(payloadUnresolved.reason || "the recorded payload could not be resolved")
+            : null,
         body: binaryBody || bodyBytes == null
             ? null
             : (typeof bodyBytes === "string" ? bodyBytes : _decoder.decode(bodyBytes)),
@@ -672,7 +792,13 @@ export function buildRequestEpilogue({ record = {}, requestReads = null, bodyByt
         // still replay their pinned code.
         "  const __b2s = (c) => { if (typeof c === \"string\") return c; let s = \"\"; for (let i = 0; i < c.length; i++) s += String.fromCharCode(c[i]); return s; };\n" +
         "  const __rawPayload = () => {\n" +
-        "    if (!D.bodyRead) miss(\"request payload (bytes/text/json/body)\");\n" +
+        // Refusal, not silence. The handler DID read this payload live;
+        // the replay simply does not have it, so serving "" would put a
+        // value production never saw in front of every line downstream.
+        // Poisoning is the same verdict an off-tape read gets, for the
+        // same reason: everything after it is the replay's own invention.
+        "    if (D.payloadGone) miss(\"request payload — \" + D.payloadGone);\n" +
+        "    else if (!D.bodyRead) miss(\"request payload (bytes/text/json/body)\");\n" +
         "    if (D.bodyB64 != null) {\n" +
         "      const bin = atob(D.bodyB64);\n" +
         "      const u = new Uint8Array(bin.length);\n" +
@@ -722,6 +848,14 @@ export function buildRequestEpilogue({ record = {}, requestReads = null, bodyByt
         // recorded, so a payload-less kind reads `undefined` exactly as it
         // does live rather than a fabricated null.
         "  if (D.hasCtx) request.ctx = D.ctx;\n" +
+        // A continuation's ctx rides the same envelope as its payload, so
+        // an unresolvable envelope loses the ctx too. An absent `ctx` is a
+        // legitimate state for an inbound and for the first hop of a
+        // chain, so only a resume that LOST its envelope refuses here —
+        // otherwise the lost thread reads as "this hop threaded nothing".
+        "  else if (D.payloadGone && D.kind !== \"inbound\" && D.kind !== \"inbound_headers\" && D.kind !== \"inbound_chunk\")\n" +
+        "    Object.defineProperty(request, \"ctx\", { enumerable: true, configurable: true,\n" +
+        "      get() { miss(\"request.ctx — \" + D.payloadGone); return undefined; } });\n" +
         "  request.activation = D.activationBag;\n" +
         "  if (D.tenant !== null) request.tenant = D.tenant;\n" +
         "  if (D.sagaId !== null) request.sagaId = D.sagaId;\n" +

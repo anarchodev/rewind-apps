@@ -129,17 +129,24 @@ function decodeEntry(channel, bytes, version) {
         }
         // A fetch result's bytes + terminal status (src/tape/root.zig
         // `FetchResponseEntry`; decoder mirrored from
-        // src/replay/tape_decode.zig decodeFetchResponses). The two
-        // BodyRef fields are read past — an out-of-line body lives in a
-        // readset blob the bundle does not carry, so only `inline_bytes`
-        // (≤16 KB captures) is replayable offline.
+        // src/replay/tape_decode.zig decodeFetchResponses).
+        //
+        // The BodyRef is KEPT, not read past. `ref_len` is the recorded
+        // length of the payload however it ended up stored, and it is the
+        // one field that separates the three no-inline-bytes cases: a
+        // terminal-only event that genuinely had no payload (len 0), a
+        // reference something can resolve (len > 0 with a batch id or a
+        // content hash), and a payload the capture claimed but did not
+        // keep (len > 0 with neither). Dropping it collapsed the last two
+        // onto the first — which is how a lost payload replayed as an
+        // empty one instead of as a refusal.
         case CHANNEL_FETCH_RESPONSES: {
             const fetch_id = readUtf8();
             const seq = view.getUint32(off); off += 4;
             const byte_offset = Number(view.getBigUint64(off)); off += 8;
             const batch_id = Number(view.getBigUint64(off)); off += 8;
-            off += 8;  // body_ref.offset — unused offline
-            off += 4;  // body_ref.len    — unused offline
+            const ref_offset = Number(view.getBigUint64(off)); off += 8;
+            const ref_len = view.getUint32(off); off += 4;
             const final = bytes[off++] !== 0;
             const terminal_status = view.getUint16(off); off += 2;
             const terminal_ok = bytes[off++] !== 0;
@@ -154,19 +161,21 @@ function decodeEntry(channel, bytes, version) {
             // trailing, so its absence is the same as empty.
             const content_hash = (version >= 6 && off < bytes.length)
                 ? readUtf8() : "";
-            return { fetch_id, seq, byte_offset, batch_id, final,
-                     terminal_status, terminal_ok, body_truncated,
+            return { fetch_id, seq, byte_offset, batch_id, ref_offset, ref_len,
+                     final, terminal_status, terminal_ok, body_truncated,
                      headers, inline_bytes, content_hash };
         }
         // The activation's Msg: the request body for an inbound, or a
         // synthesized `{"ctx": …}` envelope for a continuation resume
-        // (src/tape/root.zig `TriggerPayloadEntry`).
+        // (src/tape/root.zig `TriggerPayloadEntry`). The BodyRef is kept
+        // for the same reason as on `fetch_responses` above — it is what
+        // says a payload existed when no bytes rode the entry.
         case CHANNEL_TRIGGER_PAYLOAD: {
             const batch_id = Number(view.getBigUint64(off)); off += 8;
-            off += 8;  // body_ref.offset
-            off += 4;  // body_ref.len
+            const ref_offset = Number(view.getBigUint64(off)); off += 8;
+            const ref_len = view.getUint32(off); off += 4;
             const inline_bytes = readLenPrefixed();
-            return { batch_id, inline_bytes };
+            return { batch_id, ref_offset, ref_len, inline_bytes };
         }
         case CHANNEL_REQUEST_READS: {
             const kind = bytes[off++];

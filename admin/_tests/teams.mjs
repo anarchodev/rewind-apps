@@ -229,10 +229,23 @@ expect(logCall("/v1/logs/logapp/seam", "al").disposition).toBe("held");
 expect(logCall("/v1/logs/logapp/window", "ca").status).toBe(403);
 expect(logCall("/v1/logs/logapp/saga/sg1", "ca").status).toBe(403);
 expect(logCall("/v1/logs/logapp/seam", "ca").status).toBe(403);
+// `body/{id}/{channel}/{index}` hands back one out-of-line payload's bytes —
+// the same customer data `show/{id}` returns inline, so it rides the same gate
+// and is relayed to the door unchanged.
+const bodyRead = logCall("/v1/logs/logapp/body/req_00000000000000ff/trigger_payload/0", "al");
+expect(bodyRead.disposition).toBe("held");
+expect(bodyRead).toHaveFetched(
+  /rewind-logs\.internal\/v1\/logapp\/body\/req_00000000000000ff\/trigger_payload\/0/);
+const bodyDenied = logCall("/v1/logs/logapp/body/req_00000000000000ff/trigger_payload/0", "ca");
+expect(bodyDenied.status).toBe(403);
+expect(bodyDenied.effects.some((e) => e.kind === "fetch")).toBe(false);
 // An unknown sub-route still 404s — the whitelist did not become a pass-through.
 expect(logCall("/v1/logs/logapp/nope", "al").status).toBe(404);
 // Bare `saga/` (no id) is not a route.
 expect(logCall("/v1/logs/logapp/saga", "al").status).toBe(404);
+// Bare `body` (no address) is not a route either — the prefix match is on
+// `body/`, so the whitelist cannot be widened by a near-miss spelling.
+expect(logCall("/v1/logs/logapp/body", "al").status).toBe(404);
 
 // A tenant no one in this fixture owns: the operator still reads across
 // tenants, and the customer's refusal is identical to the one above — so the

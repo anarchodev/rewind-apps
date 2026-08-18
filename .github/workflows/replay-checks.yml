@@ -18,9 +18,15 @@ name: replay-checks
 #   model-view-engine-check — the SEAM under that pane: boots the real WASM
 #                             arena and asserts the shapes the pane consumes,
 #                             instead of trusting either half of the seam.
+#   body-resolve-check      — a payload the record kept only a POINTER to is
+#                             either resolved through the body door or
+#                             REFUSED. The failure it guards is silent by
+#                             construction: a lost input replays as an empty
+#                             one, and an empty body is a plausible value
+#                             rather than an error anyone would notice.
 #
-# `npm run check` in e2e/ runs the same four; they are separate steps here so
-# a failure names itself in the job summary.
+# `npm run check` in e2e/ runs the node-only ones; they are separate steps
+# here so a failure names itself in the job summary.
 #
 # `tape-rail-check.mjs` is deliberately NOT in this lane: it drives the shell
 # through playwright, so it needs an install and a browser download and stops
@@ -73,3 +79,6 @@ jobs:
       - name: Model-view engine-seam check
         working-directory: e2e
         run: node model-view-engine-check.mjs
+      - name: Out-of-line payload resolution check
+        working-directory: e2e
+        run: node body-resolve-check.mjs
