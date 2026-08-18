@@ -27,8 +27,11 @@ import {
 } from "../replay/_static/request-replay.mjs";
 import {
   parseTapeBlob,
+  poolRefIsNone,
   RTAP_MAGIC,
   RTAP_VERSION,
+  POOL_DIGEST_LEN,
+  POOL_REF_WIRE_LEN,
   CHANNEL_TRIGGER_PAYLOAD,
   CHANNEL_FETCH_RESPONSES,
 } from "../replay/_static/rtap.mjs";
@@ -60,34 +63,50 @@ function frame(channel, entryBufs) {
   return out;
 }
 
-function triggerEntry({ batch_id = 0, ref_offset = 0, ref_len = 0, inline = new Uint8Array(0) }) {
-  const out = new Uint8Array(8 + 8 + 4 + 4 + inline.length);
+// A pool ref for these hand-rolled entries. `seed` stands in for a sealed
+// object's identity — seed 0 is the names-no-object shape (inline bytes, a
+// content reference, or nothing kept).
+function poolRef(seed = 0, offset = 0, len = 0) {
+  return {
+    written_unix_ms: seed === 0 ? 0 : 1700000000000 + seed,
+    digest: new Uint8Array(POOL_DIGEST_LEN).fill(seed),
+    offset,
+    len,
+  };
+}
+
+function writePoolRef(v, out, o, ref) {
+  v.setBigUint64(o, BigInt(ref.written_unix_ms)); o += 8;
+  out.set(ref.digest, o); o += POOL_DIGEST_LEN;
+  v.setUint32(o, ref.offset); o += 4;
+  v.setUint32(o, ref.len); o += 4;
+  return o;
+}
+
+function triggerEntry({ pool_seed = 0, ref_offset = 0, ref_len = 0, inline = new Uint8Array(0) }) {
+  const out = new Uint8Array(POOL_REF_WIRE_LEN + 4 + inline.length);
   const v = new DataView(out.buffer);
-  v.setBigUint64(0, BigInt(batch_id));
-  v.setBigUint64(8, BigInt(ref_offset));
-  v.setUint32(16, ref_len);
-  v.setUint32(20, inline.length);
-  out.set(inline, 24);
+  let o = writePoolRef(v, out, 0, poolRef(pool_seed, ref_offset, ref_len));
+  v.setUint32(o, inline.length); o += 4;
+  out.set(inline, o);
   return out;
 }
 
 function fetchEntry({
-  fetch_id = "f1", seq = 0, byte_offset = 0, batch_id = 0, ref_offset = 0,
+  fetch_id = "f1", seq = 0, byte_offset = 0, pool_seed = 0, ref_offset = 0,
   ref_len = 0, final = true, terminal_status = 200, terminal_ok = true,
   body_truncated = false, headers = "", inline = new Uint8Array(0), content_hash = "",
 }) {
   const fid = enc.encode(fetch_id), hdr = enc.encode(headers), ch = enc.encode(content_hash);
   const out = new Uint8Array(
-    4 + fid.length + 4 + 8 + 8 + 8 + 4 + 1 + 2 + 1 + 1 +
+    4 + fid.length + 4 + 8 + POOL_REF_WIRE_LEN + 1 + 2 + 1 + 1 +
     4 + hdr.length + 4 + inline.length + 4 + ch.length);
   const v = new DataView(out.buffer);
   let o = 0;
   v.setUint32(o, fid.length); o += 4; out.set(fid, o); o += fid.length;
   v.setUint32(o, seq); o += 4;
   v.setBigUint64(o, BigInt(byte_offset)); o += 8;
-  v.setBigUint64(o, BigInt(batch_id)); o += 8;
-  v.setBigUint64(o, BigInt(ref_offset)); o += 8;
-  v.setUint32(o, ref_len); o += 4;
+  o = writePoolRef(v, out, o, poolRef(pool_seed, ref_offset, ref_len));
   out[o++] = final ? 1 : 0;
   v.setUint16(o, terminal_status); o += 2;
   out[o++] = terminal_ok ? 1 : 0;
@@ -102,10 +121,16 @@ function fetchEntry({
 
 {
   const spilled = parseTapeBlob(frame(CHANNEL_TRIGGER_PAYLOAD, [
-    triggerEntry({ batch_id: 77, ref_offset: 4096, ref_len: 40000 }),
+    triggerEntry({ pool_seed: 77, ref_offset: 4096, ref_len: 40000 }),
   ])).entries[0];
-  check(spilled.batch_id === 77, "trigger decode lost batch_id");
-  check(spilled.ref_offset === 4096, "trigger decode lost body_ref.offset");
+  // The ref names its object: the stamp and digest ARE the key, so a
+  // reader that kept only the extent could not fetch anything.
+  check(!poolRefIsNone(spilled.pool_ref), "trigger decode lost the pool object's identity");
+  check(spilled.pool_ref.written_unix_ms === 1700000000077,
+    "trigger decode lost the seal stamp");
+  check(spilled.pool_ref.digest.every((b) => b === 77),
+    "trigger decode lost the object digest");
+  check(spilled.pool_ref.offset === 4096, "trigger decode lost body_ref.offset");
   check(spilled.ref_len === 40000, "trigger decode lost body_ref.len");
   check(spilled.inline_bytes.length === 0, "trigger decode invented inline bytes");
 
@@ -133,7 +158,7 @@ function fetchEntry({
   const carried = locatePayload({ inline_bytes: enc.encode("x"), ref_len: 1 }, 0, "trigger_payload", null);
   check(carried.source === "carried", "inline bytes did not report as carried");
 
-  const empty = locatePayload({ inline_bytes: new Uint8Array(0), batch_id: 0, ref_len: 0 },
+  const empty = locatePayload({ inline_bytes: new Uint8Array(0), pool_ref: poolRef(0), ref_len: 0 },
     0, "fetch_responses", null);
   check(empty.source === "empty" && empty.bytes === null,
     "a terminal-only entry with no payload reported as a failure");
@@ -142,12 +167,12 @@ function fetchEntry({
   // send_callback envelope, and the unretained fetch chunk): no bytes, no
   // batch, no hash — only a length. Without `ref_len` this is
   // indistinguishable from the empty case above, which is the bug.
-  const lost = locatePayload({ inline_bytes: new Uint8Array(0), batch_id: 0, ref_len: 40000 },
+  const lost = locatePayload({ inline_bytes: new Uint8Array(0), pool_ref: poolRef(0), ref_len: 40000 },
     0, "trigger_payload", null);
   check(lost.source === "unresolved" && typeof lost.reason === "string",
     "a claimed-but-unkept payload did not report as unresolved");
 
-  const resolved = locatePayload({ inline_bytes: new Uint8Array(0), batch_id: 7, ref_len: 3 },
+  const resolved = locatePayload({ inline_bytes: new Uint8Array(0), pool_ref: poolRef(7), ref_len: 3 },
     0, "trigger_payload",
     { "trigger_payload/0": { status: 200, source: "pool", len: 3, bytes: enc.encode("abc") } });
   check(resolved.source === "pool" && resolved.bytes.length === 3,
@@ -155,7 +180,7 @@ function fetchEntry({
 
   // Addressed by RAW ordinal: a resolution filed under a different index
   // must not be handed to this entry.
-  const misfiled = locatePayload({ inline_bytes: new Uint8Array(0), batch_id: 7, ref_len: 3 },
+  const misfiled = locatePayload({ inline_bytes: new Uint8Array(0), pool_ref: poolRef(7), ref_len: 3 },
     1, "trigger_payload",
     { "trigger_payload/0": { status: 200, source: "pool", len: 3, bytes: enc.encode("abc") } });
   check(misfiled.source === "unresolved",
@@ -167,7 +192,7 @@ function fetchEntry({
 {
   // A >16 KB inbound body. The record carries no inline body; the tape
   // entry is a pool reference; the dashboard resolved it.
-  const tapes = { trigger_payload: [{ batch_id: 12, ref_offset: 0, ref_len: 5, inline_bytes: new Uint8Array(0) }] };
+  const tapes = { trigger_payload: [{ pool_ref: poolRef(12, 0, 5), ref_len: 5, inline_bytes: new Uint8Array(0) }] };
   const s = deriveActivationSurface({
     activation: "inbound", tapes,
     resolvedBodies: { "trigger_payload/0": { status: 200, source: "pool", len: 5, bytes: enc.encode("SPILL") } },
@@ -198,7 +223,7 @@ function fetchEntry({
   // `surface.bodyBytes ?? bundle.request.body_bytes` keeps its meaning.
   const inline = deriveActivationSurface({
     activation: "inbound",
-    tapes: { trigger_payload: [{ batch_id: 0, ref_len: 2, inline_bytes: enc.encode("hi") }] },
+    tapes: { trigger_payload: [{ pool_ref: poolRef(0), ref_len: 2, inline_bytes: enc.encode("hi") }] },
   });
   check(inline.bodyBytes === null && inline.payloadUnresolved === null,
     "an inline inbound body changed hands");
@@ -208,7 +233,7 @@ function fetchEntry({
   // fetch_chunk: the last chunk's bytes are the activation's payload.
   const tapes = {
     fetch_responses: [{
-      fetch_id: "f", seq: 0, byte_offset: 0, batch_id: 0, ref_offset: 0, ref_len: 90000,
+      fetch_id: "f", seq: 0, byte_offset: 0, pool_ref: poolRef(0), ref_len: 90000,
       final: true, terminal_status: 200, terminal_ok: true, body_truncated: false,
       headers: "", inline_bytes: new Uint8Array(0), content_hash: "b".repeat(64),
     }],

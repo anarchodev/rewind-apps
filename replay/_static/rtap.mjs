@@ -38,12 +38,25 @@ export const RTAP_MAGIC   = 0x52544150;
 // CODE — so captured replay throws the recorded verdict instead
 // of re-deciding the rules. Same entry width; the bump exists so
 // a stale reader rejects loudly rather than misreading.
-export const RTAP_VERSION = 7;
+// 7 → 8 by the content-addressed body pool (rove#625): a pool
+// object is named by its own bytes rather than by a counter, so
+// the BodyRef on `fetch_responses` + `trigger_payload` became
+// {written_unix_ms, digest, offset, len} — 32 bytes where it was
+// 20. Unlike every bump before it this is NOT a trailing field:
+// it sits mid-entry, so everything after it shifts.
+export const RTAP_VERSION = 8;
 // The oldest layout this reader still understands (mirrors
-// src/replay/tape_decode.zig MIN_VERSION): records already in S3
-// were written at v5, so the guard is a RANGE — a reader that
-// demanded equality would make every pre-bump tape undecodable.
-export const RTAP_MIN_VERSION = 5;
+// src/replay/tape_decode.zig MIN_VERSION).
+//
+// v5–v7 could share one reader because each bump APPENDED a field
+// and left the fixed prefix in place. v8 moved the BodyRef itself,
+// so an older tape read at the new width mis-slices into a
+// plausible wrong answer rather than failing — which makes a range
+// unsound here. Equality, and a loud rejection instead.
+export const RTAP_MIN_VERSION = RTAP_VERSION;
+
+// Digest bytes in a pool reference (rove `pool_object.DIGEST_LEN`).
+export const POOL_DIGEST_LEN = 16;
 
 export const CHANNEL_KV            = 0;
 export const CHANNEL_MODULE        = 1;
@@ -93,6 +106,39 @@ export function parseTapeBlob(bytes) {
     return { channel, entries };
 }
 
+// A pointer into the cross-tenant body pool, mirroring rove's `BodyRef`
+// (src/blob/pool_object.zig `Ref`). The object is CONTENT-ADDRESSED:
+// `written_unix_ms` and `digest` are the two halves of its key, so a
+// holder rebuilds the key without a lookup. A ref with a zero stamp and
+// an all-zero digest names no object at all — the bytes rode inline, or
+// live in content-addressed storage, or were never kept.
+//
+//   [u64 written_unix_ms][16B digest][u32 offset][u32 len]
+export const POOL_REF_WIRE_LEN = 8 + POOL_DIGEST_LEN + 4 + 4;
+
+function readPoolRef(view, bytes, off) {
+    const written_unix_ms = Number(view.getBigUint64(off));
+    const digest = bytes.subarray(off + 8, off + 8 + POOL_DIGEST_LEN);
+    const offset = view.getUint32(off + 8 + POOL_DIGEST_LEN);
+    const len = view.getUint32(off + 12 + POOL_DIGEST_LEN);
+    return { written_unix_ms, digest, offset, len };
+}
+
+// True when a ref names no pool object. Tolerant of a missing ref so a
+// caller can ask the question of any entry.
+export function poolRefIsNone(ref) {
+    if (!ref) return true;
+    if (ref.written_unix_ms) return false;
+    return !(ref.digest || []).some((b) => b !== 0);
+}
+
+// `_pool/{written_unix_ms:0>13}-{digest_hex}` — the object a ref names.
+// The stamp leads so a lexical listing walks the pool in write order.
+export function poolRefKey(ref) {
+    const hex = Array.from(ref.digest, (b) => b.toString(16).padStart(2, "0")).join("");
+    return "_pool/" + String(ref.written_unix_ms).padStart(13, "0") + "-" + hex;
+}
+
 function decodeEntry(channel, bytes, version) {
     const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
     let off = 0;
@@ -135,8 +181,8 @@ function decodeEntry(channel, bytes, version) {
         // length of the payload however it ended up stored, and it is the
         // one field that separates the three no-inline-bytes cases: a
         // terminal-only event that genuinely had no payload (len 0), a
-        // reference something can resolve (len > 0 with a batch id or a
-        // content hash), and a payload the capture claimed but did not
+        // reference something can resolve (len > 0 with a pool object or
+        // a content hash), and a payload the capture claimed but did not
         // keep (len > 0 with neither). Dropping it collapsed the last two
         // onto the first — which is how a lost payload replayed as an
         // empty one instead of as a refusal.
@@ -144,24 +190,21 @@ function decodeEntry(channel, bytes, version) {
             const fetch_id = readUtf8();
             const seq = view.getUint32(off); off += 4;
             const byte_offset = Number(view.getBigUint64(off)); off += 8;
-            const batch_id = Number(view.getBigUint64(off)); off += 8;
-            const ref_offset = Number(view.getBigUint64(off)); off += 8;
-            const ref_len = view.getUint32(off); off += 4;
+            const pool_ref = readPoolRef(view, bytes, off); off += POOL_REF_WIRE_LEN;
+            const ref_len = pool_ref.len;
             const final = bytes[off++] !== 0;
             const terminal_status = view.getUint16(off); off += 2;
             const terminal_ok = bytes[off++] !== 0;
             const body_truncated = bytes[off++] !== 0;
             const headers = readUtf8();
             const inline_bytes = readLenPrefixed();
-            // v6 appended a content hash: sha256 hex of the object the
+            // The trailing content hash: sha256 hex of the object the
             // chunk is a slice of when the bytes were LEFT in
             // content-addressed storage rather than copied onto the tape
-            // (never-tape-blobs, rove#430). Empty on a v5 tape, and on a
-            // v6 entry that carried its bytes the old way — the field is
-            // trailing, so its absence is the same as empty.
-            const content_hash = (version >= 6 && off < bytes.length)
-                ? readUtf8() : "";
-            return { fetch_id, seq, byte_offset, batch_id, ref_offset, ref_len,
+            // (never-tape-blobs, rove#430). Empty on an entry that carried
+            // its bytes the other way.
+            const content_hash = off < bytes.length ? readUtf8() : "";
+            return { fetch_id, seq, byte_offset, pool_ref, ref_len,
                      final, terminal_status, terminal_ok, body_truncated,
                      headers, inline_bytes, content_hash };
         }
@@ -171,11 +214,9 @@ function decodeEntry(channel, bytes, version) {
         // for the same reason as on `fetch_responses` above — it is what
         // says a payload existed when no bytes rode the entry.
         case CHANNEL_TRIGGER_PAYLOAD: {
-            const batch_id = Number(view.getBigUint64(off)); off += 8;
-            const ref_offset = Number(view.getBigUint64(off)); off += 8;
-            const ref_len = view.getUint32(off); off += 4;
+            const pool_ref = readPoolRef(view, bytes, off); off += POOL_REF_WIRE_LEN;
             const inline_bytes = readLenPrefixed();
-            return { batch_id, ref_offset, ref_len, inline_bytes };
+            return { pool_ref, ref_len: pool_ref.len, inline_bytes };
         }
         case CHANNEL_REQUEST_READS: {
             const kind = bytes[off++];

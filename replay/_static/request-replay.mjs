@@ -24,7 +24,7 @@
 // driver (scripts/replay_wasm_smoke.mjs) — one epilogue builder, one
 // behavior.
 
-import { READ_KIND_HEADER_NAMES, READ_KIND_HEADER_VALUE, READ_KIND_BODY_READ, READ_KIND_IP_MASKED, READ_KIND_IP_RAW } from "./rtap.mjs";
+import { READ_KIND_HEADER_NAMES, READ_KIND_HEADER_VALUE, READ_KIND_BODY_READ, READ_KIND_IP_MASKED, READ_KIND_IP_RAW, poolRefIsNone } from "./rtap.mjs";
 
 // Sentinel kv key the epilogue parks the re-executed outcome under; the
 // shell reads it back from the kv overlay after a run. Mirrors the native
@@ -184,11 +184,11 @@ export function locatePayload(entry, index, channel, resolvedBodies) {
         return { bytes: r.bytes, source: r.source || "resolved" };
     }
     // No bytes here and none resolved. Did the entry CLAIM a payload? A
-    // pool batch id, a content hash, or a non-zero reference length each
+    // pool object, a content hash, or a non-zero reference length each
     // say bytes existed; all three absent is a genuinely empty event (a
     // terminal-only fetch chunk), which is not a failure to report.
     const claimed = !!entry && (
-        (entry.batch_id ?? 0) !== 0 ||
+        !poolRefIsNone(entry.pool_ref) ||
         String(entry.content_hash || "").length > 0 ||
         (entry.ref_len ?? 0) > 0);
     if (!claimed) return { bytes: null, source: "empty" };
