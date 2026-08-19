@@ -411,8 +411,10 @@ export const api = {
   // Ownership-gated server-side (is_root OR the session owns the tenant).
   //
   // `files` is `{ path: { source } }` for handlers and
-  // `{ path: { bytes, content_type } }` for statics (a `_static/`- or
-  // `_config/`-prefixed path, or any entry carrying `bytes`, is a static).
+  // `{ path: { bytes, content_type } }` for statics. An entry is a static
+  // when it says so (`kind: "static"` — a spec.json at a bare
+  // `_subscriptions/` path must reach the byte-upload door, not the handler
+  // compile), carries `bytes`, or sits under `_static/` / `_config/`.
   async _deployFile(instance_id, sub, body) {
     const res = await fetch(adminBase() + "/v1/deploy/" + sub, {
       method: "POST",
@@ -440,8 +442,8 @@ export const api = {
   async deploy(instance_id, files) {
     await this._deployFile(instance_id, "reset", { tenant: instance_id });
     for (const [path, f] of Object.entries(files)) {
-      const isStatic = f.bytes != null || path.startsWith("_static/") ||
-                       path.startsWith("_config/");
+      const isStatic = f.kind === "static" || f.bytes != null ||
+                       path.startsWith("_static/") || path.startsWith("_config/");
       if (isStatic) {
         const bytes = f.bytes != null ? f.bytes : new TextEncoder().encode(f.source ?? "");
         await this._uploadStatic(instance_id, path,

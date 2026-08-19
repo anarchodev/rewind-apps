@@ -750,12 +750,119 @@ function renderKv(root, { instanceId, api, showError, clearError }) {
 // ── Code panel ─────────────────────────────────────────────────────
 
 // The Code tab builds a deploy bundle IN THE BROWSER (a "draft") and ships it
-// in one shot via POST /v1/deploy + release (api.deployAndRelease) — the
-// files-server's per-file upload/edit API was dissolved (rewind-cli-plan §4).
-// Loading the CURRENTLY-deployed files back into the editor needs a
-// cross-tenant blob/manifest READ door (the write twin exists; the read door
-// does not yet) — until it lands this tab edits a fresh draft rather than the
-// live deployment.
+// in one shot via api.deployAndRelease (reset → per-file stage → cut →
+// release). The current deployment's handler sources load editable through
+// the cross-tenant read door (api.readSources); statics come back as
+// metadata-only rows (read-only — the single-file source read is
+// rewind-apps#69 Phase 1), so Deploy ships the draft and warns before
+// dropping any current static the draft doesn't carry.
+//
+// The tree groups the bundle by ROLE, derived purely from the path
+// conventions the engine itself dispatches by (rove: src/js/router.zig,
+// src/js/deployment_cache.zig, docs/handler-shape.md):
+//
+//   **/index.mjs                  HTTP route — /a/b resolves to
+//                                 a/b/index.mjs with walk-up on miss, so the
+//                                 root index.mjs is the catch-all
+//   any other *.mjs               helper module — importable, never routed
+//   _middlewares/index.mjs        the one middleware entry (runs before
+//                                 every routed dispatch; undefined return
+//                                 continues, any other short-circuits)
+//   _triggers/<prefix>/index.mjs  kv write guard — the path IS the guarded
+//                                 prefix (beforePut / beforeDelete)
+//   _subscriptions/<name>/        durable kv reaction — index.mjs +
+//                                 spec.json (spec.json ships as a STATIC,
+//                                 never into the handler-compile set)
+//   _static/**                    static assets, served at the path minus
+//                                 the prefix; _static/_404.html is the
+//                                 convention 404 page
+//   _config/**                    package config (static kind, not
+//                                 URL-served)
+//
+// Only `.mjs` is a deployable handler source (the compile pipeline builds
+// `.js` as a classic script, so `export` is a syntax error) — every
+// creation flow emits `.mjs`.
+
+const CODE_SECTIONS = [
+  { role: "route", label: "Routes", add: true },
+  { role: "module", label: "Modules", add: true,
+    note: "imported by routes — not URL-routable" },
+  { role: "middleware", label: "Middleware", add: true },
+  { role: "trigger", label: "Triggers", add: true,
+    note: "write guards — run inside the writing activation" },
+  { role: "subscription", label: "Subscriptions", add: true,
+    note: "cron recurrence registers from code (the cron verb), not a file" },
+  { role: "static", label: "Static", add: true },
+  { role: "config", label: "Config" },
+  { role: "package", label: "Packages" },
+];
+
+/// Bundle role from the path conventions above. `kind` breaks the tie for
+/// stray non-JS files at bare paths (a CLI-published bundle may carry
+/// them) — anything the manifest calls a static that isn't under a role
+/// dir files under Static rather than vanishing.
+function roleFor(path, kind) {
+  if (path.startsWith("_static/")) return "static";
+  if (path.startsWith("_config/")) return "config";
+  if (path.startsWith("_middlewares/")) return "middleware";
+  if (path.startsWith("_triggers/")) return "trigger";
+  if (path.startsWith("_subscriptions/")) return "subscription";
+  if (/(^|\/)index\.mjs$/.test(path)) return "route";
+  if (/\.(mjs|js)$/.test(path)) return "module";
+  return kind === "handler" ? "module" : "static";
+}
+
+/// "index.mjs" → "/", "api/users/index.mjs" → "/api/users".
+function routeUrlFor(path) {
+  const base = path.replace(/\/?index\.mjs$/, "");
+  return base ? "/" + base : "/";
+}
+
+function triggerAnnotFor(path) {
+  const rest = path.slice("_triggers/".length);
+  if (rest === "index.mjs") return "guards every key";
+  if (rest.endsWith("/index.mjs"))
+    return "guards " + rest.slice(0, -"index.mjs".length);
+  return "helper";
+}
+
+function subAnnotFor(path) {
+  const rest = path.slice("_subscriptions/".length);
+  const slash = rest.indexOf("/");
+  if (slash < 0) return "";
+  const name = rest.slice(0, slash);
+  const tail = rest.slice(slash + 1);
+  if (tail === "index.mjs") return name + " · handler";
+  if (tail === "spec.json") return name + " · spec";
+  return name + " · helper";
+}
+
+function annotFor(path, role) {
+  switch (role) {
+    case "route":
+      return routeUrlFor(path) + (path === "index.mjs" ? " · catch-all" : "");
+    case "middleware": return "every request";
+    case "trigger": return triggerAnnotFor(path);
+    case "subscription": return subAnnotFor(path);
+    case "static":
+      return path === "_static/_404.html"
+        ? "404 page" : "/" + path.slice("_static/".length);
+    default: return "";
+  }
+}
+
+/// Row display path: the role dir is the section, so strip it.
+function displayPathFor(path, role) {
+  switch (role) {
+    case "static": return path.slice("_static/".length);
+    case "config": return path.slice("_config/".length);
+    case "middleware": return path.slice("_middlewares/".length);
+    case "trigger": return path.slice("_triggers/".length);
+    case "subscription": return path.slice("_subscriptions/".length);
+    default: return path;
+  }
+}
+
 function renderCode(root, { instanceId, api, showError, clearError }) {
   const el = document.createElement("div");
   el.className = "code-panel";
@@ -763,12 +870,10 @@ function renderCode(root, { instanceId, api, showError, clearError }) {
     <div class="code-layout">
       <aside class="file-list">
         <div class="toolbar">
-          <button type="button" class="new-file">New</button>
           <button type="button" class="deploy" disabled>Deploy</button>
+          <span class="draft-note muted">Deploy ships the whole draft at
+            once.</span>
         </div>
-        <p class="draft-note muted">Current handlers loaded for editing. Deploy
-          ships the whole bundle at once (you'll be warned before any current
-          static is dropped).</p>
         <ul></ul>
       </aside>
       <section class="editor">
@@ -784,7 +889,6 @@ function renderCode(root, { instanceId, api, showError, clearError }) {
 
   const list = el.querySelector(".file-list ul");
   const deployBtn = el.querySelector(".deploy");
-  const newBtn = el.querySelector(".new-file");
   const pathLabel = el.querySelector(".current-path");
   const metaLabel = el.querySelector(".editor-meta");
   const editorMount = el.querySelector(".editor-body");
@@ -792,13 +896,18 @@ function renderCode(root, { instanceId, api, showError, clearError }) {
   // Draft bundle: path → { kind, content_type, source }. Editing updates
   // `source` live; Deploy ships the whole map.
   const draft = {};
-  // Static paths in the CURRENTLY-deployed bundle (loaded via the read door
-  // for reference). They're not editable here (binary-safe), and Deploy ships
-  // only the draft — so if any of these aren't re-added, Deploy would drop
-  // them. We warn before that happens.
+  // The CURRENTLY-deployed statics ({path, content_type, hash}), loaded via
+  // the read door for the tree. Read-only (their bytes aren't pulled into
+  // the editor); Deploy ships only the draft, so any of these not re-added
+  // would be dropped — we warn before that happens.
   let currentStatics = [];
+  // The current deployment's package set (read-only). Dashboard deploys
+  // can't ship a package resolution yet (rewind-apps#69 Phase 1), so a
+  // package-using app must keep publishing via the rewind CLI — Deploy
+  // refuses rather than cutting a manifest with broken imports.
+  let currentPackages = [];
   let selected = null; // { path, kind, content_type }
-  let cm = null;       // { view, langCompartment, EditorView, EditorState, ... }
+  let cm = null;       // { CM, view, langCompartment, editableCompartment }
   let cmLoading = null; // in-flight import promise
 
   // Lazy-load + mount the CodeMirror editor on first use. Returns
@@ -842,30 +951,141 @@ function renderCode(root, { instanceId, api, showError, clearError }) {
     return cmLoading;
   }
 
-  function renderDraft() {
-    list.replaceChildren();
-    const paths = Object.keys(draft).sort();
-    deployBtn.disabled = paths.length === 0;
-    if (paths.length === 0) {
-      const li = document.createElement("li");
-      li.className = "empty";
-      li.innerHTML = `<em>empty draft — add a file with New</em>`;
-      list.appendChild(li);
-      return;
-    }
-    for (const p of paths) list.appendChild(buildFileLi(p, draft[p]));
+  /// Empty the editor and make it non-editable (read-only rows, package
+  /// rows). No-op when CodeMirror was never loaded.
+  function clearEditorView() {
+    if (!cm) return;
+    cm.view.dispatch({
+      changes: { from: 0, to: cm.view.state.doc.length, insert: "" },
+      effects: [
+        cm.langCompartment.reconfigure([]),
+        cm.editableCompartment.reconfigure(cm.CM.EditorView.editable.of(false)),
+      ],
+    });
   }
 
-  function buildFileLi(path, entry) {
+  function selectRow(key) {
+    for (const node of list.querySelectorAll("li")) {
+      node.classList.toggle("active", node.dataset.path === key);
+    }
+  }
+
+  /// The tree's file rows: the draft (editable) plus current statics the
+  /// draft doesn't shadow (read-only).
+  function bundleRows() {
+    const rows = new Map();
+    for (const [p, e] of Object.entries(draft)) {
+      rows.set(p, {
+        path: p, kind: e.kind, content_type: e.content_type, editable: true,
+      });
+    }
+    for (const s of currentStatics) {
+      if (!rows.has(s.path)) {
+        rows.set(s.path, {
+          path: s.path, kind: "static", content_type: s.content_type,
+          hash: s.hash, editable: false,
+        });
+      }
+    }
+    return [...rows.values()];
+  }
+
+  function renderTree() {
+    list.replaceChildren();
+    deployBtn.disabled = Object.keys(draft).length === 0;
+
+    const rows = bundleRows();
+    const byRole = {};
+    for (const r of rows) {
+      const role = roleFor(r.path, r.kind);
+      (byRole[role] = byRole[role] || []).push(r);
+    }
+
+    if (rows.length === 0 && currentPackages.length === 0) {
+      const li = document.createElement("li");
+      li.className = "empty";
+      li.innerHTML = `<em>empty bundle — create a route with +</em>`;
+      list.appendChild(li);
+    }
+
+    for (const sec of CODE_SECTIONS) {
+      const entries = (byRole[sec.role] || [])
+        .sort((a, b) => (a.path < b.path ? -1 : 1));
+      const pkgs = sec.role === "package" ? currentPackages : [];
+      const showAdd = !!sec.add &&
+        !(sec.role === "middleware" && entries.length > 0);
+      if (entries.length === 0 && pkgs.length === 0 && !showAdd) continue;
+
+      const h = document.createElement("li");
+      h.className = "section";
+      h.innerHTML = `<span class="section-label">${sec.label}</span>` +
+        (showAdd ? `<button type="button" class="add"
+           title="New ${escapeHtml(sec.label.replace(/s$/, "").toLowerCase())}">+</button>` : "");
+      if (showAdd) {
+        h.querySelector(".add").addEventListener("click", (ev) => {
+          ev.stopPropagation();
+          addEntry(sec.role);
+        });
+      }
+      list.appendChild(h);
+
+      if (sec.note) {
+        const n = document.createElement("li");
+        n.className = "note";
+        n.textContent = sec.note;
+        list.appendChild(n);
+      }
+
+      for (const r of entries) list.appendChild(buildFileLi(r, sec.role));
+      for (const p of pkgs) list.appendChild(buildPkgLi(p));
+    }
+  }
+
+  function buildFileLi(r, role) {
     const li = document.createElement("li");
-    li.className = `file file-${entry.kind}`;
-    li.dataset.path = path;
-    li.innerHTML = `
-      <span class="file-kind">${entry.kind === "handler" ? "JS" : "—"}</span>
-      <span class="file-path">${escapeHtml(path)}</span>
-    `;
-    li.addEventListener("click", () => openFile(path));
+    li.className = "file" + (r.editable ? "" : " read-only");
+    li.dataset.path = r.path;
+    const annot = annotFor(r.path, role);
+    li.innerHTML =
+      `<span class="file-path">${escapeHtml(displayPathFor(r.path, role))}</span>` +
+      (annot ? `<span class="file-annot">${escapeHtml(annot)}</span>` : "");
+    li.addEventListener("click", () => openEntry(r));
     return li;
+  }
+
+  function buildPkgLi(p) {
+    const li = document.createElement("li");
+    li.className = "file read-only";
+    li.dataset.path = "pkg:" + (p.pkg_hash || p.spec);
+    const nfiles = (p.files || []).length;
+    li.innerHTML =
+      `<span class="file-path">${escapeHtml(p.spec || "(package)")}</span>` +
+      `<span class="file-annot">${escapeHtml(
+        (p.version || "") + (nfiles ? " · " + nfiles + " files" : ""))}</span>`;
+    li.addEventListener("click", () => {
+      selectRow(li.dataset.path);
+      selected = null;
+      pathLabel.textContent = p.spec || "(package)";
+      metaLabel.textContent =
+        "package · " + (p.version || "?") + " · " +
+        String(p.pkg_hash || "").slice(0, 12) +
+        " · read-only — package apps publish via the rewind CLI";
+      clearEditorView();
+    });
+    return li;
+  }
+
+  function openEntry(r) {
+    if (r.editable) { openFile(r.path); return; }
+    clearError();
+    selectRow(r.path);
+    selected = null;
+    pathLabel.textContent = r.path;
+    metaLabel.textContent =
+      (r.kind || "static") + " · " + (r.content_type || "(no content-type)") +
+      (r.hash ? " · " + String(r.hash).slice(0, 12) : "") +
+      " · read-only (static editing is #69 Phase 1)";
+    clearEditorView();
   }
 
   /// Pick a CodeMirror language extension based on the file path.
@@ -882,9 +1102,7 @@ function renderCode(root, { instanceId, api, showError, clearError }) {
     clearError();
     const entry = draft[path];
     if (!entry) return;
-    for (const node of list.querySelectorAll("li")) {
-      node.classList.toggle("active", node.dataset.path === path);
-    }
+    selectRow(path);
     pathLabel.textContent = path;
     metaLabel.textContent = "Loading editor…";
 
@@ -908,11 +1126,190 @@ function renderCode(root, { instanceId, api, showError, clearError }) {
       `${entry.kind} · ${entry.content_type || "(no content-type)"} · draft`;
   }
 
+  // ── Creation templates ───────────────────────────────────────────
+
+  function routeTemplate(url) {
+    return `// Inbound HTTP for ${url} — the default export is the inbound arm;
+// request/response are ambient (rove docs/handler-shape.md).
+export default function () {
+  response.headers = { "content-type": "text/plain" };
+  return "hello from ${url}\\n";
+}
+`;
+  }
+
+  const MODULE_TEMPLATE = `// Shared module — not URL-routable (only **/index.mjs routes).
+// Import it from a route or another module.
+export function hello(name) {
+  return "hello " + name;
+}
+`;
+
+  const MW_TEMPLATE = `// Runs before every routed dispatch (continuations and __system/
+// modules skip it). Mutations to request persist into the handler —
+// request.auth is the usual one. Return undefined to continue; any
+// other return value short-circuits as the response body.
+export function before() {
+  // request.auth = { ... };
+}
+`;
+
+  function triggerTemplate(prefix) {
+    const what = prefix === "" ? "every key" : '"' + prefix + '"';
+    return `// kv write guard for ${what} — runs synchronously inside the
+// writing activation. beforePut may normalize (return a string to
+// replace the stored value) or reject (throw); beforeDelete may
+// reject (throw).
+export function beforePut(event) {
+  // const v = JSON.parse(event.value);
+  // if (!v.name) throw new Error("name required");
+  // return JSON.stringify(v);
+}
+
+export function beforeDelete(event) {
+  // if (event.key === "${prefix}protected") throw new Error("protected");
+}
+`;
+  }
+
+  function subTemplate(prefix) {
+    return `// Durable kv subscription — fires (coalesced, at-least-once) after
+// commits under "${prefix}" (see spec.json). The payload names only the
+// dirty prefix, never a key/op — read current committed state and
+// reconcile; a redundant re-fire must be harmless.
+export function onSubscription() {
+  const a = request.activation;
+  const rows = kv.prefix(a.source.prefix, "", 100);
+  // reconcile from rows…
+  return "";
+}
+`;
+  }
+
+  function createDraft(path, kind, content_type, source) {
+    if (draft[path] &&
+        !window.confirm(path + " is already in the draft — replace it?")) {
+      return;
+    }
+    draft[path] = { kind, content_type, source };
+    renderTree();
+    openFile(path);
+  }
+
+  // Typed creation, one flow per section. All handler flows emit `.mjs`.
+  function addEntry(role) {
+    clearError();
+    switch (role) {
+      case "route": {
+        const raw = prompt(
+          'URL path the route serves (e.g. "/" or "/api/users"):', "/");
+        if (raw == null) return;
+        const p = raw.trim().replace(/^\/+|\/+$/g, "");
+        if (p.startsWith("_")) {
+          showError("Leading-underscore paths are platform-reserved.");
+          return;
+        }
+        if (p && !/^[A-Za-z0-9._~-]+(?:\/[A-Za-z0-9._~-]+)*$/.test(p)) {
+          showError("URL path segments may use letters, digits, and . _ ~ -");
+          return;
+        }
+        createDraft(p ? p + "/index.mjs" : "index.mjs", "handler",
+          "application/javascript", routeTemplate(p ? "/" + p : "/"));
+        return;
+      }
+      case "module": {
+        const raw = prompt('Module path (e.g. "lib/util.mjs"):', "lib/");
+        if (raw == null) return;
+        let p = raw.trim().replace(/^\/+/, "");
+        if (!p) return;
+        if (p.startsWith("_")) {
+          showError("Leading-underscore paths are platform-reserved.");
+          return;
+        }
+        if (!p.endsWith(".mjs")) p += ".mjs";
+        if (/(^|\/)index\.mjs$/.test(p) &&
+            !window.confirm(p + " is an index.mjs, so it will be SERVED as " +
+              "the route " + routeUrlFor(p) + " — continue?")) {
+          return;
+        }
+        createDraft(p, "handler", "application/javascript", MODULE_TEMPLATE);
+        return;
+      }
+      case "middleware":
+        createDraft("_middlewares/index.mjs", "handler",
+          "application/javascript", MW_TEMPLATE);
+        return;
+      case "trigger": {
+        const raw = prompt(
+          'kv prefix to guard (e.g. "users/"; empty guards every key):', "");
+        if (raw == null) return;
+        let pre = raw.trim().replace(/^\/+/, "");
+        if (pre.startsWith("_")) {
+          showError("Leading-underscore prefixes are platform-reserved.");
+          return;
+        }
+        if (pre && !pre.endsWith("/")) pre += "/";
+        createDraft("_triggers/" + pre + "index.mjs", "handler",
+          "application/javascript", triggerTemplate(pre));
+        return;
+      }
+      case "subscription": {
+        const name = prompt(
+          "Subscription name ([A-Za-z0-9_-], up to 64 chars):", "");
+        if (name == null) return;
+        if (!/^[A-Za-z0-9_-]{1,64}$/.test(name.trim())) {
+          showError("Subscription names are 1–64 chars of [A-Za-z0-9_-].");
+          return;
+        }
+        const rawPre = prompt('kv prefix to react to (e.g. "orders/"):', "");
+        if (rawPre == null) return;
+        let pre = rawPre.trim().replace(/^\/+/, "");
+        if (!pre) { showError("A subscription needs a kv prefix."); return; }
+        if (pre.startsWith("_")) {
+          showError("Leading-underscore prefixes are platform-reserved.");
+          return;
+        }
+        if (!pre.endsWith("/")) pre += "/";
+        const dir = "_subscriptions/" + name.trim() + "/";
+        // spec.json ships as a STATIC — it must never enter the
+        // handler-compile set (the cut would try to compile JSON).
+        createDraft(dir + "spec.json", "static", "application/json",
+          JSON.stringify({ kind: "kv", prefix: pre }, null, 2) + "\n");
+        createDraft(dir + "index.mjs", "handler",
+          "application/javascript", subTemplate(pre));
+        return;
+      }
+      case "static": {
+        const raw = prompt(
+          'Static path (served at the path minus "_static/"):', "_static/");
+        if (raw == null) return;
+        let p = raw.trim().replace(/^\/+/, "");
+        if (!p || p === "_static/") return;
+        if (!p.startsWith("_static/") && !p.startsWith("_config/")) {
+          p = "_static/" + p;
+        }
+        createDraft(p, "static", inferContentType(p), "");
+        return;
+      }
+    }
+  }
+
   deployBtn.addEventListener("click", async () => {
     if (Object.keys(draft).length === 0) return;
+    // A package-using app can't deploy from here yet: `deploy()` sends no
+    // resolution, so the cut would fail on the handlers' package imports
+    // (#69 Phase 1 carries the package set through). Refuse loudly.
+    if (currentPackages.length > 0) {
+      showError("This app uses packages (" +
+        currentPackages.map((p) => p.spec).join(", ") +
+        ") — dashboard deploys can't ship the package set yet. " +
+        "Publish via the rewind CLI.");
+      return;
+    }
     // Deploy ships ONLY the draft. If the live deployment has statics that
     // aren't in the draft, deploying would drop them — confirm first.
-    const dropping = currentStatics.filter((p) => !(p in draft));
+    const dropping = currentStatics
+      .filter((s) => !(s.path in draft)).map((s) => s.path);
     if (dropping.length > 0 &&
         !window.confirm(
           "Deploying replaces the live deployment. These static assets are " +
@@ -925,12 +1322,14 @@ function renderCode(root, { instanceId, api, showError, clearError }) {
     deployBtn.textContent = "Deploying…";
     clearError();
     try {
-      // draft entries → api.deploy's {path: {source}|{bytes,content_type}} map.
+      // draft entries → api.deploy's {path: {kind, source, content_type?}}
+      // map. `kind` rides along so a static at a bare path (spec.json)
+      // still routes to the byte-upload door, not the handler compile.
       const files = {};
       for (const [p, e] of Object.entries(draft)) {
         files[p] = e.kind === "handler"
-          ? { source: e.source }
-          : { source: e.source, content_type: e.content_type };
+          ? { kind: "handler", source: e.source }
+          : { kind: "static", source: e.source, content_type: e.content_type };
       }
       const result = await api.deployAndRelease(instanceId, files);
       metaLabel.textContent = `deployed + released · dep ${result.dep_id}`;
@@ -946,60 +1345,34 @@ function renderCode(root, { instanceId, api, showError, clearError }) {
     }
   });
 
-  newBtn.addEventListener("click", async () => {
-    const raw = prompt(
-      "New file path. Either a handler ending in `.mjs` / `.js`, or a static asset under `_static/`.\n\nExamples:\n  index.mjs\n  api/users.mjs\n  _static/about.html",
-      "",
-    );
-    if (raw == null) return;
-    const path = raw.trim();
-    if (!path) return;
-
-    const kind =
-      path.startsWith("_static/") ? "static"
-      : (path.endsWith(".mjs") || path.endsWith(".js")) ? "handler"
-      : null;
-    if (!kind) {
-      showError("Path must end in `.mjs` / `.js` or live under `_static/`.");
-      return;
-    }
-
-    const contentType = kind === "handler"
-      ? "application/javascript"
-      : inferContentType(path);
-    const starter = kind === "handler"
-      ? `export default function (req) {\n  return "hello from ${path}\\n";\n}\n`
-      : "";
-
-    draft[path] = { kind, content_type: contentType, source: starter };
-    renderDraft();
-    await openFile(path);
-  });
-
   // Load the CURRENT deployment's handler sources into the draft (edit-existing
-  // via the cross-tenant read door). Handlers become editable; statics are
-  // recorded in `currentStatics` so Deploy can warn before dropping them (their
-  // bytes aren't pulled into the text editor). No deployment yet → empty draft.
+  // via the cross-tenant read door). Handlers become editable; statics and the
+  // package set are recorded for the tree (read-only). No deployment yet →
+  // empty draft.
   async function loadCurrent() {
     try {
       const res = await api.readSources(instanceId, "current");
-      const entries = res.entries || [];
-      for (const e of entries) {
+      for (const e of res.entries || []) {
         if (e.kind === "handler" && e.source != null) {
           draft[e.path] = {
             kind: "handler",
             content_type: e.content_type || "application/javascript",
             source: e.source,
           };
-        } else if (e.kind === "static") {
-          currentStatics.push(e.path);
+        } else if (e.kind !== "handler") {
+          currentStatics.push({
+            path: e.path,
+            content_type: e.content_type || "",
+            hash: e.source_hex || "",
+          });
         }
       }
+      currentPackages = res.packages || [];
     } catch (err) {
       if (err instanceof ApiError && err.status === 401) { location.hash = "#/login"; return; }
       // 404 (no current deployment) or read failure → start from an empty draft.
     }
-    renderDraft();
+    renderTree();
   }
 
   loadCurrent();
