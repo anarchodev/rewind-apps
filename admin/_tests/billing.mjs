@@ -360,3 +360,139 @@ expect(flagEvt.kv("account/" + TEAM + "/billing/cancel_at_period_end")).toBe("1"
 expect(flagEvt.kv("account/" + TEAM + "/plan")).toBe("pro");
 expect(w.inbound({ method: "POST", path: "/v1/accounts/" + A + "/billing/cancel",
   host: "app.rewindjs.com", body: "{}", session: { id: "al" } }).status).toBe(409);
+
+// ── Card-testing guards (rove#339) ─────────────────────────────────────────
+// The structural control is elsewhere: a PaymentIntent only exists for a
+// session-authenticated account owner, so there is no anonymous form to point
+// a script at. What is asserted here is the pair that gate cannot cover — how
+// many client secrets one account may mint, and what happens when an account
+// visibly starts testing cards. Per-attempt blocking is Radar's, not ours: a
+// confirmation goes browser → Stripe and never reaches this handler.
+
+const NOW_MS = Date.parse("2026-08-15T00:00:00Z");
+const ATTEMPTS = "account/" + A + "/billing/attempts";
+const DECLINES = "account/" + TEAM + "/billing/declines";
+const HOLD = "account/" + TEAM + "/billing/hold";
+const subscribeAs = (sc, aid, sid) => sc.inbound({
+  method: "POST", path: "/v1/accounts/" + aid + "/billing/subscribe",
+  host: "app.rewindjs.com", body: j({ tier: "pro" }), session: { id: sid } });
+
+// A first attempt charges the window and still issues the platform call — the
+// guard's kv write must not cost the fetch it precedes (rove#344 is about
+// resume hops, and this assertion is what keeps that distinction honest).
+const at1 = subscribeAs(w, A, "al");
+expect(at1.disposition).toBe("held");
+expect(at1).toHaveFetched(/api\.stripe\.com\/v1\/customers/);
+// The charge rides this activation's writeset — a held hop has not committed
+// yet, so the effect is where it is visible.
+const at1Write = at1.effects.filter((e) => e.kind === "write" && e.key === ATTEMPTS)[0];
+expect(JSON.parse(at1Write.value)).toEqual({ win: NOW_MS, n: 1 });
+
+// At the cap the request is refused before any Stripe call is issued.
+const wCapped = scenario({ admin: true, now: "2026-08-15T00:00:00Z", seed: 9,
+  kv: Object.assign({}, BASE, { [ATTEMPTS]: j({ win: NOW_MS, n: 5 }) }) });
+const capped = subscribeAs(wCapped, A, "al");
+expect(capped.status).toBe(429);
+expect(capped.body.error).toBe("billing_attempt_rate_limited");
+expect(capped.body.retry_after_ms).toBe(3600000);
+expect(capped.effects.filter((e) => e.kind === "fetch").length).toBe(0);
+
+// An expired window starts a fresh one rather than staying spent forever.
+const wStale = scenario({ admin: true, now: "2026-08-15T00:00:00Z", seed: 10,
+  kv: Object.assign({}, BASE, { [ATTEMPTS]: j({ win: NOW_MS - 3600001, n: 5 }) }) });
+expect(subscribeAs(wStale, A, "al").disposition).toBe("held");
+
+// A corrupt counter must never be able to lock a paying customer out.
+const wJunk = scenario({ admin: true, now: "2026-08-15T00:00:00Z", seed: 11,
+  kv: Object.assign({}, BASE, { [ATTEMPTS]: "not json" }) });
+expect(subscribeAs(wJunk, A, "al").disposition).toBe("held");
+
+// ── the hold ───────────────────────────────────────────────────────────────
+const wHeld = scenario({ admin: true, now: "2026-08-15T00:00:00Z", seed: 12,
+  kv: Object.assign({}, BASE, {
+    ["account/" + A + "/billing/hold"]: j({ reason: "distinct_cards", at: NOW_MS,
+                                            until: NOW_MS + 3600000 }),
+    [HOLD]: j({ reason: "decline_volume", at: NOW_MS, until: NOW_MS + 3600000 }),
+  }) });
+const heldSub = subscribeAs(wHeld, A, "al");
+expect(heldSub.status).toBe(429);
+expect(heldSub.body).toEqual({ error: "billing_on_hold", reason: "distinct_cards",
+                               retry_after_ms: 3600000 });
+expect(heldSub.effects.filter((e) => e.kind === "fetch").length).toBe(0);
+// A held account does not churn plans either — but the change path mints no
+// secret, so it must not consume an attempt on its way to the refusal.
+const heldChg = wHeld.inbound({ method: "POST", path: "/v1/accounts/" + TEAM + "/billing/change",
+  host: "app.rewindjs.com", body: j({ tier: "enterprise" }), session: { id: "al" } });
+expect(heldChg.status).toBe(429);
+expect(heldChg.body.error).toBe("billing_on_hold");
+expect(heldChg.kv("account/" + TEAM + "/billing/attempts")).toBe(null);
+
+// An EXPIRED hold is not a hold — it lapses on its own, with no sweep.
+const wLapsedHold = scenario({ admin: true, now: "2026-08-15T00:00:00Z", seed: 13,
+  kv: Object.assign({}, BASE, {
+    ["account/" + A + "/billing/hold"]: j({ reason: "decline_volume", at: NOW_MS - 2,
+                                            until: NOW_MS - 1 }),
+  }) });
+expect(subscribeAs(wLapsedHold, A, "al").disposition).toBe("held");
+
+// ── the decline signal ─────────────────────────────────────────────────────
+const piEvt = (id, fp, over) => Object.assign({
+  id: id, created: T, type: "payment_intent.payment_failed",
+  data: { object: { id: "pi_" + id, customer: "cus_123",
+                    last_payment_error: { payment_method: { card: { fingerprint: fp } } } } },
+}, over);
+
+// One decline records the attempt and the card, and trips nothing.
+const d1 = signedPost(w, piEvt("evt_d1", "fp_A"));
+expect(d1.status).toBe(200);
+expect(d1.body).toEqual({ received: true });
+expect(d1.kv(DECLINES)).toEqual({ win: NOW_MS, n: 1, cards: ["fp_A"] });
+expect(d1.kv(HOLD)).toBe(null);
+
+// The sharper axis: a THIRD distinct card trips the hold, even though the
+// decline count is nowhere near its own threshold. One card declining five
+// times is a customer with a problem; five cards declining once each is not.
+const wCards = scenario({ admin: true, now: "2026-08-15T00:00:00Z", seed: 14,
+  kv: Object.assign({ stripe_whsec: WHSEC,
+    [DECLINES]: j({ win: NOW_MS, n: 2, cards: ["fp_A", "fp_B"] }) }, BASE) });
+const trip = signedPost(wCards, piEvt("evt_d3", "fp_C"));
+expect(trip.kv(DECLINES)).toEqual({ win: NOW_MS, n: 3, cards: ["fp_A", "fp_B", "fp_C"] });
+expect(trip.kv(HOLD)).toEqual({ reason: "distinct_cards", at: NOW_MS,
+                                            until: NOW_MS + 86400000 });
+
+// The same card retried does not accumulate distinct cards — it trips only on
+// the volume axis, and only at its own (higher) threshold.
+const wVol = scenario({ admin: true, now: "2026-08-15T00:00:00Z", seed: 15,
+  kv: Object.assign({ stripe_whsec: WHSEC,
+    [DECLINES]: j({ win: NOW_MS, n: 4, cards: ["fp_A"] }) }, BASE) });
+const volTrip = signedPost(wVol, piEvt("evt_d5", "fp_A"));
+expect(volTrip.kv(DECLINES)).toEqual({ win: NOW_MS, n: 5, cards: ["fp_A"] });
+expect(volTrip.kv(HOLD).reason).toBe("decline_volume");
+
+// A decline with no readable fingerprint still counts on the volume axis —
+// Stripe omits the payment method on some failures, and a missing field must
+// not silently zero the signal.
+const wNoFp = scenario({ admin: true, now: "2026-08-15T00:00:00Z", seed: 16,
+  kv: Object.assign({ stripe_whsec: WHSEC }, BASE) });
+const noFp = signedPost(wNoFp, piEvt("evt_nofp", null, {
+  data: { object: { id: "pi_nofp", customer: "cus_123" } } }));
+expect(noFp.kv(DECLINES)).toEqual({ win: NOW_MS, n: 1, cards: [] });
+
+// An unlinked customer is acknowledged and recorded nowhere — Stripe retries
+// a non-2xx forever, and there is no account to attribute it to.
+const orphan = signedPost(w, piEvt("evt_orph", "fp_A", {
+  data: { object: { id: "pi_orph", customer: "cus_unknown" } } }));
+expect(orphan.status).toBe(200);
+expect(orphan.body).toEqual({ received: true });
+expect(orphan.kv(DECLINES)).toBe(null);
+
+// A dispute holds billing immediately — a tested card that succeeds is a card
+// its owner charges back, so this is the strongest signal available. It does
+// NOT suspend the tenant: that is an operator's call on evidence this handler
+// cannot see.
+const disp = signedPost(w, { id: "evt_disp", created: T, type: "charge.dispute.created",
+  data: { object: { id: "dp_1", charge: "ch_1", customer: "cus_123" } } });
+expect(disp.status).toBe(200);
+expect(disp.body).toEqual({ received: true });
+expect(disp.kv(HOLD)).toEqual({ reason: "dispute", at: NOW_MS, until: NOW_MS + 86400000 });
+expect(disp.kv("account/" + TEAM + "/plan")).toBe("pro"); // enforcement is unchanged
