@@ -439,12 +439,27 @@ export const api = {
     if (!res.ok) throw new ApiError(res.status, res.statusText, parsed);
     return parsed;
   },
-  async deploy(instance_id, files) {
+  /// `files` entries: `{ source }` (handler), `{ kind: "static", source |
+  /// bytes, content_type }` (static bytes via PUT /v1/upload), or `{ kind:
+  /// "static", hash, content_type }` (unedited static — staged by
+  /// hash-reference, no byte round-trip; the server verifies the blob
+  /// exists). `resolution` carries a package-using app's package set
+  /// through the redeploy: each package file's source restages via the
+  /// pkgfile door (hashes stay server-authoritative), and cut receives the
+  /// package metadata — spec/version/pkg_hash/imports/capabilities/private
+  /// — plus app_imports, exactly what buildResolution joins with the
+  /// staged rows.
+  async deploy(instance_id, files, resolution) {
     await this._deployFile(instance_id, "reset", { tenant: instance_id });
     for (const [path, f] of Object.entries(files)) {
       const isStatic = f.kind === "static" || f.bytes != null ||
                        path.startsWith("_static/") || path.startsWith("_config/");
-      if (isStatic) {
+      if (isStatic && f.hash != null && f.bytes == null && f.source == null) {
+        await this._deployFile(instance_id, "ref", {
+          tenant: instance_id, path, kind: "static",
+          content_type: f.content_type || "", hash: f.hash,
+        });
+      } else if (isStatic) {
         const bytes = f.bytes != null ? f.bytes : new TextEncoder().encode(f.source ?? "");
         await this._uploadStatic(instance_id, path,
                                  f.content_type || "application/octet-stream", bytes);
@@ -453,7 +468,28 @@ export const api = {
           { tenant: instance_id, path, kind: "handler", source: f.source ?? "" });
       }
     }
-    return this._deployFile(instance_id, "cut", { tenant: instance_id });
+    const cutBody = { tenant: instance_id };
+    if (resolution && (resolution.packages || []).length > 0) {
+      for (const p of resolution.packages) {
+        for (const pf of p.files || []) {
+          await this._deployFile(instance_id, "pkgfile", {
+            tenant: instance_id, pkg_hash: p.pkg_hash,
+            path: pf.path, source: pf.source ?? "",
+          });
+        }
+      }
+      cutBody.resolution = {
+        // Metadata only — cut assembles packages[].files from the rows the
+        // pkgfile door just staged, never from the client.
+        packages: resolution.packages.map((p) => ({
+          spec: p.spec, version: p.version, pkg_hash: p.pkg_hash,
+          imports: p.imports || {},
+          capabilities: p.capabilities || [], private: !!p.private,
+        })),
+        app_imports: resolution.app_imports || {},
+      };
+    }
+    return this._deployFile(instance_id, "cut", cutBody);
     // { ok: true, dep_id: "<016x>" }
   },
 
@@ -470,8 +506,8 @@ export const api = {
 
   /// High-level helper: deploy a bundle then release it. Returns the
   /// deploy result `{ ok, dep_id }`.
-  async deployAndRelease(instance_id, files) {
-    const result = await this.deploy(instance_id, files);
+  async deployAndRelease(instance_id, files, resolution) {
+    const result = await this.deploy(instance_id, files, resolution);
     await this.releaseDeployment(instance_id, result.dep_id);
     return result;
   },
@@ -637,6 +673,17 @@ export const api = {
   async readSources(instance_id, dep = "current") {
     const res = await originGet(
       `/v1/sources/${encodeURIComponent(instance_id)}/${encodeURIComponent(String(dep))}`);
+    return res.json();
+  },
+
+  /// Single-file twin of `readSources` — one entry's source, lazily (the
+  /// Code tab opening a text static). Text content-types only; the server
+  /// 415s binaries, which carry through deploys by hash-reference instead.
+  /// Returns {ok, path, kind, content_type, source_hex, source}.
+  async readSourceFile(instance_id, dep, path) {
+    const res = await originGet(
+      `/v1/source/${encodeURIComponent(instance_id)}/` +
+      `${encodeURIComponent(String(dep))}?path=${encodeURIComponent(path)}`);
     return res.json();
   },
 

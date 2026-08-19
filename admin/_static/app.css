@@ -694,6 +694,7 @@ button.danger:disabled {
 .file-list .file-path {
   font-family: var(--mono);
   word-break: break-all;
+  flex: 1;
 }
 
 .file-list li.empty {
@@ -738,7 +739,6 @@ button.danger:disabled {
 
 /* Right-aligned role annotation (route URL, guarded prefix, …). */
 .file-list .file-annot {
-  margin-left: auto;
   color: var(--muted);
   font-size: 0.7rem;
   white-space: nowrap;
@@ -747,9 +747,24 @@ button.danger:disabled {
   max-width: 10rem;
 }
 
-/* Current-deployment rows the draft can't edit yet (statics, packages). */
+/* Current-deployment rows the draft hasn't taken over (statics not yet
+   opened, packages). */
 .file-list li.read-only .file-path {
   color: var(--muted);
+}
+
+/* Per-row remove — the explicit way a file leaves the next deploy. Hidden
+   until the row is hovered or focused so the tree stays quiet. */
+.file-list li .rm {
+  padding: 0 0.4rem;
+  font-size: 0.75rem;
+  line-height: 1.2;
+  visibility: hidden;
+}
+
+.file-list li:hover .rm,
+.file-list li .rm:focus {
+  visibility: visible;
 }
 
 .editor {

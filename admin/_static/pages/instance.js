@@ -752,10 +752,15 @@ function renderKv(root, { instanceId, api, showError, clearError }) {
 // The Code tab builds a deploy bundle IN THE BROWSER (a "draft") and ships it
 // in one shot via api.deployAndRelease (reset → per-file stage → cut →
 // release). The current deployment's handler sources load editable through
-// the cross-tenant read door (api.readSources); statics come back as
-// metadata-only rows (read-only — the single-file source read is
-// rewind-apps#69 Phase 1), so Deploy ships the draft and warns before
-// dropping any current static the draft doesn't carry.
+// the cross-tenant read door (api.readSources). Statics list as metadata
+// rows: a TEXT static opens into the editor on click (lazy single-file read,
+// api.readSourceFile); a binary one stays byte-opaque. Deploy ships the
+// draft, carries every remaining current static by hash-reference (the
+// /v1/deploy/ref door — no byte round-trip), and hands cut the package set
+// as a resolution so a package-using app redeploys with its capability
+// grants intact (package EDITING stays the rewind CLI's job — the set
+// carries through frozen). Removing a file from the next deploy is the
+// explicit per-row × — nothing is dropped implicitly.
 //
 // The tree groups the bundle by ROLE, derived purely from the path
 // conventions the engine itself dispatches by (rove: src/js/router.zig,
@@ -863,6 +868,16 @@ function displayPathFor(path, role) {
   }
 }
 
+/// Mirror of the /v1/source door's text gate: only these content-types open
+/// in the editor; anything else is byte-opaque and carries through deploys
+/// by hash-reference.
+function isTextualType(ct) {
+  const base = String(ct || "").split(";")[0].trim().toLowerCase();
+  if (base.startsWith("text/")) return true;
+  return base === "application/json" || base === "application/javascript" ||
+         base === "application/xml" || base === "image/svg+xml";
+}
+
 function renderCode(root, { instanceId, api, showError, clearError }) {
   const el = document.createElement("div");
   el.className = "code-panel";
@@ -897,15 +912,17 @@ function renderCode(root, { instanceId, api, showError, clearError }) {
   // `source` live; Deploy ships the whole map.
   const draft = {};
   // The CURRENTLY-deployed statics ({path, content_type, hash}), loaded via
-  // the read door for the tree. Read-only (their bytes aren't pulled into
-  // the editor); Deploy ships only the draft, so any of these not re-added
-  // would be dropped — we warn before that happens.
+  // the read door for the tree. A text one moves into the draft when opened
+  // (lazy source read); the rest carry through Deploy by hash-reference.
+  // Removing one here (the row's ×) is the only way it leaves the bundle.
   let currentStatics = [];
-  // The current deployment's package set (read-only). Dashboard deploys
-  // can't ship a package resolution yet (rewind-apps#69 Phase 1), so a
-  // package-using app must keep publishing via the rewind CLI — Deploy
-  // refuses rather than cutting a manifest with broken imports.
+  // The current deployment's package set. Deploy re-stages each file's
+  // source and passes the metadata to cut as a resolution, so the set
+  // carries through FROZEN — editing packages stays the rewind CLI's job.
   let currentPackages = [];
+  // The app modules' `@scope/pkg` → pkg_hash map — the other half of the
+  // resolution cut needs (buildResolution forwards it into the manifest).
+  let currentAppImports = {};
   let selected = null; // { path, kind, content_type }
   let cm = null;       // { CM, view, langCompartment, editableCompartment }
   let cmLoading = null; // in-flight import promise
@@ -1048,9 +1065,30 @@ function renderCode(root, { instanceId, api, showError, clearError }) {
     const annot = annotFor(r.path, role);
     li.innerHTML =
       `<span class="file-path">${escapeHtml(displayPathFor(r.path, role))}</span>` +
-      (annot ? `<span class="file-annot">${escapeHtml(annot)}</span>` : "");
+      (annot ? `<span class="file-annot">${escapeHtml(annot)}</span>` : "") +
+      `<button type="button" class="rm" title="Remove from the next deploy">×</button>`;
     li.addEventListener("click", () => openEntry(r));
+    li.querySelector(".rm").addEventListener("click", (ev) => {
+      ev.stopPropagation();
+      removeEntry(r.path);
+    });
     return li;
+  }
+
+  // Explicit removal — the ONLY way a file leaves the next deploy (nothing
+  // is dropped implicitly). Clears the path from both maps: a text static
+  // opened into the draft must not resurface as a hash-reference row.
+  function removeEntry(path) {
+    if (!window.confirm("Remove " + path + " from the next deploy?")) return;
+    delete draft[path];
+    currentStatics = currentStatics.filter((s) => s.path !== path);
+    if (selected && selected.path === path) {
+      selected = null;
+      pathLabel.textContent = "(no file selected)";
+      metaLabel.textContent = "";
+      clearEditorView();
+    }
+    renderTree();
   }
 
   function buildPkgLi(p) {
@@ -1069,23 +1107,53 @@ function renderCode(root, { instanceId, api, showError, clearError }) {
       metaLabel.textContent =
         "package · " + (p.version || "?") + " · " +
         String(p.pkg_hash || "").slice(0, 12) +
-        " · read-only — package apps publish via the rewind CLI";
+        " · carries through deploy frozen — edit via the rewind CLI";
       clearEditorView();
     });
     return li;
   }
 
-  function openEntry(r) {
+  let sourceLoading = false; // one lazy read at a time
+
+  async function openEntry(r) {
     if (r.editable) { openFile(r.path); return; }
     clearError();
     selectRow(r.path);
     selected = null;
-    pathLabel.textContent = r.path;
-    metaLabel.textContent =
+    const meta =
       (r.kind || "static") + " · " + (r.content_type || "(no content-type)") +
-      (r.hash ? " · " + String(r.hash).slice(0, 12) : "") +
-      " · read-only (static editing is #69 Phase 1)";
-    clearEditorView();
+      (r.hash ? " · " + String(r.hash).slice(0, 12) : "");
+    pathLabel.textContent = r.path;
+
+    // Binary → byte-opaque: it carries through Deploy by hash-reference.
+    if (!isTextualType(r.content_type)) {
+      metaLabel.textContent = meta + " · binary — carries through deploy";
+      clearEditorView();
+      return;
+    }
+
+    // Text → pull the source through the single-file read door, promote the
+    // entry into the draft, and open it like any other editable file.
+    if (sourceLoading) return;
+    sourceLoading = true;
+    metaLabel.textContent = meta + " · loading source…";
+    try {
+      const res = await api.readSourceFile(instanceId, "current", r.path);
+      draft[r.path] = {
+        kind: "static",
+        content_type: r.content_type || res.content_type || "",
+        source: res.source ?? "",
+      };
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 401) { location.hash = "#/login"; return; }
+      metaLabel.textContent = meta;
+      showError(`Source read failed: ${err.message}`);
+      return;
+    } finally {
+      sourceLoading = false;
+    }
+    renderTree();
+    await openFile(r.path);
   }
 
   /// Pick a CodeMirror language extension based on the file path.
@@ -1296,25 +1364,16 @@ export function onSubscription() {
 
   deployBtn.addEventListener("click", async () => {
     if (Object.keys(draft).length === 0) return;
-    // A package-using app can't deploy from here yet: `deploy()` sends no
-    // resolution, so the cut would fail on the handlers' package imports
-    // (#69 Phase 1 carries the package set through). Refuse loudly.
-    if (currentPackages.length > 0) {
-      showError("This app uses packages (" +
-        currentPackages.map((p) => p.spec).join(", ") +
-        ") — dashboard deploys can't ship the package set yet. " +
-        "Publish via the rewind CLI.");
-      return;
-    }
-    // Deploy ships ONLY the draft. If the live deployment has statics that
-    // aren't in the draft, deploying would drop them — confirm first.
-    const dropping = currentStatics
-      .filter((s) => !(s.path in draft)).map((s) => s.path);
-    if (dropping.length > 0 &&
-        !window.confirm(
-          "Deploying replaces the live deployment. These static assets are " +
-          "not in your draft and will be DROPPED:\n\n  " + dropping.join("\n  ") +
-          "\n\nContinue?")) {
+    // The package set carries through as a resolution, which needs every
+    // package file's SOURCE to restage. A missing one (blob unreadable —
+    // GC'd?) can't be carried, and deploying without it would cut a
+    // manifest with broken imports — refuse.
+    const gone = currentPackages.flatMap((p) =>
+      (p.files || []).filter((f) => f.missing || f.source == null)
+        .map((f) => p.spec + ":" + f.path));
+    if (gone.length > 0) {
+      showError("Package sources unavailable (" + gone.join(", ") +
+        ") — cannot carry the package set through. Publish via the rewind CLI.");
       return;
     }
     deployBtn.disabled = true;
@@ -1331,7 +1390,26 @@ export function onSubscription() {
           ? { kind: "handler", source: e.source }
           : { kind: "static", source: e.source, content_type: e.content_type };
       }
-      const result = await api.deployAndRelease(instanceId, files);
+      // Current statics the draft doesn't shadow carry through by
+      // hash-reference — no byte round-trip, nothing dropped implicitly
+      // (removal is the row's explicit ×).
+      for (const s of currentStatics) {
+        if (!(s.path in files)) {
+          files[s.path] = { kind: "static", hash: s.hash, content_type: s.content_type };
+        }
+      }
+      const resolution = currentPackages.length > 0
+        ? {
+            packages: currentPackages.map((p) => ({
+              spec: p.spec, version: p.version, pkg_hash: p.pkg_hash,
+              imports: p.imports || {},
+              capabilities: p.capabilities || [], private: !!p.private,
+              files: (p.files || []).map((f) => ({ path: f.path, source: f.source })),
+            })),
+            app_imports: currentAppImports,
+          }
+        : undefined;
+      const result = await api.deployAndRelease(instanceId, files, resolution);
       metaLabel.textContent = `deployed + released · dep ${result.dep_id}`;
     } catch (err) {
       if (err instanceof ApiError && err.status === 401) {
@@ -1347,8 +1425,9 @@ export function onSubscription() {
 
   // Load the CURRENT deployment's handler sources into the draft (edit-existing
   // via the cross-tenant read door). Handlers become editable; statics and the
-  // package set are recorded for the tree (read-only). No deployment yet →
-  // empty draft.
+  // package set are recorded for the tree (text statics promote into the draft
+  // when opened; everything else carries through Deploy by reference). No
+  // deployment yet → empty draft.
   async function loadCurrent() {
     try {
       const res = await api.readSources(instanceId, "current");
@@ -1368,6 +1447,7 @@ export function onSubscription() {
         }
       }
       currentPackages = res.packages || [];
+      currentAppImports = res.app_imports || {};
     } catch (err) {
       if (err instanceof ApiError && err.status === 401) { location.hash = "#/login"; return; }
       // 404 (no current deployment) or read failure → start from an empty draft.

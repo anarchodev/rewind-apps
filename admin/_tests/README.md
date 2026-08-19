@@ -4,7 +4,7 @@ These run the real handlers through the offline `rewind test` engine — no clus
 no network. Run them from the repo root:
 
 ```
-rewind test ./admin      # release.mjs, teams.mjs, doors.mjs
+rewind test ./admin      # billing, release, teams, doors, code_pane_doors
 ```
 
 ## Fixture conventions

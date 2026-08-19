@@ -1822,6 +1822,48 @@ export function onFileStaged() {
     return JSON.stringify({ ok: true, path: app.path, hash: r.source_hex });
 }
 
+// Stage one STATIC by hash-reference — no byte round-trip. The blob is
+// content-addressed in this tenant's own file-blobs (a prior deploy put it
+// there), so the workspace row just points at it; the dashboard uses this to
+// carry a deployment's unedited statics through a redeploy. Statics only:
+// handlers restage source (the cut compile needs it). The blob.get first is
+// the existence check — a manifest pointing at a GC'd blob must fail HERE,
+// at deploy, not at serve. (It reads the whole object server-side; fine at
+// dashboard bundle sizes — a blob.head verb is the upgrade if it ever shows
+// in deploy latency.)
+function handleWsRef(body) {
+    const b = deployGate(body); if (!b) return null;
+    if (!b.path || !b.hash) return jsonError(400, "path + hash required");
+    if (b.kind !== "static")
+        return jsonError(400, "kind must be 'static' (handlers restage source)");
+    if (!/^[0-9a-f]{64}$/.test(b.hash))
+        return jsonError(400, "hash must be 64 lowercase hex chars");
+    platform.scope(b.tenant).blob.get(b.hash, {
+        on: "onRefVerified",
+        ctx: { target: b.tenant, path: b.path,
+               content_type: b.content_type || "", hash: b.hash },
+    });
+    return next();
+}
+
+// blob.get resume (flat ctx — blob.get passes the caller ctx through,
+// unlike stage/compile which nest it under `.app`): 2xx = the blob exists →
+// record the workspace row, mirroring the shape v1/upload's onStored writes.
+export function onRefVerified() {
+    const app = request.ctx || {};
+    if (!(request.status >= 200 && request.status < 300)) {
+        response.status = 404;
+        response.headers = { "content-type": "application/json" };
+        return JSON.stringify({ ok: false, error: "no blob with that hash" });
+    }
+    platform.scope(app.target).kv.set(WS + app.path, JSON.stringify({
+        kind: "static", content_type: app.content_type, source_hex: app.hash,
+    }));
+    response.status = 200;
+    response.headers = { "content-type": "application/json" };
+    return JSON.stringify({ ok: true, path: app.path, hash: app.hash });
+}
+
 // Cut: COMPILE the staged handlers as one bundle, then stamp the manifest.
 // Compiling here rather than per upload is what lets a handler import a
 // sibling — only now is the whole bundle present, and compilation resolves
@@ -2163,6 +2205,12 @@ export function onManifest() {
     const pkgs = (manifest.packages || []).map((p) => ({
         spec: p.spec, version: p.version, pkg_hash: p.pkg_hash,
         imports: p.imports || {},
+        // capabilities + private ride along so a dashboard redeploy can hand
+        // `cut` a resolution that preserves them — buildResolution reads both,
+        // and a resolution without them would silently STRIP the package's
+        // capability grants from the new manifest.
+        capabilities: p.capabilities || [],
+        private: !!p.private,
         files: (p.files || []).map((f) => ({
             path: f.path,
             virtual: "/pkg/" + p.pkg_hash + "/" + f.path,
@@ -2259,6 +2307,7 @@ function finishSources(ctx, sources, pkgSources) {
     const pkgsOut = (ctx.pkgs || []).map((p) => ({
         spec: p.spec, version: p.version, pkg_hash: p.pkg_hash,
         imports: p.imports,
+        capabilities: p.capabilities || [], private: !!p.private,
         files: p.files.map((f) => {
             const r = { path: f.path, virtual: f.virtual, source_hex: f.source_hash };
             const s = srcByVirtual[f.virtual];
@@ -2271,6 +2320,86 @@ function finishSources(ctx, sources, pkgSources) {
     return JSON.stringify({
         ok: true, dep_id: ctx.dep, entries: out,
         packages: pkgsOut, app_imports: ctx.app_imports || {},
+    });
+}
+
+// ── Single-file source read (lazy static open) ──────────────────────
+//
+// GET /v1/source/{tenant}/{dep_hex|current}?path=… — one entry's source via
+// the same read door composition as /v1/sources (readManifest → blob.get),
+// so the dashboard can open a text static WITHOUT the bulk read pulling
+// every static's bytes eagerly. TEXT ONLY: this door feeds the editor, and
+// binary statics carry through deploys by hash-reference so their bytes
+// never need reading back (request.text on binary would mangle them — this
+// door has no base64 surface).
+
+function isTextual(ct) {
+    const base = String(ct || "").split(";")[0].trim().toLowerCase();
+    if (base.startsWith("text/")) return true;
+    return base === "application/json" || base === "application/javascript" ||
+           base === "application/xml" || base === "image/svg+xml";
+}
+
+function handleReadSource(tenant, depArg, qs) {
+    const auth = request.auth || {};
+    if (!auth.is_root && !auth.sub) return jsonError(401, "unauthenticated");
+    if (!validId(tenant)) return jsonError(400, "invalid tenant");
+    if (!auth.is_root && !canAccess(accountHashFor(auth.sub), tenant)) {
+        return jsonError(403, "not your instance");
+    }
+    const filePath = new URLSearchParams(qs || "").get("path");
+    if (!filePath) return jsonError(400, "path query param required");
+    let dep = depArg;
+    if (dep === "current") {
+        let cur;
+        try { cur = platform.scope(tenant).kv.get("_deploy/current"); }
+        catch (e) { return jsonError(404, "instance not found"); }
+        if (!cur) return jsonError(404, "no current deployment");
+        dep = cur; // stored as hex
+    }
+    if (!/^[0-9a-fA-F]{1,16}$/.test(dep)) return jsonError(400, "bad dep_id");
+    platform.scope(tenant).deploy.readManifest(dep,
+        { on: "onSourceFileManifest", ctx: { tenant: tenant, path: filePath } });
+    return next();
+}
+
+// Read-door continuation: locate the requested entry in the manifest, gate
+// on textiness, then read its blob.
+export function onSourceFileManifest() {
+    const ctx = request.ctx || {};
+    if (!(request.status >= 200 && request.status < 300)) {
+        response.headers = { "content-type": "application/json" };
+        response.status = request.status === 404 ? 404 : 502;
+        return JSON.stringify({ error: "manifest read failed", status: request.status || 0 });
+    }
+    let manifest;
+    try { manifest = JSON.parse(request.text || ""); }
+    catch (e) { response.status = 502; return JSON.stringify({ error: "manifest parse failed" }); }
+    const entry = (manifest.entries || []).find((e) => e.path === ctx.path);
+    if (!entry) return jsonError(404, "no such file in that deployment");
+    if (!isTextual(entry.content_type) && entry.kind !== "handler") {
+        return jsonError(415, "not a text file — binary statics carry by hash-reference");
+    }
+    platform.scope(ctx.tenant).blob.get(entry.hash, {
+        on: "onSourceFileBlob",
+        ctx: { path: entry.path, kind: entry.kind,
+               content_type: entry.content_type || "", hash: entry.hash },
+    });
+    return next();
+}
+
+export function onSourceFileBlob() {
+    const app = request.ctx || {};
+    response.headers = { "content-type": "application/json" };
+    if (!(request.status >= 200 && request.status < 300)) {
+        response.status = 502;
+        return JSON.stringify({ error: "blob read failed", status: request.status || 0 });
+    }
+    response.status = 200;
+    return JSON.stringify({
+        ok: true, path: app.path, kind: app.kind,
+        content_type: app.content_type, source_hex: app.hash,
+        source: request.text || "",
     });
 }
 
@@ -2474,6 +2603,7 @@ const ROUTES = [
     ["POST",   "/v1/deploy/reset",              "open",          (c) => handleWsReset(c.rawBody || "{}")],
     ["POST",   "/v1/deploy/file",               "open",          (c) => handleWsFile(c.rawBody || "{}")],
     ["POST",   "/v1/deploy/pkgfile",            "open",          (c) => handleWsPkgFile(c.rawBody || "{}")],
+    ["POST",   "/v1/deploy/ref",                "open",          (c) => handleWsRef(c.rawBody || "{}")],
     ["POST",   "/v1/deploy/cut",                "open",          (c) => handleWsCut(c.rawBody || "{}")],
     // deployment history (handler enforces ownership) — /v1/history/{tenant}
     ["GET",    "/v1/history/:id",               "self",          (c) => handleHistory(c.params.id)],
@@ -2481,6 +2611,9 @@ const ROUTES = [
     ["GET",    "/v1/logs/*",                    "self",          (c) => handleLogQuery(c.path, c.qs)],
     // source read door (handler enforces canAccess) — /v1/sources/{tenant}/{dep}
     ["GET",    "/v1/sources/*",                 "self",          (c) => handleSourcesPath(c.path)],
+    // single-file twin (text only; the file path rides the query so its
+    // slashes never meet the segment matcher) — /v1/source/{tenant}/{dep}?path=…
+    ["GET",    "/v1/source/:id/:dep",           "self",          (c) => handleReadSource(c.params.id, c.params.dep, c.qs)],
     // CP control + read doors (handlers enforce is_root)
     ["POST",   "/v1/cp/:op",                    "self",          (c) => handleCpPost(c.params.op, c.rawBody)],
     ["GET",    "/v1/cp/:op",                    "self",          (c) => handleCpRead(c.params.op, c.qs)],
