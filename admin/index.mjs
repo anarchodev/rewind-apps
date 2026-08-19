@@ -618,9 +618,124 @@ function billingConfigPk() {
     return { publishable_key: pk };
 }
 
+// ── Card-testing guards (rove#339) ──────────────────────────────────
+// A public payment form is a target independent of the product behind it:
+// testers validate stolen cards in bulk against any reachable Elements
+// integration, and the merchant absorbs the disputes, the fees, and
+// eventually the processor's attention.
+//
+// The load-bearing control here is structural and already in place — a
+// PaymentIntent exists only for a session-authenticated owner of the target
+// account (`accountOwner` in the route table), so there is no anonymous
+// endpoint to point a script at, and account-creation velocity is what bounds
+// attempt volume from above.
+//
+// What these guards add is the part that gate cannot cover. Note WHAT the
+// attempt limit actually bounds: the CLIENT SECRET. Once the browser holds
+// one, confirmations go straight from the browser to Stripe and never touch
+// this handler — per-attempt blocking is Radar's job, not ours (the rules to
+// enable are in `admin/billing-abuse.md`). What this side can bound is how many
+// secrets an account may mint, and how long an account that is visibly testing
+// keeps being handed new ones.
+const BILLING_ATTEMPT_WINDOW_MS = 60 * 60 * 1000;
+const BILLING_ATTEMPTS_PER_WINDOW = 5;  // a real subscribe is 1-2, plus retries
+const BILLING_DECLINE_WINDOW_MS = 24 * 60 * 60 * 1000;
+const BILLING_DECLINES_PER_WINDOW = 5;
+const BILLING_CARDS_PER_WINDOW = 3;     // DISTINCT cards — the tester's shape
+const BILLING_HOLD_MS = 24 * 60 * 60 * 1000;
+
+// A counter row inside a rolling window. An unparseable or expired row starts
+// a fresh window rather than failing the request: these guards shape abuse,
+// and a corrupt counter must never be able to lock a paying customer out of
+// checkout.
+function billingWindowRow(key, windowMs, now) {
+    const raw = kv.get(key);
+    if (raw !== null) {
+        try {
+            const r = JSON.parse(raw);
+            if (typeof r.win === "number" && now - r.win < windowMs) return r;
+        } catch (_) { /* corrupt row — fall through to a fresh window */ }
+    }
+    return { win: now, n: 0, cards: [] };
+}
+
+// A hold is a TIME-BOXED refusal, never a permanent lock. At this layer a
+// customer whose bank declines five times is indistinguishable from a tester,
+// and a false positive costs a sale — so it expires on its own, and an
+// operator can clear it early by deleting the row.
+function billingHold(aid, now) {
+    const raw = kv.get("account/" + aid + "/billing/hold");
+    if (raw === null) return null;
+    let h;
+    try { h = JSON.parse(raw); } catch (_) { return null; }
+    if (typeof h.until !== "number" || now >= h.until) return null;
+    return h;
+}
+
+// Returns an error body to return to the caller, or null to proceed. Charges
+// an attempt on the way through, so the caller must call it exactly once per
+// secret-minting request.
+function billingAttemptRefusal(aid) {
+    const now = Date.now();
+    const held = billingHold(aid, now);
+    if (held) {
+        response.status = 429;
+        return { error: "billing_on_hold", reason: held.reason,
+                 retry_after_ms: held.until - now };
+    }
+    const key = "account/" + aid + "/billing/attempts";
+    const row = billingWindowRow(key, BILLING_ATTEMPT_WINDOW_MS, now);
+    if (row.n >= BILLING_ATTEMPTS_PER_WINDOW) {
+        response.status = 429;
+        return { error: "billing_attempt_rate_limited",
+                 retry_after_ms: row.win + BILLING_ATTEMPT_WINDOW_MS - now };
+    }
+    kv.set(key, JSON.stringify({ win: row.win, n: row.n + 1 }));
+    return null;
+}
+
+// The card fingerprint Stripe puts on a failed PaymentIntent. Stable per card
+// across attempts and across customers, which is exactly what makes "how many
+// distinct cards has this account tried today" answerable at all.
+function declineFingerprint(pi) {
+    const err = pi && pi.last_payment_error;
+    const pm = err && err.payment_method;
+    const card = pm && pm.card;
+    const fp = card && card.fingerprint;
+    return typeof fp === "string" && fp.length > 0 ? fp : null;
+}
+
+// Fed by the `payment_intent.payment_failed` webhook. Trips a hold on either
+// axis; distinct cards is the sharper one, since one card declining five times
+// is a customer with a problem and five cards declining once each is not.
+function recordBillingDecline(aid, pi) {
+    const now = Date.now();
+    const key = "account/" + aid + "/billing/declines";
+    const row = billingWindowRow(key, BILLING_DECLINE_WINDOW_MS, now);
+    const n = row.n + 1;
+    const cards = Array.isArray(row.cards) ? row.cards.slice() : [];
+    const fp = declineFingerprint(pi);
+    if (fp && cards.indexOf(fp) < 0) cards.push(fp);
+    kv.set(key, JSON.stringify({ win: row.win, n: n, cards: cards }));
+
+    const tripped = cards.length >= BILLING_CARDS_PER_WINDOW ? "distinct_cards"
+                  : n >= BILLING_DECLINES_PER_WINDOW ? "decline_volume"
+                  : null;
+    if (tripped === null) return;
+    kv.set("account/" + aid + "/billing/hold", JSON.stringify({
+        reason: tripped, at: now, until: now + BILLING_HOLD_MS,
+    }));
+    // The operator signal. A held account is an incident to look at — the
+    // counters alone are a dashboard nobody reads.
+    console.error("billing hold: account=" + aid + " reason=" + tripped +
+                  " declines=" + n + " cards=" + cards.length);
+}
+
 function subscribeBilling(aid, tier) {
     if (typeof tier !== "string" || !SELLABLE_TIERS[tier])
         return jsonError(400, "unknown tier");
+    const refused = billingAttemptRefusal(aid);
+    if (refused) return refused;
     const price = kv.get("stripe_price/" + tier);
     const apiKey = kv.get("stripe_key");
     if (!price || !apiKey) return jsonError(503, "billing not configured");
@@ -703,6 +818,14 @@ export function onBillingSubscription() {
 function changeBilling(aid, tier) {
     if (typeof tier !== "string" || !SELLABLE_TIERS[tier])
         return jsonError(400, "unknown tier");
+    // A held account does not move plans either, but a change mints no new
+    // client secret, so it costs no attempt from the window.
+    const held = billingHold(aid, Date.now());
+    if (held) {
+        response.status = 429;
+        return { error: "billing_on_hold", reason: held.reason,
+                 retry_after_ms: held.until - Date.now() };
+    }
     const price = kv.get("stripe_price/" + tier);
     const apiKey = kv.get("stripe_key");
     if (!price || !apiKey) return jsonError(503, "billing not configured");
@@ -779,9 +902,46 @@ function handleStripeWebhook(rawBody) {
         return { received: true, duplicate: true };
     kv.set("billing/event/" + event.id, String(event.created || 0));
 
+    const type = String(event.type || "");
+
+    // Card-testing signal (rove#339). Counted from the PaymentIntent event
+    // ONLY: one declined attempt can also emit `charge.failed`, and counting
+    // both would silently halve every threshold. PaymentIntent is also the
+    // more complete of the two — a Radar block fails the intent without ever
+    // creating a charge.
+    if (type === "payment_intent.payment_failed") {
+        const pi = (event.data && event.data.object) || {};
+        const picus = typeof pi.customer === "string" ? pi.customer : null;
+        const piaid = picus === null ? null : kv.get("billing/customer/" + picus);
+        // No linked account: a test event, or an intent for a customer we
+        // never wrote a reverse index for. Ack, as below.
+        if (piaid) recordBillingDecline(piaid, pi);
+        return { received: true };
+    }
+
+    // A dispute is a payment failure with a hostile counterparty attached, and
+    // the single strongest card-testing signal there is: a tested card that
+    // goes through is a card whose owner charges it back. Holds billing and
+    // pages an operator; it deliberately does NOT suspend the tenant, which is
+    // a person's call on evidence this handler cannot see (the suspension
+    // mechanism is rove#335's `/_control/suspend`).
+    if (type === "charge.dispute.created") {
+        const dp = (event.data && event.data.object) || {};
+        const dcus = typeof dp.customer === "string" ? dp.customer : null;
+        const daid = dcus === null ? null : kv.get("billing/customer/" + dcus);
+        if (daid) {
+            const now = Date.now();
+            kv.set("account/" + daid + "/billing/hold", JSON.stringify({
+                reason: "dispute", at: now, until: now + BILLING_HOLD_MS,
+            }));
+            console.error("billing hold: account=" + daid + " reason=dispute charge=" +
+                          (typeof dp.charge === "string" ? dp.charge : "?"));
+        }
+        return { received: true };
+    }
+
     // Everything that is not a subscription lifecycle event is acknowledged
     // and ignored — a 4xx would make Stripe retry events we never consume.
-    const type = String(event.type || "");
     if (type.indexOf("customer.subscription.") !== 0) return { received: true };
 
     const sub = (event.data && event.data.object) || {};
