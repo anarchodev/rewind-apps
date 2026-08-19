@@ -1,3 +1,17 @@
 # build artifacts / scratch
 *.tmp
 node_modules/
+
+# Secrets. These MUST be TRACKED ignores rather than `.git/info/exclude`: that
+# file is local to one repository and does NOT survive `git clone`, so a fresh
+# clone — or this repo checked out as rove's `web` submodule — starts with no
+# protection at all. This repo is PUBLIC and a `.env` here holds live S3 and
+# provider credentials; one `git add -A` is the whole distance between here and
+# a credential leak.
+#
+# `e2e/.gitignore` already covers `e2e/.env`. These rules close the rest of the
+# tree, so the protection is a property of the repo rather than of which
+# directory the file happened to land in.
+.env
+.env.*
+!.env.example
