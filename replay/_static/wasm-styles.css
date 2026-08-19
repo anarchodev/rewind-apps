@@ -300,6 +300,46 @@
   background: rgba(203, 166, 247, 0.45);
 }
 
+/* The end cap carries the window's one control: "check for new hops".
+   Cap, rule, button, outcome — on one line, so the affordance sits
+   against the claim it revises ("open as of 21:14:04"). */
+.tape__row--end {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
+.tape__row--end .tape__cap { flex: 1 1 auto; min-width: 0; }
+
+/* The saga window extends only when the reader asks, so this is the one
+   element on the page that changes what the rail shows. It reads as a
+   quiet control rather than a call to action: most sagas are finished,
+   and most readers never need it. */
+.tape__check {
+  flex: 0 0 auto;
+  border: var(--border-2);
+  border-radius: var(--r-pill);
+  background: transparent;
+  color: var(--text-3);
+  font: inherit;
+  font-size: 10px;
+  padding: 1px var(--sp-2);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.tape__check:hover:not(:disabled),
+.tape__check:focus-visible {
+  color: var(--c-brand);
+  border-color: var(--c-brand);
+  outline: none;
+}
+.tape__check:disabled { opacity: 0.5; cursor: default; }
+
+.tape__check-status {
+  flex: 0 0 auto;
+  white-space: nowrap;
+  padding-right: var(--sp-3);
+}
+
 .tape__hop {
   display: block;
   width: calc(100% - var(--sp-3));

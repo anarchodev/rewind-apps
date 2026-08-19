@@ -130,14 +130,54 @@ const BUNDLE = ${JSON.stringify(BUNDLE)};
 const FOREIGN_ID = ${JSON.stringify(FOREIGN_ID)};
 window.__seamUrls = [];
 window.__showUrls = [];
+window.__sagaUrls = [];
+// Hops that have "landed since" the viewer opened, and the window API's
+// page cap. The test moves both, because "what comes after what I hold"
+// has two causes — a saga that grew, and a page that was never fetched —
+// and the rail answers them with one control.
+window.__extraHops = 0;
+window.__page = 100;
 
 const json = (o) => new Response(JSON.stringify(o),
   { status: 200, headers: { "content-type": "application/json" } });
 
+// Hops beyond the fixture's own, minted on the same tape.
+const EXTRA = [1, 2, 3, 4, 5, 6, 7, 8].map((n) => ({
+  ...SAGA.hops[SAGA.hops.length - 1],
+  request_id: "req_01000000000000e" + n,
+  exec_seq: String(BigInt(SAGA.hops[SAGA.hops.length - 1].exec_seq) + BigInt(n) * 100n),
+  activation: "ws_message",
+}));
+
+// The window API, honestly: ascending from an EXCLUSIVE after_seq,
+// capped, with gaps only BETWEEN in-page hops (a seam across a page
+// boundary is the client's to stitch) and a next_cursor when the page
+// filled. The distinctive gap count is what proves a stitched seam was
+// counted by this endpoint rather than invented by the viewer.
 window.fetch = async (input) => {
   const u = new URL(String(input), location.origin);
   const p = u.pathname;
-  if (p.endsWith("/saga/sg-demo")) return json(SAGA);
+  if (p.endsWith("/saga/sg-demo")) {
+    window.__sagaUrls.push(u.search);
+    const after = BigInt(u.searchParams.get("after_seq") || "0");
+    const all = SAGA.hops.concat(EXTRA.slice(0, window.__extraHops));
+    const rest = all.filter((h) => BigInt(h.exec_seq) > after);
+    const hops = rest.slice(0, window.__page);
+    const gaps = [];
+    for (let i = 0; i < hops.length - 1; i++) {
+      const quiet = SAGA.gaps.find((g) => g.after_seq === hops[i].exec_seq);
+      gaps.push(quiet || {
+        after_seq: hops[i].exec_seq, before_seq: hops[i + 1].exec_seq,
+        count: 42, truncated: false, quiet_ns: 1500000000,
+      });
+    }
+    return json({
+      saga: SAGA.saga, hops, gaps,
+      unplaced: after === 0n ? SAGA.unplaced : [], unplaced_truncated: false,
+      next_cursor: rest.length > hops.length
+        ? { exec_seq: hops[hops.length - 1].exec_seq } : null,
+    });
+  }
   if (p.endsWith("/seam")) {
     window.__seamUrls.push(u.search);
     const after = u.searchParams.get("after_seq");
@@ -245,6 +285,79 @@ check("following a mark opens a second viewer anchored at that activation",
   second.url().endsWith("#/acme/" + FOREIGN_ID), second.url());
 check("the viewer that asked keeps its own anchor",
   viewer.url().endsWith("#/acme/" + ANCHOR), viewer.url());
+
+// ── The window extends only when the reader asks ─────────────────────
+//
+// No polling and no auto-follow (rove#589): a replay is a stopped run,
+// and the rail must not rearrange itself under someone mid-scrub. So
+// the fixture grows and NOTHING happens until the control is clicked.
+const railState = () => viewer.evaluate(() => ({
+  hops: document.querySelectorAll("#tape-list .tape__hop").length,
+  gaps: document.querySelectorAll("#tape-list .tape__gap").length,
+  status: document.querySelector(".tape__check-status")?.textContent || "",
+  anchorFirst: document.querySelector("#scrubber-segments .scrubber__seg--hop")
+    ?.classList.contains("is-anchor"),
+  hash: location.hash,
+}));
+
+const before = await railState();
+check("a complete window offers the control but claims nothing more",
+  before.status === "" && (await viewer.$(".tape__check")) !== null, before.status);
+
+await viewer.evaluate(() => { window.opener.__extraHops = 3; });
+await new Promise((r) => setTimeout(r, 1500));
+const idle = await railState();
+check("hops landing while the reader reads do NOT appear on their own",
+  idle.hops === before.hops && idle.gaps === before.gaps,
+  `${idle.hops} hops, ${idle.gaps} gaps`);
+
+await viewer.click(".tape__check");
+await viewer.waitForFunction(
+  () => /\+\d+ hop/.test(document.querySelector(".tape__check-status")?.textContent || ""),
+  null, { timeout: 15000 });
+const grown = await railState();
+check("clicking the control appends exactly the hops that landed",
+  grown.hops === before.hops + 3 && grown.status === "+3 hops",
+  `${grown.hops} hops · ${grown.status}`);
+check("every appended hop brings its seam — the rail stays gapless",
+  grown.gaps === grown.hops - 1, `${grown.gaps} gaps for ${grown.hops} hops`);
+
+// The seam joining the hops held to the hops arriving is the one the
+// window API does not count for you. The request overlaps by a hop so
+// that it comes back COUNTED; a viewer that stitched it itself would
+// have to invent the number.
+const stitched = await viewer.evaluate((n) =>
+  [...document.querySelectorAll("#tape-list .tape__gap")].slice(-n)
+    .map((e) => e.textContent.trim()), 3);
+check("the seam across the request boundary is counted, not invented",
+  stitched.every((t) => /· 42 quiet ·/.test(t)), JSON.stringify(stitched));
+
+check("the reader's anchor is exactly where they left it",
+  grown.anchorFirst === true && grown.hash === before.hash, grown.hash);
+
+// Asking again when nothing has landed must say so — not silently
+// leave the previous "+3 hops" standing, which would read as another
+// three.
+await viewer.click(".tape__check");
+await viewer.waitForFunction(
+  () => (document.querySelector(".tape__check-status")?.textContent || "") === "no new hops",
+  null, { timeout: 15000 }).catch(() => {});
+check("asking again with nothing new says so", (await railState()).status === "no new hops",
+  (await railState()).status);
+
+// The other half of "what comes after what I hold": hops the page cap
+// never returned. Same control, same answer — and a partial page must
+// not read as the end of the saga.
+await viewer.evaluate(() => { window.opener.__extraHops = 8; window.opener.__page = 3; });
+await viewer.click(".tape__check");
+await viewer.waitForFunction(
+  () => /more after this/.test(document.querySelector(".tape__check-status")?.textContent || ""),
+  null, { timeout: 15000 });
+const paged = await railState();
+check("a page that filled its cap says more remains, never just '+N hops'",
+  /^\+2 hops · more after this$/.test(paged.status), paged.status);
+check("and the rail is still gapless after a partial page",
+  paged.gaps === paged.hops - 1, `${paged.gaps} gaps for ${paged.hops} hops`);
 
 await browser.close();
 server.close();
