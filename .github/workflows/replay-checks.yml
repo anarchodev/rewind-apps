@@ -15,6 +15,9 @@ name: replay-checks
 #                             drifted rule reports divergences as agreement
 #                             and agreements as divergence.
 #   model-view-check        — what the handler can see at the playhead.
+#   kv-budget-check         — a value the kv budget dropped reads as a
+#                             refusal on the wire and in the pane, never as
+#                             absence (rove#430 §3).
 #   model-view-engine-check — the SEAM under that pane: boots the real WASM
 #                             arena and asserts the shapes the pane consumes,
 #                             instead of trusting either half of the seam.
@@ -84,3 +87,6 @@ jobs:
       - name: Out-of-line payload resolution check
         working-directory: e2e
         run: node body-resolve-check.mjs
+      - name: kv read-budget check
+        working-directory: e2e
+        run: node kv-budget-check.mjs

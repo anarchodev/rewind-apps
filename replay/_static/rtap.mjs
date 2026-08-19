@@ -38,13 +38,21 @@ export const RTAP_MAGIC   = 0x52544150;
 // CODE — so captured replay throws the recorded verdict instead
 // of re-deciding the rules. Same entry width; the bump exists so
 // a stale reader rejects loudly rather than misreading.
+// 8 → 9 by the kv read budget (rove#430 §3): kv `outcome` gained
+// `elided` (4) — a read the capture RESOLVED and whose value it
+// dropped at the per-activation budget, `value` = the lost byte
+// count — and a `prefix` entry gained a TRAILING `value` carrying
+// that count for an elided page (empty on an ordinary page).
+// Trailing, so the older layout is a strict prefix of this one; the
+// bump exists so a stale reader rejects instead of resolving an
+// elided read as an ordinary one.
 // 7 → 8 by the content-addressed body pool (rove#625): a pool
 // object is named by its own bytes rather than by a counter, so
 // the BodyRef on `fetch_responses` + `trigger_payload` became
 // {written_unix_ms, digest, offset, len} — 32 bytes where it was
 // 20. Unlike every bump before it this is NOT a trailing field:
 // it sits mid-entry, so everything after it shifts.
-export const RTAP_VERSION = 8;
+export const RTAP_VERSION = 9;
 // The oldest layout this reader still understands (mirrors
 // src/replay/tape_decode.zig MIN_VERSION).
 //
@@ -163,7 +171,10 @@ function decodeEntry(channel, bytes, version) {
                     const v = readUtf8();
                     results.push({ key: k, value: v });
                 }
-                return { op, outcome, key, cursor, limit, results };
+                // v9 trailing field: the lost row bytes of an ELIDED page
+                // (the budget dropped it whole), empty on an ordinary page.
+                const value = off < bytes.length ? readUtf8() : "";
+                return { op, outcome, key, cursor, limit, results, value };
             }
             const value = readUtf8();
             return { op, outcome, key, value };
@@ -266,6 +277,7 @@ function encodeEntry(channel, entry) {
                 for (const p of (entry.results || [])) {
                     w.str(p.key); w.str(p.value);
                 }
+                w.str(entry.value || "");   // v9: an elided page's lost bytes
             } else {
                 w.str(entry.value || "");
             }
