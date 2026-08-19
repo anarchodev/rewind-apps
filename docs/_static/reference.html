@@ -41,7 +41,7 @@
 <tr><td>Browser agent</td><td><a href="#browser"><code>browser</code></a></td></tr>
 <tr><td>Utilities</td><td><a href="#crypto"><code>crypto</code></a> · <a href="#base64"><code>base64</code></a> · <a href="#base64url"><code>base64url</code></a> · <a href="#hex"><code>hex</code></a> · <a href="#textencoder-textdecoder"><code>TextEncoder / TextDecoder</code></a> · <a href="#urlsearchparams"><code>URLSearchParams</code></a> · <a href="#console"><code>console</code></a> · <a href="#time"><code>time</code></a></td></tr>
 <tr><td>Identity &amp; federation</td><td><a href="#users"><code>users</code></a> · <a href="#sessions"><code>sessions</code></a> · <a href="#oidc"><code>oidc</code></a> · <a href="#activitypub"><code>activitypub</code></a></td></tr>
-<tr><td>Admin (the __admin__ tenant only)</td><td><a href="#platform"><code>platform</code></a> · <a href="#platform-root"><code>platform.root</code></a> · <a href="#platform-instances"><code>platform.instances</code></a> · <a href="#platform-releases"><code>platform.releases</code></a> · <a href="#platform-auth"><code>platform.auth</code></a></td></tr>
+<tr><td>Admin (the __admin__ tenant only)</td><td><a href="#platform"><code>platform</code></a> · <a href="#platform-root"><code>platform.root</code></a> · <a href="#platform-instances"><code>platform.instances</code></a> · <a href="#platform-releases"><code>platform.releases</code></a></td></tr>
 </table>
 <h2>Model &amp; state</h2>
 <p>Durable, replicated tenant state. <code>kv</code> is the Model; <code>blob</code> is content-addressed object storage (one-shot <code>put</code>/<code>get</code>, or the <code>receive</code> → <code>write</code> → <code>seal</code> upload session for large inbound bodies); <code>segments</code> is the append-log recipe on top of both — a hot kv tail whose history is sealed into blobs.</p>
@@ -122,6 +122,23 @@ export function onBlob() { return request.bytes; } // flattened payload accessor
 <p>Mint a presigned download URL for an object — the zero-copy read path. Answer a download request with a redirect and the bytes flow storage→client without touching the worker:</p><p>response.status = 307; response.headers = { location: blob.url(hash, { ttl: 300 }) }; return "";</p><p>The URL's timestamp derives from the activation's taped clock, so replay reproduces it exactly.</p>
 <table><tr><th>Param</th><th>Type</th><th></th></tr>
 <tr><td><code>hash</code></td><td><code>string</code></td><td><p>The object's sha256 hash.</p></td></tr>
+<tr><td><code>opts <em>(optional)</em></code></td><td><code>object</code></td><td></td></tr>
+<tr><td><code>opts.ttl <em>(optional)</em></code></td><td><code>number</code></td><td><p>Validity in seconds (default 300, max 604800 = 7 days).</p></td></tr>
+<tr><td><code>opts.contentType <em>(optional)</em></code></td><td><code>string</code></td><td><p>Signed response Content-Type override (S3 returns exactly this).</p></td></tr>
+</table>
+<p><b>Returns</b> <code>string</code> — The presigned URL.</p>
+<h4 id="blob-exporturl"><code>blob.exportUrl(hash, opts?)</code></h4>
+<p>Presign one part of a data export — the <code>exports/</code> twin of {@link blob.url}.</p><p>Export parts are written by the platform into a separate, unmetered pool (they are not objects you stored, and you cannot delete them individually), so <code>blob.url</code> — which signs your <code>app-blobs/</code> pool — cannot address them. Hashes come from <code>@rewind/export</code>'s <code>get(id).parts</code>; that library's <code>links(id)</code> is the ordinary way to reach this.</p>
+<table><tr><th>Param</th><th>Type</th><th></th></tr>
+<tr><td><code>hash</code></td><td><code>string</code></td><td><p>A part hash from an export manifest.</p></td></tr>
+<tr><td><code>opts <em>(optional)</em></code></td><td><code>object</code></td><td></td></tr>
+<tr><td><code>opts.ttl <em>(optional)</em></code></td><td><code>number</code></td><td><p>Validity in seconds (default 300, max 604800 = 7 days).</p></td></tr>
+</table>
+<p><b>Returns</b> <code>string</code> — The presigned URL.</p>
+<h4 id="blob-fileurl"><code>blob.fileUrl(hash, opts?)</code></h4>
+<p>Presign a deployed file's bytes — the <code>file-blobs/</code> twin of {@link blob.url}. An export artifact's bundle part (the deployment manifest) references each handler source and static asset by its content hash in the tenant's own immutable <code>file-blobs/</code> store; this turns those hashes into download URLs, so the code slice of an export ships pointers rather than copies (rove#340).</p>
+<table><tr><th>Param</th><th>Type</th><th></th></tr>
+<tr><td><code>hash</code></td><td><code>string</code></td><td><p>A source/static hash from a deployment manifest.</p></td></tr>
 <tr><td><code>opts <em>(optional)</em></code></td><td><code>object</code></td><td></td></tr>
 <tr><td><code>opts.ttl <em>(optional)</em></code></td><td><code>number</code></td><td><p>Validity in seconds (default 300, max 604800 = 7 days).</p></td></tr>
 <tr><td><code>opts.contentType <em>(optional)</em></code></td><td><code>string</code></td><td><p>Signed response Content-Type override (S3 returns exactly this).</p></td></tr>
@@ -270,6 +287,7 @@ after.kv(`jobs/${id}/`, { on: "onJob" }); // explicit target</code></pre>
 <tr><td><code>opts.maxTotalBytes <em>(optional)</em></code></td><td><code>number</code></td><td><p>Cumulative response cap; exceeding sets <code>bodyTruncated</code>.</p></td></tr>
 <tr><td><code>opts.ctx <em>(optional)</em></code></td><td><code>*</code></td><td><p>Threaded to each wake as <code>request.ctx</code>.</p></td></tr>
 <tr><td><code>opts.on <em>(optional)</em></code></td><td><code>string</code></td><td><p>Export the result wakes; overrides the per-event-shape defaults for every event of this fetch.</p></td></tr>
+<tr><td><code>opts.relay <em>(optional)</em></code></td><td><code>boolean</code></td><td><p>CAS→connection relay (platform-internal; today only the <code>__system/static</code> streamer's door engages it): intermediate chunks are spliced straight onto the held stream — <code>{on}</code> fires only for the first event and the terminal. Inert on any other fetch.</p></td></tr>
 </table>
 <p><b>Returns</b> <code>string</code> — The fetch id (<code>ftch_…</code>, opaque — compare to <code>request.fetchId</code>).</p>
 <pre><code>after.fetch('https://api.example.com/stream',
@@ -323,7 +341,7 @@ return next({ cursor: rows.at(-1)?.key ?? request.ctx?.cursor });</code></pre>
 <tr><td><code>opts.method <em>(optional)</em></code></td><td><code>string</code></td><td><p>HTTP method.</p></td></tr>
 <tr><td><code>opts.headers <em>(optional)</em></code></td><td><code>Object&lt;string,string&gt;</code></td><td><p>Request headers.</p></td></tr>
 <tr><td><code>opts.body <em>(optional)</em></code></td><td><code>string</code></td><td><p>Request body.</p></td></tr>
-<tr><td><code>opts.on</code></td><td><code>string</code></td><td><p>Module path each upstream writeback wakes (REQUIRED — the universal callback key). Same activation shape as a streamed <code>after.fetch</code>.</p></td></tr>
+<tr><td><code>opts.on</code></td><td><code>string</code></td><td><p>Module path each upstream writeback wakes (REQUIRED — the universal callback key). Same activation shape as a streamed <code>after.fetch</code>. One of YOUR modules: a platform <code>__system/…</code> path is refused, because a result lands in its target as a system module and the target would then run privileged on a ctx you chose.</p></td></tr>
 <tr><td><code>opts.maxChunkBytes <em>(optional)</em></code></td><td><code>number</code></td><td><p>Per-chunk cap.</p></td></tr>
 <tr><td><code>opts.maxTotalBytes <em>(optional)</em></code></td><td><code>number</code></td><td><p>Cumulative response cap; exceeding sets <code>bodyTruncated</code> on the terminal event.</p></td></tr>
 <tr><td><code>opts.ctx <em>(optional)</em></code></td><td><code>*</code></td><td><p>Threaded forward to each activation as <code>request.ctx</code>.</p></td></tr>
@@ -580,7 +598,7 @@ cron("*\/15 * * * *", "jobs/poll", { src }); // every 15 min</code></pre>
 </table>
 <p><b>Returns</b> <code>Array&lt;{op:string, desc:string, params:object</code> — &gt;}</p>
 <h4 id="browser-getreplay"><code>browser.getReplay(opts)</code></h4>
-<p>Pull this session's recent handler activations from the durable replay log — the "why" channel. Issues a read-only fetch through the internal <code>rewind-logs.internal</code> door, which the engine pins to THIS handler's own tenant (it can't reach another tenant's logs). The result wakes <code>opts.on</code>; the handler must <code>return next(...)</code> after this to hold the connection across the round-trip — same shape as <code>after.fetch</code>.</p><p>Defaults to filtering by the engine per-connection session key (<code>request.correlation_id</code>, indexed as the reserved <code>_corr</code> tag), which is stamped on EVERY activation automatically — no per-frame tagging needed. Pass <code>opts.session</code> to filter by a <code>request.tag("session", …)</code> value instead (survives reconnects).</p>
+<p>Pull this session's recent handler activations from the durable replay log — the "why" channel. Issues a read-only fetch through the internal <code>rewind-logs.internal</code> door, which the engine pins to THIS handler's own tenant (it can't reach another tenant's logs). The result wakes <code>opts.on</code>; the handler must <code>return next(...)</code> after this to hold the connection across the round-trip — same shape as <code>after.fetch</code>.</p><p>Defaults to filtering by the engine per-connection session key (<code>request.sagaId</code>, indexed as the reserved <code>_saga</code> tag), which is stamped on EVERY activation automatically — no per-frame tagging needed. Pass <code>opts.session</code> to filter by a <code>request.tag("session", …)</code> value instead (survives reconnects).</p>
 <table><tr><th>Param</th><th>Type</th><th></th></tr>
 <tr><td><code>opts</code></td><td><code>object</code></td><td><p><code>{on, since?, limit?, session?}</code>. <code>on</code> is the callback export name (required); <code>since</code> an <code>after_received_ns</code> cursor; <code>limit</code> max records (default 50).</p></td></tr>
 </table>
@@ -1025,14 +1043,20 @@ const a = sessions.fromConfig("admin");</code></pre>
 <p><b>Returns</b> <code>string|null</code> — The response body (or <code>null</code> for a redirect set on <code>response</code>); 404 text for unknown paths.</p>
 <pre><code>// web/auth/index.mjs
 export default () =&gt; oidc.provider().handle();</code></pre>
+<h4 id="oidc-isregisteredclientorigin"><code>oidc.isRegisteredClientOrigin(uri)</code></h4>
+<p>True iff <code>uri</code>'s origin (scheme://host[:port]) matches a registered client redirect_uri's origin — the "may this IdP send a browser there" question. Origin-only: the destination path is the caller's to choose; the destination host is governed by the client registry. Backs RP-Initiated Logout's <code>post_logout_redirect_uri</code> validation, and an IdP's own login UI can use it to accept a cross-origin <code>return_to</code> on a registered RP (the one-submission entry: a static page POSTs the login form directly and the magic-link verify lands the browser on the RP's login route) — every browser-bound exit from the IdP answers to the same allowlist.</p>
+<table><tr><th>Param</th><th>Type</th><th></th></tr>
+<tr><td><code>uri</code></td><td><code>string</code></td><td><p>Absolute URI whose origin is checked.</p></td></tr>
+</table>
+<p><b>Returns</b> <code>boolean</code></p>
 <h4 id="oidc-constructor"><code>oidc.constructor(config, name)</code></h4>
 
 <table><tr><th>Param</th><th>Type</th><th></th></tr>
-<tr><td><code>config</code></td><td><code>object</code></td><td><p>Required: <code>issuer</code>, <code>client_id</code>, <code>redirect_uri</code>. Optional: <code>post_login</code> (default <code>/</code>), <code>operator_prefix</code> (empty ⇒ <code>is_root</code> always false), kv-path / TTL / <code>leewaySeconds</code> overrides.</p></td></tr>
+<tr><td><code>config</code></td><td><code>object</code></td><td><p>Required: <code>issuer</code>, <code>client_id</code>, <code>redirect_uri</code>. Optional: <code>post_login</code> (default <code>/</code>), <code>operator_prefix</code> (empty ⇒ <code>is_root</code> always false), kv-path / TTL / <code>leewaySeconds</code> overrides.</p><p><code>operator_prefix</code> names the allowlist that decides <code>is_root</code>, and that verdict is resolved **at login and frozen on the session** — so adding someone to the allowlist does not affect sessions they already hold, and they must log in again to gain operator authority (rove decisions.md §4.6c, an accepted trade: authority costs one read per login rather than one per request). Removal is the same in reverse — a live session stays operator until it expires.</p></td></tr>
 <tr><td><code>name</code></td><td><code>string</code></td><td><p>Config name; namespaces the kv key paths.</p></td></tr>
 </table>
 <h4 id="oidc-beginlogin"><code>oidc.beginLogin()</code></h4>
-<p><code>GET /_rp/login</code> handler. Captures the platform sid (must be a real browser request), stashes single-use PKCE state, and 302s to the IdP <code>/authorize</code>. Honors a same-origin <code>?return_to=</code> path (open-redirect safe).</p>
+<p><code>GET /_rp/login</code> handler. Captures the platform sid (must be a real browser request), stashes single-use PKCE state, and 302s to the IdP <code>/authorize</code>. Honors a same-origin <code>?return_to=</code> path (open-redirect safe) and forwards an optional <code>?login_hint=</code> (standard OIDC parameter) so the IdP's login UI can prefill an email typed upstream — the seam that lets a static marketing form carry the address into the PKCE flow it cannot itself originate.</p>
 <p><b>Returns</b> <code>null</code> — (the redirect is set on <code>response</code>); 400 text when there is no session context.</p>
 <pre><code>// _rp/login/index.mjs
 export default () =&gt; oidc.rp("default").beginLogin();</code></pre>
@@ -1099,7 +1123,7 @@ export default () =&gt; oidc.rp("default").logoutRedirect();</code></pre>
 <tr><td><code>cfg</code></td><td><code>object</code></td><td><p>Config. Required: <code>domain</code>, <code>username</code>, <code>verified_module</code> (the module that finishes inbox processing after the async key fetch). Optional: <code>name</code>, <code>summary</code>, <code>type</code> (<code>"Service"</code> default, or <code>"Person"</code>), <code>icon_url</code>, <code>key_path</code> (default <code>ap/key</code>), <code>followers_path</code> (default <code>ap/followers</code>), <code>outbox_path</code> (default <code>ap/outbox</code>), <code>keycache_path</code> (default <code>cache/ap/keys</code>).</p></td></tr>
 </table>
 <h4 id="activitypub-ensurekeypair"><code>activitypub.ensureKeypair()</code></h4>
-<p>Idempotently create and store this actor's RSA-2048 keypair. Safe to call on every request; generates only on first call. The private key is stored in kv (page-encrypted at rest by the platform — no extra ceremony). Call once before serving the actor document, e.g. from your setup route or lazily.</p>
+<p>Idempotently create and store this actor's RSA-2048 keypair. Safe to call on every request; generates only on first call. The private key is stored in kv — no extra ceremony and no separate secrets primitive. Note that kv is not encrypted at rest today, so the key carries the same at-rest exposure as any other value you store. Call once before serving the actor document, e.g. from your setup route or lazily.</p>
 <p><b>Returns</b> <code>void</code></p>
 <pre><code>export default function () {
 activitypub.fromConfig().ensureKeypair();
@@ -1165,13 +1189,28 @@ return JSON.stringify(activitypub.fromConfig().publishNote(content));
 <table><tr><th>Param</th><th>Type</th><th></th></tr>
 <tr><td><code>id</code></td><td><code>string</code></td><td><p>Target instance id (non-empty).</p></td></tr>
 </table>
-<p><b>Returns</b> <code>{kv:object, blob:object, deploy:object</code> — } - <code>kv</code> — <code>{get, set, delete, prefix}</code>, the same as the global {@link kv}, bound to instance <code>id</code>. - <code>blob</code> — <code>{get(hash, {on}), receive({on, ctx})}</code>: cross-tenant blob READ (resumes <code>on</code> with the bytes) + STREAMED write (pipe the inbound body straight into <code>id</code>'s file-blobs, no JS buffering). There is no sync <code>put</code> — cross-tenant writes stream via <code>receive</code>. - <code>deploy</code> — <code>{stampManifest(entries), readManifest(dep)}</code>: write/read a deployment manifest in <code>id</code>'s deployments/ from composed <code>entries</code> (<code>[{path, kind, source_hex, bytecode_hex?, content_type?}]</code>); stampManifest returns the dep_id (16-hex). Compose deploys with {@link platform.compile} (handlers) + <code>blob.receive</code> (statics) + <code>stampManifest</code>, then activate with {@link platform.releases.publish}. Unknown id throws <code>Error{code:"InstanceNotFound"}</code>.</p>
+<p><b>Returns</b> <code>{kv:object, blob:object, deploy:object</code> — } - <code>kv</code> — <code>{get, set, delete, prefix}</code>, the same as the global {@link kv}, bound to instance <code>id</code>. - <code>blob</code> — <code>{get(hash, {on}), receive({on, ctx}), exportUrl(hash, {ttl}), fileUrl(hash, {ttl, contentType})}</code>: cross-tenant blob READ (resumes <code>on</code> with the bytes), STREAMED write (pipe the inbound body straight into <code>id</code>'s file-blobs, no JS buffering), and the sync presign twins of {@link blob.exportUrl} / {@link blob.fileUrl} over <code>id</code>'s pools (export download links + bundle file links — rove#340). There is no sync <code>put</code> — cross-tenant writes stream via <code>receive</code>. - <code>deploy</code> — <code>{stampManifest(entries), readManifest(dep)}</code>: write/read a deployment manifest in <code>id</code>'s deployments/ from composed <code>entries</code> (<code>[{path, kind, source_hex, bytecode_hex?, content_type?}]</code>); stampManifest returns the dep_id (16-hex). Compose deploys with {@link platform.compile} (handlers) + <code>blob.receive</code> (statics) + <code>stampManifest</code>, then activate with {@link platform.releases.publish}. Unknown id throws <code>Error{code:"InstanceNotFound"}</code>.</p>
 <pre><code>const { kv: tenantKv } = platform.scope(req.instanceId);
 const profile = tenantKv.get("profile");</code></pre>
-<h4 id="platform-compile"><code>platform.compile(opts)</code></h4>
-<p>Compile handler sources to bytecode + content-address them into <code>scope</code>'s blobs, off the hot path (<code>docs/architecture/cli-and-deploy.md</code> §4.1). Admin-only (the issuing tenant is checked natively). Source → bytecode is the one irreducibly-native deploy step; it's async (compile is slow) but its result is deterministic + idempotent, so it needs no replay tape.</p><p>**Bound, like {@link on.fetch}:** the call binds to the held chain, so you must <code>return next()</code> after it; the result resumes your handler at the <code>on</code> export (default <code>onFetchResult</code>) with <code>request.ctx = {ok, results:[{path, source_hex, bytecode_hex}]}</code> (or <code>{ok:false, status, error}</code>). Compose the manifest from those hashes + your statics and stamp it there. Stage/activate is still a separate <code>platform.releases.publish</code>.</p>
+<h4 id="platform-stage"><code>platform.stage(opts)</code></h4>
+<p>Content-address handler sources into <code>scope</code>'s blobs WITHOUT compiling them, resuming with <code>{ok, results:[{path, source_hex}]}</code>.</p><p>The staging half of a deploy. Compilation resolves every import eagerly, so a module can only be compiled once everything it imports exists — which, for a deploy that uploads files one at a time, is not true until the last file lands. Stage each file as it arrives, then {@link platform.compile} the finished bundle, where a sibling import resolves.</p><p>**Bound, like {@link platform.compile}:** <code>return next()</code> after it.</p>
 <table><tr><th>Param</th><th>Type</th><th></th></tr>
 <tr><td><code>{Array&lt;{path:string, source:string}&gt;} files - Handler sources.</code></td><td><code></code></td><td></td></tr>
+<tr><td><code>opts</code></td><td><code>object</code></td><td></td></tr>
+<tr><td><code>opts.scope</code></td><td><code>string</code></td><td><p>Target instance id (where blobs land).</p></td></tr>
+<tr><td><code>opts.on <em>(optional)</em></code></td><td><code>string</code></td><td><p>Resume export.</p></td></tr>
+<tr><td><code>opts.ctx <em>(optional)</em></code></td><td><code>*</code></td><td><p>Threaded to the resume as <code>request.ctx.app</code>.</p></td></tr>
+</table>
+<p><b>Returns</b> <code>string</code> — The bound fetch id (<code>ftch_…</code>).</p>
+<pre><code>platform.stage([{ path, source }], { scope: tenant, on: "onStaged" });
+return next();</code></pre>
+<h4 id="platform-compile"><code>platform.compile(opts)</code></h4>
+<p>Compile handler sources to bytecode + content-address them into <code>scope</code>'s blobs, off the hot path (<code>docs/architecture/cli-and-deploy.md</code> §4.1). Admin-only (the issuing tenant is checked natively). Source → bytecode is the one irreducibly-native deploy step; it's async (compile is slow) but its result is deterministic + idempotent, so it needs no replay tape.</p><p>**Bound, like {@link on.fetch}:** the call binds to the held chain, so you must <code>return next()</code> after it; the result resumes your handler at the <code>on</code> export (default <code>onFetchResult</code>) with <code>request.ctx = {ok, results:[{path, source_hex, bytecode_hex}]}</code> (or <code>{ok:false, status, error}</code>). Compose the manifest from those hashes + your statics and stamp it there. Stage/activate is still a separate <code>platform.releases.publish</code>.</p><p>Imports resolve — and are therefore VALIDATED — across the whole batch: a handler may import a sibling in the same call, and a specifier that resolves to nothing fails the compile.</p>
+<table><tr><th>Param</th><th>Type</th><th></th></tr>
+<tr><td><code>{Array&lt;{path:string, source?:string, source_hash?:string}&gt;} files
+Handler sources, inline or by the `source_hex` a prior
+{@link platform.stage} returned (the engine reads those back from
+`scope`'s blobs — they never travel through JS twice).</code></td><td><code></code></td><td></td></tr>
 <tr><td><code>opts</code></td><td><code>object</code></td><td></td></tr>
 <tr><td><code>opts.scope</code></td><td><code>string</code></td><td><p>Target instance id (where blobs stage).</p></td></tr>
 <tr><td><code>opts.on <em>(optional)</em></code></td><td><code>string</code></td><td><p>Resume export.</p></td></tr>
@@ -1241,16 +1280,6 @@ return next();
 </table>
 <p><b>Returns</b> <code>void</code></p>
 <pre><code>platform.releases.publish("acme-prod", depId);</code></pre>
-<h3 id="platform-auth"><code>platform.auth</code></h3>
-<p>Root-token auth.</p>
-<h4 id="platform-auth-checkroottoken"><code>platform.auth.checkRootToken(token)</code></h4>
-<p>Validate a platform root token.</p>
-<table><tr><th>Param</th><th>Type</th><th></th></tr>
-<tr><td><code>token</code></td><td><code>string</code></td><td><p>The bearer token to check.</p></td></tr>
-</table>
-<p><b>Returns</b> <code>boolean</code> — <code>true</code> if the token authenticates.</p>
-<pre><code>if (!platform.auth.checkRootToken(bearer))
-return new Response("forbidden", { status: 403 });</code></pre>
 
   <footer>© 2026 Loop46, Inc. · rewind.js · generated by scripts/ops/gen_docs_reference.py — do not edit by hand</footer>
 </article>
