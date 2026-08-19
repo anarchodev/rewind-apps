@@ -11,6 +11,7 @@
 
 import {
     foldModelView, cutInteractionLog, pendingEffects, isInternalKey, durableEffectFor,
+    blameForKey,
 } from "../replay/_static/model-view.mjs";
 
 const KV_GET = 0, KV_PREFIX = 3;
@@ -210,6 +211,65 @@ console.log("=== replay: the handler's view of the Model ===");
     check("a withheld trailing effect is reported as incomplete",
         partial.confident && partial.cut === 1 && partial.complete === false,
         JSON.stringify(partial));
+}
+
+// ── blame: who wrote the value this hop was served ────────────────
+//
+// The chip these rules feed names a specific past activation as the
+// cause of a value. That is the strongest claim the viewer makes about
+// anything outside the hop it replayed, so each way of being wrong is
+// pinned separately.
+{
+    const wrote = (id, keys, extra = {}) => ({
+        request_id: id, exec_seq: "1", activation: "inbound",
+        method: "POST", path: "/p", outcome: "ok",
+        wrote: keys, read: [], keys_truncated: false, ...extra,
+    });
+    const seam = (interacting, extra = {}) => ({
+        after_seq: "1", before_seq: "9", scanned: interacting.length,
+        scan_truncated: false, skipped_no_tape: 0, interacting, ...extra,
+    });
+
+    const one = seam([wrote("req_a", ["cart/1"])]);
+    const found = blameForKey(one, "cart/1");
+    check("the activation that wrote the key is named",
+        found.status === "found" && found.row.request_id === "req_a",
+        JSON.stringify(found));
+
+    // Within the seam the rows are in tape order, so the LAST writer is
+    // the one whose value the hop was actually served.
+    const twice = seam([wrote("req_a", ["cart/1"]), wrote("req_b", ["cart/1"])]);
+    check("when two activations wrote the key, the LAST one is the writer",
+        blameForKey(twice, "cart/1").row.request_id === "req_b");
+
+    // The mistake that would make the whole chip untrustworthy: an
+    // activation that merely observed the value being named its author.
+    const reader = seam([{
+        ...wrote("req_r", []), read: ["cart/1"],
+    }]);
+    check("an activation that only READ the key is never named its writer",
+        blameForKey(reader, "cart/1").status === "none",
+        JSON.stringify(blameForKey(reader, "cart/1")));
+
+    // "Nothing wrote it" and "nothing looked" are different claims and
+    // must never collapse into one another.
+    check("a fully scanned seam with no writer answers 'none' — a real finding",
+        blameForKey(one, "other/key").status === "none");
+    check("a seam scanned only to its cap answers 'capped', never 'none'",
+        blameForKey(seam([], { scan_truncated: true }), "cart/1").status === "capped");
+    check("with no scan to consult the answer is 'unscanned', never 'none'",
+        blameForKey(null, "cart/1").status === "unscanned" &&
+        blameForKey(undefined, "cart/1").status === "unscanned");
+
+    // A capped scan that DID find the writer is still an answer: the
+    // cap bounds what was missed, not what was seen.
+    check("a writer found inside a capped scan is still named",
+        blameForKey(seam([wrote("req_a", ["cart/1"])], { scan_truncated: true }), "cart/1")
+            .status === "found");
+
+    // Keys are matched exactly. A prefix relationship is not a write.
+    check("a key is blamed only on an exact write, never a prefix of one",
+        blameForKey(seam([wrote("req_a", ["cart/10"])]), "cart/1").status === "none");
 }
 
 if (failures.length) {

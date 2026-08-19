@@ -438,6 +438,43 @@
    it was served, so someone else owns the value. */
 .statepane__origin--you { color: var(--c-read); background: rgba(166, 227, 161, 0.12); }
 .statepane__origin--read { color: var(--c-write); background: rgba(250, 179, 135, 0.14); }
+
+/* Blame: the chip NAMES the activation that wrote this value, and
+   following it opens that activation in its own saga viewer. It is a
+   link, so it reads as one — the rest of the pane is inert text, and a
+   chip that can be followed must not look like the ones that cannot. */
+.statepane__origin--blame {
+  border: 0;
+  cursor: pointer;
+  max-width: 22ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font: inherit;
+  font-size: 10px;
+  color: var(--c-control);
+  background: rgba(180, 190, 254, 0.16);
+  text-decoration: underline;
+  text-decoration-style: dotted;
+  text-underline-offset: 2px;
+}
+.statepane__origin--blame:hover,
+.statepane__origin--blame:focus-visible {
+  background: rgba(180, 190, 254, 0.3);
+  outline: none;
+}
+.statepane__origin--blame:focus-visible { box-shadow: 0 0 0 2px var(--c-brand); }
+
+/* An unresolved blame — the seam was capped, never scanned, or there is
+   no seam before this hop at all. Dimmed, because the chip is reporting
+   the limit of what was examined rather than a finding. `none` (scanned
+   in full, nothing wrote it) keeps the plain `--read` styling: it IS a
+   finding. */
+.statepane__blame--capped,
+.statepane__blame--unscanned {
+  opacity: 0.55;
+  font-style: italic;
+}
+
 .statepane__fx .statepane__row { background: rgba(245, 224, 220, 0.05); margin-bottom: 2px; }
 .statepane__fxkind { flex: 0 0 auto; color: var(--c-effect); }
 .statepane__empty { padding: 2px var(--sp-4) var(--sp-2); color: var(--text-4); }

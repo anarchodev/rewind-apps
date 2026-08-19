@@ -35,7 +35,7 @@ import { buildTapesFromBlobs } from "./rtap.mjs";
 import { buildRequestEpilogue, exportForActivation, deriveActivationSurface, resolveMiddleware, MIDDLEWARE_PATHS, REPLAY_OUTPUT_KEY } from "./request-replay.mjs";
 import { SYSTEM_MODULES } from "./arena-system-modules.js";
 import { CursorEngine } from "./cursor.mjs";
-import { foldModelView, cutInteractionLog, pendingEffects } from "./model-view.mjs";
+import { foldModelView, cutInteractionLog, pendingEffects, blameForKey } from "./model-view.mjs";
 import getArenaJs from "./qjs_arena_wasm.js";
 
 // The JS engine version of the arenajs WASM bundled with this replayer
@@ -1036,10 +1036,18 @@ function buildSagaLayout(saga, seams, anchorId) {
         at += s.weight;
         s.end = (at / total) * 100;
     }
+    const anchor = segs.find((s) => s.kind === "hop" && s.isAnchor) ?? null;
+    // The seam immediately before the hop in view. Its probe is this
+    // hop's own read set, which is what makes it — and only it — able to
+    // name the writer of a value this hop read (`blameForKey`). Null for
+    // the saga's first hop: nothing in this window precedes it.
+    const anchorAt = anchor ? segs.indexOf(anchor) : -1;
+    const before = anchorAt > 0 ? segs[anchorAt - 1] : null;
     return {
         segs,
         hops,
-        anchor: segs.find((s) => s.kind === "hop" && s.isAnchor) ?? null,
+        anchor,
+        precedingSeam: before && before.kind === "seam" ? before : null,
     };
 }
 
@@ -1875,6 +1883,54 @@ function endOfRunModelView() {
     return state.endKv || null;
 }
 
+// A read's blame chip: who wrote the value this hop was served.
+//
+// Found ⇒ a link. Following it opens that activation in its own saga
+// viewer — the same jump the scrubber's seam marks offer, because they
+// are one fact reached from two directions: a mark asks "what did this
+// seam do to me?", a chip asks "who did this to this key?".
+//
+// Not found is not one answer but three, kept apart on purpose. A chip
+// reading "nothing wrote it" when nothing LOOKED would be the pane
+// asserting the absence of an interaction it never checked for — the
+// same claim the scrubber refuses to make about an unscanned seam.
+function blameChip(key) {
+    const layout = state.sagaLayout;
+    const { status, row } = blameForKey(layout?.precedingSeam?.scan ?? null, key);
+
+    if (status === "found") {
+        const where = ((row.method ? row.method + " " : "") + (row.path || "")).trim();
+        const chip = el("button", {
+            className: "statepane__origin statepane__origin--blame",
+            text: where || row.activation || "another activation",
+            title: `${row.activation || "activation"}${where ? " · " + where : ""}` +
+                ` wrote ${key} — open it in its own saga viewer`,
+        });
+        chip.addEventListener("click", () => openForeignActivation(row));
+        return chip;
+    }
+
+    // Why there is no name to give. `unscanned` splits once more: the
+    // saga's first hop has no seam before it at all, which is a fact
+    // about the saga rather than a gap in what was examined.
+    const first = layout?.anchor?.index === 0;
+    const title =
+        status === "none"
+            ? "nothing in the seam before this hop wrote it — the value predates that seam"
+        : status === "capped"
+            ? "the seam before this hop was scanned only to its cap — the writer may be among the activations nobody examined"
+        : first
+            ? "this is the saga's first hop — nothing in this window precedes it"
+            : "the seam before this hop was not scanned — its writer is unknown";
+    return el("span", {
+        className: "statepane__origin statepane__origin--read statepane__blame--" + status,
+        // `none` is a real answer; the rest are open questions, and the
+        // chip must not let them read as settled.
+        text: status === "none" ? "read" : "read ?",
+        title,
+    });
+}
+
 // What the handler can SEE at this stop, and what it has queued.
 //
 // `kv` is the snapshot `inspectAt` took on the stopped run
@@ -1918,13 +1974,17 @@ function renderStatePane(kv) {
         li.appendChild(r.deleted
             ? el("span", { className: "statepane__val statepane__val--gone", text: "absent" })
             : el("span", { className: "statepane__val", text: String(r.value), title: String(r.value) }));
-        li.appendChild(el("span", {
-            className: "statepane__origin statepane__origin--" + r.origin,
-            text: r.origin === "you" ? "you" : "read",
-            title: r.origin === "you"
-                ? "this handler wrote it — a read of this key sees this value"
-                : "the handler was served this value; another saga owns it",
-        }));
+        // A key this handler wrote needs no blame: it is looking at its
+        // own value. Every other row was SERVED one, and the seam before
+        // this hop is where that value came from — so the chip answers
+        // "who wrote this?" instead of restating that it was read.
+        li.appendChild(r.origin === "you"
+            ? el("span", {
+                className: "statepane__origin statepane__origin--you",
+                text: "you",
+                title: "this handler wrote it — a read of this key sees this value",
+            })
+            : blameChip(r.key));
         $.stateKv.appendChild(li);
     }
     if ($.stateSub) {

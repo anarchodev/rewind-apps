@@ -127,6 +127,44 @@ export function foldModelView({ kvEntries = [], reads = [], writes = new Map() }
     return [...rows.values()].sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
 }
 
+/// Who wrote the value this hop was served for `key` — the blame half
+/// of "I read 5, who wrote 5?".
+///
+/// `seam` is the interference scan of the seam IMMEDIATELY BEFORE the
+/// hop in view, and only that seam. It is the one whose probe is this
+/// hop's own read set, so within it "the last activation that wrote
+/// this key" is the last writer before the hop, full stop. An earlier
+/// seam's scan was probed against a DIFFERENT hop's reads, so a write
+/// that happened between then and now can be missing from it entirely —
+/// reaching back would let a stale writer outrank a real one, which is
+/// the one mistake a blame link must never make.
+///
+/// Only `wrote` participates. An activation that merely READ the key
+/// observed the value; naming it the writer would invent the very fact
+/// the link exists to establish.
+///
+/// The four answers are deliberately distinct, because "nothing wrote
+/// it" and "nothing looked" are different claims:
+///
+///   · `found`     — this activation wrote it, and is the last that did.
+///   · `none`      — the seam was scanned in full and nothing in it
+///                   wrote this key, so the value predates the seam.
+///   · `capped`    — the scan hit its cap, so no conclusion is
+///                   available: an unexamined candidate may have
+///                   written it.
+///   · `unscanned` — there is no scan to consult at all.
+export function blameForKey(seam, key) {
+    if (!seam || !Array.isArray(seam.interacting)) return { status: "unscanned", row: null };
+    // Ascending by tape position, so the LAST match is the last writer.
+    let found = null;
+    for (const row of seam.interacting) {
+        if (!Array.isArray(row?.wrote)) continue;
+        if (row.wrote.includes(key)) found = row;
+    }
+    if (found) return { status: "found", row: found };
+    return { status: seam.scan_truncated ? "capped" : "none", row: null };
+}
+
 const KV_LOG_KINDS = new Set(["read", "write", "delete"]);
 
 /// Cut the ordered interaction log at the stop.
