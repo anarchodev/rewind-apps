@@ -28,9 +28,11 @@ name: replay-checks
 # `npm run check` in e2e/ runs the node-only ones; they are separate steps
 # here so a failure names itself in the job summary.
 #
-# `tape-rail-check.mjs` is deliberately NOT in this lane: it drives the shell
-# through playwright, so it needs an install and a browser download and stops
-# being the always-on check this job is for.
+# The playwright-driven checks are deliberately NOT in this lane —
+# `tape-rail-check.mjs`, `saga-scrubber-check.mjs`, `seam-handshake-check.mjs`
+# (`npm run check:browser`). They drive the shell through a real browser, so
+# they need an install and a browser download and stop being the always-on
+# check this job is for. Run them by hand when touching the saga viewer.
 #
 # The stronger cross-engine gate — replay a record captured from a real
 # worker and compare digests — is rove's `interaction_digest_smoke_v2.py`,

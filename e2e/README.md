@@ -75,6 +75,42 @@ under the pane's outline-style `color: var(--danger)` override,
 danger-on-danger. Fixed in `admin/_static/app.css` the same day; the spec
 goes green once the fixed admin bundle is republished.
 
+## Cluster-free checks (`npm run check:*`)
+
+The `*-check.mjs` scripts are a different family from the specs above:
+they need no cluster, no session, and no prod. Each serves the real
+`replay/_static` (and, for the handshake check, the real
+`admin/_static/api.js`) off a throwaway localhost server, seeds only the
+inputs a surface actually consumes, and asserts the DOM. They are the
+gate for surfaces whose every claim is about data the customer cannot
+otherwise see — where rendering plausibly but wrongly is worse than
+failing.
+
+| Script | Owns |
+|---|---|
+| `check:surface` | the epilogue's installed request surface |
+| `check:tape` | the tape rail — the saga window as a list of hops |
+| `check:scrubber` | the saga-spanning scrubber: hop segments, seam bands, and where each interference mark is placed |
+| `check:handshake` | the dashboard ↔ viewer seam: that the seam scans are issued, capped, and drawn — and that following a mark opens a second viewer |
+| `check:model` | the Model view's rules |
+| `check:engine` | those rules against what the WASM arena really produces |
+| `check:response` | the wire response the shell derives from a re-execution |
+| `check:body` | a payload the record kept only a pointer to is resolved, or refused |
+
+`npm run check` runs the node-only ones — the always-on CI lane
+(`.github/workflows/replay-checks.yml`). `npm run check:browser` runs the
+playwright-driven ones (`check:tape`, `check:scrubber`, `check:handshake`),
+which are deliberately out of that lane: they need an install and a browser
+download. Run them by hand when touching the saga viewer.
+
+`check:scrubber` and `check:handshake` split deliberately. The first
+seeds the viewer's cache directly, so it proves the rail draws what it
+is given; the second drives the shipped `api.js` against the real
+viewer, so it proves something gives it that. A rail rendering every
+seam "not scanned" because the dashboard quietly stopped scanning looks
+exactly like a saga whose seams are genuinely quiet — only the second
+check can tell those apart.
+
 ## Setup
 
 ```bash

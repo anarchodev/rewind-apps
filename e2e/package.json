@@ -12,11 +12,14 @@
     "report": "playwright show-report",
     "check:surface": "node epilogue-surface-check.mjs",
     "check:tape": "node tape-rail-check.mjs",
+    "check:scrubber": "node saga-scrubber-check.mjs",
+    "check:handshake": "node seam-handshake-check.mjs",
     "check:model": "node model-view-check.mjs",
     "check:engine": "node model-view-engine-check.mjs",
     "check:response": "node replay-response-check.mjs",
     "check:body": "node body-resolve-check.mjs",
-    "check": "npm run check:surface && npm run check:model && npm run check:response && npm run check:body"
+    "check": "npm run check:surface && npm run check:model && npm run check:response && npm run check:body",
+    "check:browser": "npm run check:tape && npm run check:scrubber && npm run check:handshake"
   },
   "devDependencies": {
     "@playwright/test": "^1.49.0"

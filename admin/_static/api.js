@@ -209,6 +209,51 @@ function encodeB64(bytes) {
   return btoa(bin);
 }
 
+// How many of a saga's seams get an interference scan before the viewer
+// opens. Each is a bounded server-side scan, and a long-lived connection
+// saga has one per hop — so the viewer would wait on N round-trips to
+// draw a rail whose first screen shows a handful of them. Seams past the
+// cap are simply absent from the result, and the rail renders them "not
+// scanned" rather than as quiet seams: an unexamined seam and an empty
+// one are different claims.
+const SEAM_SCAN_CAP = 8;
+
+/// Scan this saga's seams for interfering activations — foreign
+/// activations whose writes the saga went on to read, or whose reads saw
+/// what the saga wrote. Returns one entry per SCANNED seam, carrying the
+/// bounds it was scanned over so the viewer can match it to its gap
+/// rather than to a position.
+///
+/// A gap with no activations in it needs no scan: there is nothing there
+/// to interfere. Those return a scanned-but-empty entry, which is the
+/// honest reading — the seam WAS examined, by the gap count itself.
+///
+/// Best-effort throughout: a seam that fails to scan is left out, and
+/// the viewer says "not scanned" for it. A rail-shaped problem must
+/// never become "replay is broken".
+async function scanSeams(instance_id, saga) {
+  const gaps = Array.isArray(saga?.gaps) ? saga.gaps : [];
+  if (gaps.length === 0) return [];
+  const out = [];
+  let scans = 0;
+  for (const g of gaps) {
+    if (!g?.before_seq) continue;
+    if (!(Number(g.count) > 0)) {
+      out.push({
+        after_seq: String(g.after_seq ?? "0"), before_seq: String(g.before_seq),
+        scanned: 0, scan_truncated: false, skipped_no_tape: 0, interacting: [],
+      });
+      continue;
+    }
+    if (scans >= SEAM_SCAN_CAP) break;
+    scans++;
+    try {
+      out.push(await api.getSeam(instance_id, g.after_seq ?? "0", g.before_seq));
+    } catch (_) { /* left unscanned — the rail says so */ }
+  }
+  return out;
+}
+
 export const api = {
   // ── Auth ─────────────────────────────────────────────────────────
   // Login is the OIDC RP handshake: a full-page navigation to
@@ -769,8 +814,12 @@ export const api = {
   /// navigation in the popup, which re-handshakes — so this listener
   /// lives as long as the popup does, not for one exchange.
   ///
-  /// The session lives HERE, never in the replay origin: every compose
-  /// and every log read goes through this window.
+  /// The popup can also ask us to OPEN another activation
+  /// (`replay:open`) — a seam mark on its scrubber names an activation
+  /// of a different saga, and following one is a new viewer window,
+  /// composed here for the same reason: the session lives HERE, never
+  /// in the replay origin. Every compose and every log read goes
+  /// through this window.
   replayOpen(bundle, instance_id, request_id) {
     const replayOrigin = window.location.origin.replace("://app.", "://replay.");
     const frag = (instance_id && request_id)
@@ -783,6 +832,24 @@ export const api = {
     async function onMsg(e) {
       if (e.origin !== replayOrigin) return;
       if (e.source !== popup) return;
+
+      // Following a seam mark: open a SECOND viewer, anchored at that
+      // activation. It gets its own popup and its own listener, so the
+      // window that asked keeps its anchor and its playhead.
+      if (e.data?.kind === "replay:open") {
+        const rid = e.data.request_id;
+        if (!rid) return;
+        try {
+          const b = await api.composeReplayBundle(instance_id, rid);
+          api.replayOpen(b, instance_id, rid);
+        } catch (err) {
+          // The asking window is mid-replay and fine; a failed jump is
+          // not its problem to render.
+          console.warn("replay: could not open " + rid + ":", err);
+        }
+        return;
+      }
+
       if (e.data?.kind !== "replay:ready") return;
       const want = e.data.request_id || request_id;
       try {
@@ -798,7 +865,8 @@ export const api = {
         if (b?.saga_id) {
           try { saga = await api.getSaga(instance_id, b.saga_id); } catch (_) { saga = null; }
         }
-        popup.postMessage({ kind: "replay:bundle", bundle: b, saga }, replayOrigin);
+        const seams = await scanSeams(instance_id, saga);
+        popup.postMessage({ kind: "replay:bundle", bundle: b, saga, seams }, replayOrigin);
       } catch (err) {
         popup.postMessage({
           kind: "replay:error",
