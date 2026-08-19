@@ -31,7 +31,7 @@ const KV_OP_GET = 0, KV_OP_PREFIX = 3;
 // Read outcomes (src/tape/root.zig `KvOutcome`, mirrored in rtap).
 // `not_found` is a different fact from `err`/`refused`, and the pane
 // must not flatten them into one word.
-const KV_OK = 0, KV_NOT_FOUND = 1, KV_REFUSED = 3;
+const KV_OK = 0, KV_NOT_FOUND = 1, KV_REFUSED = 3, KV_ELIDED = 4;
 
 export function isInternalKey(k) {
     return typeof k !== "string" || k === OUTPUT_KEY || k.startsWith(HARNESS_PREFIX);
@@ -106,9 +106,14 @@ export function foldModelView({ kvEntries = [], reads = [], writes = new Map() }
         }
         // The outcome is itself the fact the handler acted on — and
         // "not found" is a different claim from "the read failed".
+        // `elided` is its own word for the same reason `absent` is: the
+        // capture RESOLVED this read and dropped its value at the kv budget,
+        // so the pane must not show it as absent (a claim about the tenant's
+        // data) or as an error (a claim about the read).
         const state = e.outcome === KV_OK ? "ok"
             : e.outcome === KV_NOT_FOUND ? "absent"
             : e.outcome === KV_REFUSED ? "refused"
+            : e.outcome === KV_ELIDED ? "elided"
             : "error";
         rows.set(e.key, {
             key: e.key,

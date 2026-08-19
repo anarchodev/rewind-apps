@@ -359,7 +359,7 @@ export function deriveActivationSurface({ activation = "inbound", tapes = {}, ac
 ///                  Uint8Array of arbitrary bytes (the chunk IS the
 ///                  Msg, always recorded — never read-elided), so the
 ///                  replay body must be byte-exact binary too.
-const KV_OUTCOME_REFUSED = 3; // rtap.mjs kv entry outcome byte (v7)
+const KV_OUTCOME_REFUSED = 3; // rtap.mjs kv entry outcome byte
 
 function foldKvRefusals(entries) {
     const out = {};
