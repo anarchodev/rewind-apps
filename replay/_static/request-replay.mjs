@@ -866,6 +866,15 @@ export function buildRequestEpilogue({ record = {}, requestReads = null, bodyByt
         // a FUNCTION, so its absence is not a missing value — a handler that
         // tags its request dies on the call.
         "  request.tag = __rove_request_tag;\n" +
+        // request.shredKey — the same common binding
+        // (rove-binding.ShredKey over the arena delegate). The arena
+        // never seals: PLAN §2.7 locks no client-side key distribution,
+        // so replay is served plaintext over TLS and the identity is
+        // scope here, not a key. It is a FUNCTION on every engine all
+        // the same, so a handler that scopes its activation to an
+        // identity behaves the same in replay as in production instead
+        // of dying on a missing call.
+        "  request.shredKey = __rove_request_shred_key;\n" +
         "  if (D.result) {\n" +
         "    for (const k of [\"status\", \"done\", \"fetchId\", \"chunkSeq\", \"bodyTruncated\"]) {\n" +
         "      if (D.result[k] !== null && D.result[k] !== undefined) request[k] = D.result[k];\n" +
