@@ -1137,251 +1137,263 @@
 // base64url surface — `base64url.encode(hex.decode(crypto.sha256(x)))`
 // is the PKCE code_challenge in two lines.
 
-const STD_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-const URL_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
 
-// Build via an array + join, NOT `out += `. In the per-request bump
-// arena every `+=` allocates a fresh (never-freed-until-reset) string,
-// so `+=`-building an n-char string costs O(n²) arena volume and
-// exhausts the arena for large inputs (a big base64/hex of a chunk or
-// payload then silently yields an empty response). Array push + join
-// is O(n). Same reason `_decodeBase`, `_bytesToString`, `hex.encode`
-// avoid `+=` below.
-function _encodeBase(bytes, alphabet, padding) {
-  const out = [];
-  let i = 0;
-  while (i + 2 < bytes.length) {
-    const b0 = bytes[i++], b1 = bytes[i++], b2 = bytes[i++];
-    out.push(alphabet[b0 >> 2]);
-    out.push(alphabet[((b0 & 0x03) << 4) | (b1 >> 4)]);
-    out.push(alphabet[((b1 & 0x0f) << 2) | (b2 >> 6)]);
-    out.push(alphabet[b2 & 0x3f]);
-  }
-  const remaining = bytes.length - i;
-  if (remaining === 1) {
-    const b0 = bytes[i];
-    out.push(alphabet[b0 >> 2]);
-    out.push(alphabet[(b0 & 0x03) << 4]);
-    if (padding) out.push("==");
-  } else if (remaining === 2) {
-    const b0 = bytes[i], b1 = bytes[i + 1];
-    out.push(alphabet[b0 >> 2]);
-    out.push(alphabet[((b0 & 0x03) << 4) | (b1 >> 4)]);
-    out.push(alphabet[(b1 & 0x0f) << 2]);
-    if (padding) out.push("=");
-  }
-  return out.join("");
-}
+// IIFE-wrapped like every other shim. Its top-level `const`s include the
+// three `Int8Array` decode tables, and unwrapped they land in the base
+// context's GLOBAL LEXICAL scope where customer handler modules resolve
+// them by name — measured: a handler read `STD_LOOKUP.length` and wrote
+// `STD_LOOKUP[0] = 42`. The base arena is shared by every request on the
+// worker, whatever tenant it serves, so that is a cross-tenant channel
+// (rove#748). Enclosing them removes the reach; the engine separately
+// refuses the write, and defence on a cross-tenant path is worth having
+// twice.
+(function () {
+  const STD_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+  const URL_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
 
-function _decodeBase(str, lookup) {
-  // Decode symbol-at-a-time over the ORIGINAL string, skipping padding
-  // + whitespace in place — no stripped copy. The earlier `+=` strip
-  // (O(n²) arena) and its array+join replacement (a per-char array,
-  // still heavy enough to exhaust the arena when many values are
-  // decoded in one activation) both allocated O(n) scratch per call;
-  // this allocates only the output Uint8Array.
-  const out = new Uint8Array((str.length * 3) >> 2); // upper bound
-  let oi = 0;
-  const quad = [0, 0, 0, 0];
-  let q = 0;
-  for (let i = 0; i < str.length; i++) {
-    const code = str.charCodeAt(i);
-    // Skip '=' padding and ASCII whitespace (space/\t/\n/\v/\f/\r).
-    if (code === 0x3d || code === 0x20 || (code >= 0x09 && code <= 0x0d)) continue;
-    const v = code < 128 ? lookup[code] : -1;
-    if (v < 0) throw new Error("invalid base64 input");
-    quad[q++] = v;
-    if (q === 4) {
-      out[oi++] = (quad[0] << 2) | (quad[1] >> 4);
-      out[oi++] = ((quad[1] & 0x0f) << 4) | (quad[2] >> 2);
-      out[oi++] = ((quad[2] & 0x03) << 6) | quad[3];
-      q = 0;
+  // Build via an array + join, NOT `out += `. In the per-request bump
+  // arena every `+=` allocates a fresh (never-freed-until-reset) string,
+  // so `+=`-building an n-char string costs O(n²) arena volume and
+  // exhausts the arena for large inputs (a big base64/hex of a chunk or
+  // payload then silently yields an empty response). Array push + join
+  // is O(n). Same reason `_decodeBase`, `_bytesToString`, `hex.encode`
+  // avoid `+=` below.
+  function _encodeBase(bytes, alphabet, padding) {
+    const out = [];
+    let i = 0;
+    while (i + 2 < bytes.length) {
+      const b0 = bytes[i++], b1 = bytes[i++], b2 = bytes[i++];
+      out.push(alphabet[b0 >> 2]);
+      out.push(alphabet[((b0 & 0x03) << 4) | (b1 >> 4)]);
+      out.push(alphabet[((b1 & 0x0f) << 2) | (b2 >> 6)]);
+      out.push(alphabet[b2 & 0x3f]);
     }
-  }
-  // Trailing 2 or 3 symbols (an unpadded or padded final group).
-  if (q === 2) {
-    out[oi++] = (quad[0] << 2) | (quad[1] >> 4);
-  } else if (q === 3) {
-    out[oi++] = (quad[0] << 2) | (quad[1] >> 4);
-    out[oi++] = ((quad[1] & 0x0f) << 4) | (quad[2] >> 2);
-  }
-  return out.subarray(0, oi);
-}
-
-function _buildLookup(alphabet) {
-  const arr = new Int8Array(128).fill(-1);
-  for (let i = 0; i < alphabet.length; i++) arr[alphabet.charCodeAt(i)] = i;
-  return arr;
-}
-const STD_LOOKUP = _buildLookup(STD_ALPHABET);
-const URL_LOOKUP = _buildLookup(URL_ALPHABET);
-// Cross-tolerant decoder: accept either alphabet on input. Useful
-// because code in the wild emits both styles and parsers should be
-// liberal in what they accept.
-const ANY_LOOKUP = (() => {
-  const arr = new Int8Array(STD_LOOKUP);
-  for (let i = 0; i < arr.length; i++) {
-    if (URL_LOOKUP[i] >= 0) arr[i] = URL_LOOKUP[i];
-  }
-  return arr;
-})();
-
-function _stringToBytes(s) {
-  // Treat string as binary (each char = byte 0-255). Matches btoa
-  // semantics. Throws on out-of-range chars to surface bugs early.
-  const out = new Uint8Array(s.length);
-  for (let i = 0; i < s.length; i++) {
-    const code = s.charCodeAt(i);
-    if (code > 0xff) throw new Error("btoa: input contains non-Latin-1 character");
-    out[i] = code;
-  }
-  return out;
-}
-
-function _bytesToString(bytes) {
-  // Inverse of _stringToBytes — binary string out. Use TextDecoder
-  // if you want UTF-8 interpretation. Chunked fromCharCode.apply,
-  // not `+=` (O(n²) arena volume — see _encodeBase).
-  const parts = [];
-  const CH = 8192; // stay under the argument-count limit
-  for (let i = 0; i < bytes.length; i += CH) {
-    parts.push(String.fromCharCode.apply(null, bytes.subarray(i, i + CH)));
-  }
-  return parts.join("");
-}
-
-/**
- * Encode a binary string to padded standard base64 (browser `btoa`).
- *
- * @function btoa
- * @param {string} s - Binary string; each char is one byte
- *   (0–255). Non-Latin-1 chars throw.
- * @returns {string} Standard-alphabet base64 with `=` padding.
- * @example
- * btoa("hello"); // "aGVsbG8="
- */
-globalThis.btoa = function (s) {
-  if (typeof s !== "string") s = String(s);
-  return _encodeBase(_stringToBytes(s), STD_ALPHABET, true);
-};
-
-/**
- * Decode standard base64 to a binary string (browser `atob`).
- * Tolerates padding and whitespace.
- *
- * @function atob
- * @param {string} s - Standard-alphabet base64.
- * @returns {string} Binary string (one char per byte). Use
- *   `TextDecoder` for UTF-8 interpretation. Invalid input throws.
- * @example
- * atob("aGVsbG8="); // "hello"
- */
-globalThis.atob = function (s) {
-  if (typeof s !== "string") s = String(s);
-  return _bytesToString(_decodeBase(s, STD_LOOKUP));
-};
-
-/**
- * URL-safe base64 (no padding) over bytes — the shape PKCE / JWT
- * verification needs.
- *
- * @namespace base64url
- */
-globalThis.base64url = {
-  /**
-   * Encode bytes as URL-safe base64, no padding.
-   *
-   * @param {Uint8Array|string|number[]} input - Bytes; a string is
-   *   first UTF-8 encoded.
-   * @returns {string} URL-safe base64 (`-`/`_`, no `=`).
-   * @example
-   * base64url.encode(crypto.randomBytes(32)); // PKCE verifier
-   */
-  encode(input) {
-    let bytes;
-    if (typeof input === "string") {
-      bytes = new TextEncoder().encode(input);
-    } else if (input instanceof Uint8Array) {
-      bytes = input;
-    } else {
-      bytes = new Uint8Array(input);
-    }
-    return _encodeBase(bytes, URL_ALPHABET, false);
-  },
-
-  /**
-   * Decode URL-safe base64 to bytes. Tolerates padding and the
-   * standard (`+`/`/`) alphabet too (liberal in what it accepts).
-   *
-   * @param {string} s - base64url (or standard) text.
-   * @returns {Uint8Array} Decoded bytes. Invalid input throws.
-   * @example
-   * const token = "aGVhZA.cGF5bG9hZA.c2ln";
-   * const sig = base64url.decode(token.split(".")[2]);
-   */
-  decode(s) {
-    if (typeof s !== "string") s = String(s);
-    return _decodeBase(s, ANY_LOOKUP);
-  },
-};
-
-/**
- * Hex string ⇄ bytes. Bridges the platform's hex-returning crypto
- * APIs to the byte-oriented base64url surface — e.g.
- * `base64url.encode(hex.decode(crypto.sha256(x)))` is a PKCE
- * code_challenge in two calls.
- *
- * @namespace hex
- */
-globalThis.hex = {
-  /**
-   * Encode bytes as a lowercase hex string.
-   *
-   * @param {Uint8Array|number[]} bytes - Bytes to encode.
-   * @returns {string} Lowercase hex, 2 chars per byte.
-   * @example
-   * hex.encode(new Uint8Array([255, 0])); // "ff00"
-   */
-  encode(bytes) {
-    if (!(bytes instanceof Uint8Array)) bytes = new Uint8Array(bytes);
-    const tab = "0123456789abcdef";
-    const out = [];  // array+join, not `+=` (O(n²) arena — see base64 _encodeBase)
-    for (let i = 0; i < bytes.length; i++) {
-      out.push(tab[bytes[i] >> 4]);
-      out.push(tab[bytes[i] & 0x0f]);
+    const remaining = bytes.length - i;
+    if (remaining === 1) {
+      const b0 = bytes[i];
+      out.push(alphabet[b0 >> 2]);
+      out.push(alphabet[(b0 & 0x03) << 4]);
+      if (padding) out.push("==");
+    } else if (remaining === 2) {
+      const b0 = bytes[i], b1 = bytes[i + 1];
+      out.push(alphabet[b0 >> 2]);
+      out.push(alphabet[((b0 & 0x03) << 4) | (b1 >> 4)]);
+      out.push(alphabet[(b1 & 0x0f) << 2]);
+      if (padding) out.push("=");
     }
     return out.join("");
-  },
+  }
 
-  /**
-   * Decode a hex string to bytes. Accepts upper or lower case.
-   *
-   * @param {string} s - Even-length hex string.
-   * @returns {Uint8Array} Decoded bytes. Odd length or non-hex
-   *   chars throw.
-   * @example
-   * hex.decode("ff00"); // Uint8Array([255, 0])
-   */
-  decode(s) {
-    if (typeof s !== "string") throw new TypeError("hex.decode: input must be a string");
-    if ((s.length & 1) !== 0) throw new Error("hex.decode: odd-length input");
-    const out = new Uint8Array(s.length >> 1);
-    for (let i = 0; i < out.length; i++) {
-      const hi = _hexNibble(s.charCodeAt(i * 2));
-      const lo = _hexNibble(s.charCodeAt(i * 2 + 1));
-      if (hi < 0 || lo < 0) throw new Error("hex.decode: non-hex character");
-      out[i] = (hi << 4) | lo;
+  function _decodeBase(str, lookup) {
+    // Decode symbol-at-a-time over the ORIGINAL string, skipping padding
+    // + whitespace in place — no stripped copy. The earlier `+=` strip
+    // (O(n²) arena) and its array+join replacement (a per-char array,
+    // still heavy enough to exhaust the arena when many values are
+    // decoded in one activation) both allocated O(n) scratch per call;
+    // this allocates only the output Uint8Array.
+    const out = new Uint8Array((str.length * 3) >> 2); // upper bound
+    let oi = 0;
+    const quad = [0, 0, 0, 0];
+    let q = 0;
+    for (let i = 0; i < str.length; i++) {
+      const code = str.charCodeAt(i);
+      // Skip '=' padding and ASCII whitespace (space/\t/\n/\v/\f/\r).
+      if (code === 0x3d || code === 0x20 || (code >= 0x09 && code <= 0x0d)) continue;
+      const v = code < 128 ? lookup[code] : -1;
+      if (v < 0) throw new Error("invalid base64 input");
+      quad[q++] = v;
+      if (q === 4) {
+        out[oi++] = (quad[0] << 2) | (quad[1] >> 4);
+        out[oi++] = ((quad[1] & 0x0f) << 4) | (quad[2] >> 2);
+        out[oi++] = ((quad[2] & 0x03) << 6) | quad[3];
+        q = 0;
+      }
+    }
+    // Trailing 2 or 3 symbols (an unpadded or padded final group).
+    if (q === 2) {
+      out[oi++] = (quad[0] << 2) | (quad[1] >> 4);
+    } else if (q === 3) {
+      out[oi++] = (quad[0] << 2) | (quad[1] >> 4);
+      out[oi++] = ((quad[1] & 0x0f) << 4) | (quad[2] >> 2);
+    }
+    return out.subarray(0, oi);
+  }
+
+  function _buildLookup(alphabet) {
+    const arr = new Int8Array(128).fill(-1);
+    for (let i = 0; i < alphabet.length; i++) arr[alphabet.charCodeAt(i)] = i;
+    return arr;
+  }
+  const STD_LOOKUP = _buildLookup(STD_ALPHABET);
+  const URL_LOOKUP = _buildLookup(URL_ALPHABET);
+  // Cross-tolerant decoder: accept either alphabet on input. Useful
+  // because code in the wild emits both styles and parsers should be
+  // liberal in what they accept.
+  const ANY_LOOKUP = (() => {
+    const arr = new Int8Array(STD_LOOKUP);
+    for (let i = 0; i < arr.length; i++) {
+      if (URL_LOOKUP[i] >= 0) arr[i] = URL_LOOKUP[i];
+    }
+    return arr;
+  })();
+
+  function _stringToBytes(s) {
+    // Treat string as binary (each char = byte 0-255). Matches btoa
+    // semantics. Throws on out-of-range chars to surface bugs early.
+    const out = new Uint8Array(s.length);
+    for (let i = 0; i < s.length; i++) {
+      const code = s.charCodeAt(i);
+      if (code > 0xff) throw new Error("btoa: input contains non-Latin-1 character");
+      out[i] = code;
     }
     return out;
-  },
-};
+  }
 
-function _hexNibble(code) {
-  if (code >= 0x30 && code <= 0x39) return code - 0x30;
-  if (code >= 0x61 && code <= 0x66) return code - 0x61 + 10;
-  if (code >= 0x41 && code <= 0x46) return code - 0x41 + 10;
-  return -1;
-}
+  function _bytesToString(bytes) {
+    // Inverse of _stringToBytes — binary string out. Use TextDecoder
+    // if you want UTF-8 interpretation. Chunked fromCharCode.apply,
+    // not `+=` (O(n²) arena volume — see _encodeBase).
+    const parts = [];
+    const CH = 8192; // stay under the argument-count limit
+    for (let i = 0; i < bytes.length; i += CH) {
+      parts.push(String.fromCharCode.apply(null, bytes.subarray(i, i + CH)));
+    }
+    return parts.join("");
+  }
+
+  /**
+   * Encode a binary string to padded standard base64 (browser `btoa`).
+   *
+   * @function btoa
+   * @param {string} s - Binary string; each char is one byte
+   *   (0–255). Non-Latin-1 chars throw.
+   * @returns {string} Standard-alphabet base64 with `=` padding.
+   * @example
+   * btoa("hello"); // "aGVsbG8="
+   */
+  globalThis.btoa = function (s) {
+    if (typeof s !== "string") s = String(s);
+    return _encodeBase(_stringToBytes(s), STD_ALPHABET, true);
+  };
+
+  /**
+   * Decode standard base64 to a binary string (browser `atob`).
+   * Tolerates padding and whitespace.
+   *
+   * @function atob
+   * @param {string} s - Standard-alphabet base64.
+   * @returns {string} Binary string (one char per byte). Use
+   *   `TextDecoder` for UTF-8 interpretation. Invalid input throws.
+   * @example
+   * atob("aGVsbG8="); // "hello"
+   */
+  globalThis.atob = function (s) {
+    if (typeof s !== "string") s = String(s);
+    return _bytesToString(_decodeBase(s, STD_LOOKUP));
+  };
+
+  /**
+   * URL-safe base64 (no padding) over bytes — the shape PKCE / JWT
+   * verification needs.
+   *
+   * @namespace base64url
+   */
+  globalThis.base64url = {
+    /**
+     * Encode bytes as URL-safe base64, no padding.
+     *
+     * @param {Uint8Array|string|number[]} input - Bytes; a string is
+     *   first UTF-8 encoded.
+     * @returns {string} URL-safe base64 (`-`/`_`, no `=`).
+     * @example
+     * base64url.encode(crypto.randomBytes(32)); // PKCE verifier
+     */
+    encode(input) {
+      let bytes;
+      if (typeof input === "string") {
+        bytes = new TextEncoder().encode(input);
+      } else if (input instanceof Uint8Array) {
+        bytes = input;
+      } else {
+        bytes = new Uint8Array(input);
+      }
+      return _encodeBase(bytes, URL_ALPHABET, false);
+    },
+
+    /**
+     * Decode URL-safe base64 to bytes. Tolerates padding and the
+     * standard (`+`/`/`) alphabet too (liberal in what it accepts).
+     *
+     * @param {string} s - base64url (or standard) text.
+     * @returns {Uint8Array} Decoded bytes. Invalid input throws.
+     * @example
+     * const token = "aGVhZA.cGF5bG9hZA.c2ln";
+     * const sig = base64url.decode(token.split(".")[2]);
+     */
+    decode(s) {
+      if (typeof s !== "string") s = String(s);
+      return _decodeBase(s, ANY_LOOKUP);
+    },
+  };
+
+  /**
+   * Hex string ⇄ bytes. Bridges the platform's hex-returning crypto
+   * APIs to the byte-oriented base64url surface — e.g.
+   * `base64url.encode(hex.decode(crypto.sha256(x)))` is a PKCE
+   * code_challenge in two calls.
+   *
+   * @namespace hex
+   */
+  globalThis.hex = {
+    /**
+     * Encode bytes as a lowercase hex string.
+     *
+     * @param {Uint8Array|number[]} bytes - Bytes to encode.
+     * @returns {string} Lowercase hex, 2 chars per byte.
+     * @example
+     * hex.encode(new Uint8Array([255, 0])); // "ff00"
+     */
+    encode(bytes) {
+      if (!(bytes instanceof Uint8Array)) bytes = new Uint8Array(bytes);
+      const tab = "0123456789abcdef";
+      const out = [];  // array+join, not `+=` (O(n²) arena — see base64 _encodeBase)
+      for (let i = 0; i < bytes.length; i++) {
+        out.push(tab[bytes[i] >> 4]);
+        out.push(tab[bytes[i] & 0x0f]);
+      }
+      return out.join("");
+    },
+
+    /**
+     * Decode a hex string to bytes. Accepts upper or lower case.
+     *
+     * @param {string} s - Even-length hex string.
+     * @returns {Uint8Array} Decoded bytes. Odd length or non-hex
+     *   chars throw.
+     * @example
+     * hex.decode("ff00"); // Uint8Array([255, 0])
+     */
+    decode(s) {
+      if (typeof s !== "string") throw new TypeError("hex.decode: input must be a string");
+      if ((s.length & 1) !== 0) throw new Error("hex.decode: odd-length input");
+      const out = new Uint8Array(s.length >> 1);
+      for (let i = 0; i < out.length; i++) {
+        const hi = _hexNibble(s.charCodeAt(i * 2));
+        const lo = _hexNibble(s.charCodeAt(i * 2 + 1));
+        if (hi < 0 || lo < 0) throw new Error("hex.decode: non-hex character");
+        out[i] = (hi << 4) | lo;
+      }
+      return out;
+    },
+  };
+
+  function _hexNibble(code) {
+    if (code >= 0x30 && code <= 0x39) return code - 0x30;
+    if (code >= 0x61 && code <= 0x66) return code - 0x61 + 10;
+    if (code >= 0x41 && code <= 0x46) return code - 0x41 + 10;
+    return -1;
+  }
+})();
 
 // ── src/js/globals/urlsearchparams.js ──
 ;// SPDX-FileCopyrightText: 2026 Loop46, Inc.
@@ -1402,292 +1414,298 @@ function _hexNibble(code) {
 // produced by `toString()` round-trips through `request.query` and
 // the JS `rpc({...})` dispatch recipe (handler-shape.md).
 
-/**
- * WHATWG `URLSearchParams` (spec-compliant subset) for parsing and
- * building `application/x-www-form-urlencoded` query strings without
- * the full `URL` class. `toString()` output round-trips through
- * `request.query`.
- *
- * @class URLSearchParams
- * @example
- * const q = new URLSearchParams(request.query); // "a=1&b=2"
- * q.get("a");            // "1"
- * q.append("a", "3");
- * q.toString();          // "a=1&b=2&a=3"
- */
-class URLSearchParams {
-  /**
-   * @param {string|Object<string,*>|Array<[string,string]>|URLSearchParams}
-   *   [init] - Query string (leading `?` optional), plain object,
-   *   array of `[name, value]` pairs, or another instance (cloned).
-   */
-  constructor(init) {
-    this._list = []; // array of [name, value] pairs; both strings
 
-    if (init === undefined || init === null || init === "") {
-      return;
-    }
-    if (typeof init === "string") {
-      this._parseString(init);
-      return;
-    }
-    if (init instanceof URLSearchParams) {
-      this._list = init._list.map((p) => [p[0], p[1]]);
-      return;
-    }
-    if (Array.isArray(init)) {
-      for (const entry of init) {
-        if (!Array.isArray(entry) || entry.length !== 2) {
-          throw new TypeError("URLSearchParams: array init requires [name, value] pairs");
+// IIFE-wrapped like every other shim, so its helpers and constants stay out
+// of the base context's global lexical scope, where customer handler
+// modules would resolve them by name (rove#748).
+(function () {
+  /**
+   * WHATWG `URLSearchParams` (spec-compliant subset) for parsing and
+   * building `application/x-www-form-urlencoded` query strings without
+   * the full `URL` class. `toString()` output round-trips through
+   * `request.query`.
+   *
+   * @class URLSearchParams
+   * @example
+   * const q = new URLSearchParams(request.query); // "a=1&b=2"
+   * q.get("a");            // "1"
+   * q.append("a", "3");
+   * q.toString();          // "a=1&b=2&a=3"
+   */
+  class URLSearchParams {
+    /**
+     * @param {string|Object<string,*>|Array<[string,string]>|URLSearchParams}
+     *   [init] - Query string (leading `?` optional), plain object,
+     *   array of `[name, value]` pairs, or another instance (cloned).
+     */
+    constructor(init) {
+      this._list = []; // array of [name, value] pairs; both strings
+
+      if (init === undefined || init === null || init === "") {
+        return;
+      }
+      if (typeof init === "string") {
+        this._parseString(init);
+        return;
+      }
+      if (init instanceof URLSearchParams) {
+        this._list = init._list.map((p) => [p[0], p[1]]);
+        return;
+      }
+      if (Array.isArray(init)) {
+        for (const entry of init) {
+          if (!Array.isArray(entry) || entry.length !== 2) {
+            throw new TypeError("URLSearchParams: array init requires [name, value] pairs");
+          }
+          this._list.push([String(entry[0]), String(entry[1])]);
         }
-        this._list.push([String(entry[0]), String(entry[1])]);
+        return;
       }
-      return;
-    }
-    if (typeof init === "object") {
-      for (const k of Object.keys(init)) {
-        this._list.push([String(k), String(init[k])]);
-      }
-      return;
-    }
-    throw new TypeError("URLSearchParams: unsupported init type");
-  }
-
-  _parseString(s) {
-    if (s[0] === "?") s = s.slice(1);
-    if (s.length === 0) return;
-    for (const pair of s.split("&")) {
-      if (pair.length === 0) continue;
-      const eq = pair.indexOf("=");
-      let name, value;
-      if (eq === -1) {
-        name = pair;
-        value = "";
-      } else {
-        name = pair.slice(0, eq);
-        value = pair.slice(eq + 1);
-      }
-      this._list.push([_decode(name), _decode(value)]);
-    }
-  }
-
-  /** @returns {number} Number of name/value pairs. */
-  get size() {
-    return this._list.length;
-  }
-
-  /**
-   * Append a new pair (does not replace existing ones).
-   * @param {string} name
-   * @param {string} value
-   * @returns {void}
-   */
-  append(name, value) {
-    this._list.push([String(name), String(value)]);
-  }
-
-  /**
-   * Remove all pairs with `name`.
-   * @param {string} name
-   * @returns {void}
-   */
-  delete(name) {
-    name = String(name);
-    this._list = this._list.filter((p) => p[0] !== name);
-  }
-
-  /**
-   * @param {string} name
-   * @returns {string|null} The first value for `name`, or `null`.
-   */
-  get(name) {
-    name = String(name);
-    for (const p of this._list) if (p[0] === name) return p[1];
-    return null;
-  }
-
-  /**
-   * @param {string} name
-   * @returns {string[]} All values for `name`, in insertion order.
-   */
-  getAll(name) {
-    name = String(name);
-    return this._list.filter((p) => p[0] === name).map((p) => p[1]);
-  }
-
-  /**
-   * @param {string} name
-   * @returns {boolean} Whether any pair has `name`.
-   */
-  has(name) {
-    name = String(name);
-    return this._list.some((p) => p[0] === name);
-  }
-
-  /**
-   * Set `name` to a single `value`, replacing any existing pairs
-   * (keeps the first slot's position).
-   * @param {string} name
-   * @param {string} value
-   * @returns {void}
-   */
-  set(name, value) {
-    name = String(name);
-    value = String(value);
-    let replaced = false;
-    const next = [];
-    for (const p of this._list) {
-      if (p[0] === name) {
-        if (!replaced) {
-          next.push([name, value]);
-          replaced = true;
+      if (typeof init === "object") {
+        for (const k of Object.keys(init)) {
+          this._list.push([String(k), String(init[k])]);
         }
-      } else {
-        next.push(p);
+        return;
+      }
+      throw new TypeError("URLSearchParams: unsupported init type");
+    }
+
+    _parseString(s) {
+      if (s[0] === "?") s = s.slice(1);
+      if (s.length === 0) return;
+      for (const pair of s.split("&")) {
+        if (pair.length === 0) continue;
+        const eq = pair.indexOf("=");
+        let name, value;
+        if (eq === -1) {
+          name = pair;
+          value = "";
+        } else {
+          name = pair.slice(0, eq);
+          value = pair.slice(eq + 1);
+        }
+        this._list.push([_decode(name), _decode(value)]);
       }
     }
-    if (!replaced) next.push([name, value]);
-    this._list = next;
-  }
 
-  /**
-   * Stable-sort pairs by name (UCS-2 code units, per spec).
-   * @returns {void}
-   */
-  sort() {
-    // Stable sort by name (UCS-2 code units, per spec).
-    const indexed = this._list.map((p, i) => [p, i]);
-    indexed.sort((a, b) => {
-      if (a[0][0] < b[0][0]) return -1;
-      if (a[0][0] > b[0][0]) return 1;
-      return a[1] - b[1];
-    });
-    this._list = indexed.map((entry) => entry[0]);
-  }
-
-  /**
-   * @returns {string} `application/x-www-form-urlencoded` string
-   *   (spaces as `+`), round-trippable through the platform.
-   */
-  toString() {
-    const parts = [];
-    for (const p of this._list) {
-      parts.push(_encode(p[0]) + "=" + _encode(p[1]));
+    /** @returns {number} Number of name/value pairs. */
+    get size() {
+      return this._list.length;
     }
-    return parts.join("&");
-  }
 
-  /**
-   * @yields {[string, string]} `[name, value]` pairs in order.
-   * @returns {IterableIterator<[string,string]>}
-   */
-  *entries() {
-    for (const p of this._list) yield [p[0], p[1]];
-  }
+    /**
+     * Append a new pair (does not replace existing ones).
+     * @param {string} name
+     * @param {string} value
+     * @returns {void}
+     */
+    append(name, value) {
+      this._list.push([String(name), String(value)]);
+    }
 
-  /**
-   * @yields {string} Each pair's name, in order.
-   * @returns {IterableIterator<string>}
-   */
-  *keys() {
-    for (const p of this._list) yield p[0];
-  }
+    /**
+     * Remove all pairs with `name`.
+     * @param {string} name
+     * @returns {void}
+     */
+    delete(name) {
+      name = String(name);
+      this._list = this._list.filter((p) => p[0] !== name);
+    }
 
-  /**
-   * @yields {string} Each pair's value, in order.
-   * @returns {IterableIterator<string>}
-   */
-  *values() {
-    for (const p of this._list) yield p[1];
-  }
+    /**
+     * @param {string} name
+     * @returns {string|null} The first value for `name`, or `null`.
+     */
+    get(name) {
+      name = String(name);
+      for (const p of this._list) if (p[0] === name) return p[1];
+      return null;
+    }
 
-  /**
-   * @returns {IterableIterator<[string,string]>} Alias of
-   *   {@link URLSearchParams#entries} (enables `for...of`).
-   */
-  [Symbol.iterator]() {
-    return this.entries();
-  }
+    /**
+     * @param {string} name
+     * @returns {string[]} All values for `name`, in insertion order.
+     */
+    getAll(name) {
+      name = String(name);
+      return this._list.filter((p) => p[0] === name).map((p) => p[1]);
+    }
 
-  /**
-   * Invoke `callback(value, name, this)` for each pair.
-   * @param {function(string, string, URLSearchParams): void} callback
-   * @param {*} [thisArg] - `this` inside `callback`.
-   * @returns {void}
-   */
-  forEach(callback, thisArg) {
-    for (const p of this._list) callback.call(thisArg, p[1], p[0], this);
-  }
-}
+    /**
+     * @param {string} name
+     * @returns {boolean} Whether any pair has `name`.
+     */
+    has(name) {
+      name = String(name);
+      return this._list.some((p) => p[0] === name);
+    }
 
-// application/x-www-form-urlencoded: encode every byte that isn't
-// in the unreserved set + space → +. The receiver (parseDispatch
-// in dispatcher.zig) accepts either +-as-space or %20.
-function _encode(s) {
-  let out = "";
-  // Iterate UTF-8 bytes via TextEncoder so non-ASCII characters
-  // get percent-encoded byte-by-byte.
-  const bytes = new TextEncoder().encode(s);
-  const hex = "0123456789ABCDEF";
-  for (let i = 0; i < bytes.length; i++) {
-    const b = bytes[i];
-    if (b === 0x20) {
-      out += "+";
-    } else if (
-      (b >= 0x41 && b <= 0x5a) || // A-Z
-      (b >= 0x61 && b <= 0x7a) || // a-z
-      (b >= 0x30 && b <= 0x39) || // 0-9
-      b === 0x2a || b === 0x2d || b === 0x2e || b === 0x5f
-      // * - . _ — application/x-www-form-urlencoded unreserved
-    ) {
-      out += String.fromCharCode(b);
-    } else {
-      out += "%" + hex[b >> 4] + hex[b & 0x0f];
+    /**
+     * Set `name` to a single `value`, replacing any existing pairs
+     * (keeps the first slot's position).
+     * @param {string} name
+     * @param {string} value
+     * @returns {void}
+     */
+    set(name, value) {
+      name = String(name);
+      value = String(value);
+      let replaced = false;
+      const next = [];
+      for (const p of this._list) {
+        if (p[0] === name) {
+          if (!replaced) {
+            next.push([name, value]);
+            replaced = true;
+          }
+        } else {
+          next.push(p);
+        }
+      }
+      if (!replaced) next.push([name, value]);
+      this._list = next;
+    }
+
+    /**
+     * Stable-sort pairs by name (UCS-2 code units, per spec).
+     * @returns {void}
+     */
+    sort() {
+      // Stable sort by name (UCS-2 code units, per spec).
+      const indexed = this._list.map((p, i) => [p, i]);
+      indexed.sort((a, b) => {
+        if (a[0][0] < b[0][0]) return -1;
+        if (a[0][0] > b[0][0]) return 1;
+        return a[1] - b[1];
+      });
+      this._list = indexed.map((entry) => entry[0]);
+    }
+
+    /**
+     * @returns {string} `application/x-www-form-urlencoded` string
+     *   (spaces as `+`), round-trippable through the platform.
+     */
+    toString() {
+      const parts = [];
+      for (const p of this._list) {
+        parts.push(_encode(p[0]) + "=" + _encode(p[1]));
+      }
+      return parts.join("&");
+    }
+
+    /**
+     * @yields {[string, string]} `[name, value]` pairs in order.
+     * @returns {IterableIterator<[string,string]>}
+     */
+    *entries() {
+      for (const p of this._list) yield [p[0], p[1]];
+    }
+
+    /**
+     * @yields {string} Each pair's name, in order.
+     * @returns {IterableIterator<string>}
+     */
+    *keys() {
+      for (const p of this._list) yield p[0];
+    }
+
+    /**
+     * @yields {string} Each pair's value, in order.
+     * @returns {IterableIterator<string>}
+     */
+    *values() {
+      for (const p of this._list) yield p[1];
+    }
+
+    /**
+     * @returns {IterableIterator<[string,string]>} Alias of
+     *   {@link URLSearchParams#entries} (enables `for...of`).
+     */
+    [Symbol.iterator]() {
+      return this.entries();
+    }
+
+    /**
+     * Invoke `callback(value, name, this)` for each pair.
+     * @param {function(string, string, URLSearchParams): void} callback
+     * @param {*} [thisArg] - `this` inside `callback`.
+     * @returns {void}
+     */
+    forEach(callback, thisArg) {
+      for (const p of this._list) callback.call(thisArg, p[1], p[0], this);
     }
   }
-  return out;
-}
 
-function _decode(s) {
-  // Replace '+' with space first, then percent-decode UTF-8.
-  let bytes_len = 0;
-  // First pass: compute byte length.
-  for (let i = 0; i < s.length; i++) {
-    if (s[i] === "%") {
-      i += 2;
+  // application/x-www-form-urlencoded: encode every byte that isn't
+  // in the unreserved set + space → +. The receiver (parseDispatch
+  // in dispatcher.zig) accepts either +-as-space or %20.
+  function _encode(s) {
+    let out = "";
+    // Iterate UTF-8 bytes via TextEncoder so non-ASCII characters
+    // get percent-encoded byte-by-byte.
+    const bytes = new TextEncoder().encode(s);
+    const hex = "0123456789ABCDEF";
+    for (let i = 0; i < bytes.length; i++) {
+      const b = bytes[i];
+      if (b === 0x20) {
+        out += "+";
+      } else if (
+        (b >= 0x41 && b <= 0x5a) || // A-Z
+        (b >= 0x61 && b <= 0x7a) || // a-z
+        (b >= 0x30 && b <= 0x39) || // 0-9
+        b === 0x2a || b === 0x2d || b === 0x2e || b === 0x5f
+        // * - . _ — application/x-www-form-urlencoded unreserved
+      ) {
+        out += String.fromCharCode(b);
+      } else {
+        out += "%" + hex[b >> 4] + hex[b & 0x0f];
+      }
     }
-    bytes_len++;
+    return out;
   }
-  const bytes = new Uint8Array(bytes_len);
-  let bi = 0;
-  for (let i = 0; i < s.length; i++) {
-    const ch = s[i];
-    if (ch === "+") {
-      bytes[bi++] = 0x20;
-    } else if (ch === "%" && i + 2 < s.length) {
-      const hi = _hexCh(s.charCodeAt(i + 1));
-      const lo = _hexCh(s.charCodeAt(i + 2));
-      if (hi >= 0 && lo >= 0) {
-        bytes[bi++] = (hi << 4) | lo;
+
+  function _decode(s) {
+    // Replace '+' with space first, then percent-decode UTF-8.
+    let bytes_len = 0;
+    // First pass: compute byte length.
+    for (let i = 0; i < s.length; i++) {
+      if (s[i] === "%") {
         i += 2;
+      }
+      bytes_len++;
+    }
+    const bytes = new Uint8Array(bytes_len);
+    let bi = 0;
+    for (let i = 0; i < s.length; i++) {
+      const ch = s[i];
+      if (ch === "+") {
+        bytes[bi++] = 0x20;
+      } else if (ch === "%" && i + 2 < s.length) {
+        const hi = _hexCh(s.charCodeAt(i + 1));
+        const lo = _hexCh(s.charCodeAt(i + 2));
+        if (hi >= 0 && lo >= 0) {
+          bytes[bi++] = (hi << 4) | lo;
+          i += 2;
+        } else {
+          bytes[bi++] = ch.charCodeAt(0);
+        }
       } else {
         bytes[bi++] = ch.charCodeAt(0);
       }
-    } else {
-      bytes[bi++] = ch.charCodeAt(0);
     }
+    return new TextDecoder().decode(bytes.subarray(0, bi));
   }
-  return new TextDecoder().decode(bytes.subarray(0, bi));
-}
 
-function _hexCh(code) {
-  if (code >= 0x30 && code <= 0x39) return code - 0x30;
-  if (code >= 0x61 && code <= 0x66) return code - 0x61 + 10;
-  if (code >= 0x41 && code <= 0x46) return code - 0x41 + 10;
-  return -1;
-}
+  function _hexCh(code) {
+    if (code >= 0x30 && code <= 0x39) return code - 0x30;
+    if (code >= 0x61 && code <= 0x66) return code - 0x61 + 10;
+    if (code >= 0x41 && code <= 0x46) return code - 0x41 + 10;
+    return -1;
+  }
 
-globalThis.URLSearchParams = URLSearchParams;
+  globalThis.URLSearchParams = URLSearchParams;
+})();
 
 // ── src/js/globals/platform.js ──
 ;// SPDX-FileCopyrightText: 2026 Loop46, Inc.
@@ -2985,244 +3003,257 @@ globalThis.time = {
 // step); the `send` closure below uses the captured reference, which
 // stays valid post-harden (only the globalThis property is removed, not
 // the object). Same closure-capture posture as globals/on.js.
-const sysHttp = _system.http;
 
-// The durable scheduler core (globals/schedule.js) installs the private
-// `_system.sched`; capture it here the same way as `sysHttp` (before
-// `_harden.js` deletes `_system`) so webhook.send's durable re-arm keeps
-// working post-harden without exposing an ambient `schedule` to customers
-// (the customer-facing verb is the `@rewind/schedule` package).
-const sysSched = _system.sched;
+// IIFE-wrapped like every other shim. Without this its top-level `const`s
+// land in the GLOBAL LEXICAL scope of the base context, where customer
+// handler modules resolve them by name — including `sysHttp` and `sysSched`,
+// the `_system` captures taken pre-harden precisely so they survive
+// `delete globalThis._system`. Deleting the property then hides nothing:
+// measured, a handler saw `_system` undefined but `sysHttp` as an object.
+// Reaching them is not escalation — the capability natives are
+// tenant-scoped and the outbound limit lives at the frozen fetch primitive
+// (`architecture/privileged-surface.md`) — but the hygiene that delete
+// exists for is only real if the captures are enclosed.
+(function () {
+  const sysHttp = _system.http;
 
-// Crash-recovery watchdog distance for the immediate-fire path: one
-// attempt timeout (the fetch binding's 30 s cap) + grace. Mirrored in
-// `__system/webhook_fire.mjs` (its per-attempt re-arm) — keep in sync.
-const WEBHOOK_WATCHDOG_MS = 40_000;
+  // The durable scheduler core (globals/schedule.js) installs the private
+  // `_system.sched`; capture it here the same way as `sysHttp` (before
+  // `_harden.js` deletes `_system`) so webhook.send's durable re-arm keeps
+  // working post-harden without exposing an ambient `schedule` to customers
+  // (the customer-facing verb is the `@rewind/schedule` package).
+  const sysSched = _system.sched;
 
-/**
- * Durable outbound HTTP — at-least-once delivery, replay-deterministic.
- * The connectionless counterpart to `after.fetch`: the send fires after
- * the handler commits and is owned by the platform until a terminal
- * result, surviving crashes and leader changes.
- *
- * @namespace webhook
- */
-globalThis.webhook = {
+  // Crash-recovery watchdog distance for the immediate-fire path: one
+  // attempt timeout (the fetch binding's 30 s cap) + grace. Mirrored in
+  // `__system/webhook_fire.mjs` (its per-attempt re-arm) — keep in sync.
+  const WEBHOOK_WATCHDOG_MS = 40_000;
+
   /**
-   * Send a webhook. Writes a durable `_send/owed/{id}` marker through
-   * raft, then fires the request post-commit. On failure
-   * the platform retries with exponential backoff (1s, 2s, 4s, …,
-   * capped at 60s, max 5 attempts) — controlled by the baked
-   * `__system/webhook_onresult` shim, not customer code. Deferred
-   * fires (scheduled sends, retries, crash recovery) ride the durable
-   * {@link schedule} and survive leader changes.
+   * Durable outbound HTTP — at-least-once delivery, replay-deterministic.
+   * The connectionless counterpart to `after.fetch`: the send fires after
+   * the handler commits and is owned by the platform until a terminal
+   * result, surviving crashes and leader changes.
    *
-   * The handler's commit gates the marker: if the handler throws or
-   * raft faults, no marker is written and no request fires. After
-   * commit the platform owns delivery; the customer's `on_result`
-   * module sees one terminal result event (success or give-up after
-   * the retry budget).
-   *
-   * @param {string} url - Target URL.
-   * @param {object} [opts]
-   * @param {string} [opts.method="POST"] - HTTP method.
-   * @param {string} [opts.body=""] - Request body (string only — the
-   *   durable marker is JSON).
-   * @param {Object<string,string>} [opts.headers] - Extra headers.
-   *   `X-Rove-Schedule-Id` and `X-Rove-Schedule-Version` are added
-   *   by the platform on fire — don't set them yourself.
-   * @param {string} [opts.key] - Idempotency key — the same word it
-   *   is on `schedule`: same key → same id → same `_send/owed/{id}`
-   *   row (last write wins). Omit for a fresh random id.
-   * @param {bigint|number|Date|string} [opts.at] - Absolute fire time
-   *   (bigint ns, number ms-since-epoch, Date, or ISO-8601 — the
-   *   `schedule({at})` coercions). A future time defers the fire to a
-   *   durable scheduled wake; omitted/past = fire on commit.
-   * @param {number|string} [opts.in] - Delay from now (ms, or a
-   *   duration string `"30s"`/`"5m"` — the `schedule({in})` shape).
-   * @param {number} [opts.maxAttempts=5] - Retry budget (1 first
-   *   fire + up to 4 backoff retries).
-   * @param {number} [opts.timeoutMs] - Per-attempt timeout, applied
-   *   to every fire (first, deferred, retries).
-   * @param {string} [opts.on] - Module path of a customer result
-   *   handler. Receives the terminal event on the unified flattened
-   *   surface (handler-shape §7): the response on `request.bytes` /
-   *   `.text` / `.json`, and `request.status` / `.bodyTruncated`
-   *   (2xx = delivered; `status === 0` = never reached the endpoint;
-   *   no derived `request.ok`); the threaded `ctx` value bare
-   *   on `request.ctx`; delivery metadata (`attempts`, `error?`, `id`,
-   *   `headers`) on `request.activation.*`. There is no `request.result`.
-   * @param {*} [opts.ctx] - Opaque customer payload echoed back as
-   *   `request.ctx` on the result event.
-   * @returns {string} The marker id — random unless `handle` was
-   *   supplied, in which case it is base64url(sha256(handle)) (stable:
-   *   the same handle always yields the same id).
-   * @throws {TypeError} If `url` is missing/wrong type.
-   * @throws {Error} `code:"rate_limited"` when the per-tenant outbound
-   *   rate limit is exhausted (email.send / webhook.send / after.fetch
-   *   share one per-tenant outbound budget). The immediate fire is
-   *   attempted before the durable marker is written, so a rejected send
-   *   leaves nothing queued — catch and retry later.
-   *
-   * Lifecycle: enumerate in-flight sends with
-   * `kv.prefix("_send/owed/")` (each value is the marker JSON). To
-   * cancel a SCHEDULED send before it fires: `schedule.cancel(id)`
-   * kills the durable wake, then `kv.delete("_send/owed/" + id)`
-   * removes the marker — both in one handler, so the cancellation is
-   * atomic. An already-fired send cannot be recalled.
-   *
-   * @example
-   * webhook.send("https://hooks.example.com/x", {
-   *   body: JSON.stringify({ event: "order.paid", id }),
-   *   on: "hooks/onDelivered",
-   *   ctx: { order_id: id },
-   * });
-   *
-   * @example
-   * // Scheduled fire — write the marker now, fire in 5 minutes.
-   * webhook.send("https://example.test/reminder", {
-   *   body: "ping",
-   *   key: "reminder/" + userId,        // idempotent
-   *   in: "5m",
-   * });
+   * @namespace webhook
    */
-  send(url, maybeOpts) {
-    // webhook.send(url, opts) — positional url, matching after.fetch.
-    if (typeof url !== "string")
-      throw new TypeError("webhook.send(url, opts): `url` must be a string");
-    if (maybeOpts != null && typeof maybeOpts !== "object")
-      throw new TypeError("webhook.send: opts must be an object");
-    const opts = Object.assign({}, maybeOpts || {}, { url: url });
-    for (const pair of [["handle", "key"], ["fire_at_ns", "at (or in)"], ["max_attempts", "maxAttempts"], ["timeout_ms", "timeoutMs"], ["on_result", "on"], ["context", "ctx"]]) {
-      if (pair[0] in opts) throw new TypeError("webhook.send: option `" + pair[0] + "` was renamed — use `" + pair[1] + "`");
-    }
+  globalThis.webhook = {
+    /**
+     * Send a webhook. Writes a durable `_send/owed/{id}` marker through
+     * raft, then fires the request post-commit. On failure
+     * the platform retries with exponential backoff (1s, 2s, 4s, …,
+     * capped at 60s, max 5 attempts) — controlled by the baked
+     * `__system/webhook_onresult` shim, not customer code. Deferred
+     * fires (scheduled sends, retries, crash recovery) ride the durable
+     * {@link schedule} and survive leader changes.
+     *
+     * The handler's commit gates the marker: if the handler throws or
+     * raft faults, no marker is written and no request fires. After
+     * commit the platform owns delivery; the customer's `on_result`
+     * module sees one terminal result event (success or give-up after
+     * the retry budget).
+     *
+     * @param {string} url - Target URL.
+     * @param {object} [opts]
+     * @param {string} [opts.method="POST"] - HTTP method.
+     * @param {string} [opts.body=""] - Request body (string only — the
+     *   durable marker is JSON).
+     * @param {Object<string,string>} [opts.headers] - Extra headers.
+     *   `X-Rove-Schedule-Id` and `X-Rove-Schedule-Version` are added
+     *   by the platform on fire — don't set them yourself.
+     * @param {string} [opts.key] - Idempotency key — the same word it
+     *   is on `schedule`: same key → same id → same `_send/owed/{id}`
+     *   row (last write wins). Omit for a fresh random id.
+     * @param {bigint|number|Date|string} [opts.at] - Absolute fire time
+     *   (bigint ns, number ms-since-epoch, Date, or ISO-8601 — the
+     *   `schedule({at})` coercions). A future time defers the fire to a
+     *   durable scheduled wake; omitted/past = fire on commit.
+     * @param {number|string} [opts.in] - Delay from now (ms, or a
+     *   duration string `"30s"`/`"5m"` — the `schedule({in})` shape).
+     * @param {number} [opts.maxAttempts=5] - Retry budget (1 first
+     *   fire + up to 4 backoff retries).
+     * @param {number} [opts.timeoutMs] - Per-attempt timeout, applied
+     *   to every fire (first, deferred, retries).
+     * @param {string} [opts.on] - Module path of a customer result
+     *   handler. Receives the terminal event on the unified flattened
+     *   surface (handler-shape §7): the response on `request.bytes` /
+     *   `.text` / `.json`, and `request.status` / `.bodyTruncated`
+     *   (2xx = delivered; `status === 0` = never reached the endpoint;
+     *   no derived `request.ok`); the threaded `ctx` value bare
+     *   on `request.ctx`; delivery metadata (`attempts`, `error?`, `id`,
+     *   `headers`) on `request.activation.*`. There is no `request.result`.
+     * @param {*} [opts.ctx] - Opaque customer payload echoed back as
+     *   `request.ctx` on the result event.
+     * @returns {string} The marker id — random unless `handle` was
+     *   supplied, in which case it is base64url(sha256(handle)) (stable:
+     *   the same handle always yields the same id).
+     * @throws {TypeError} If `url` is missing/wrong type.
+     * @throws {Error} `code:"rate_limited"` when the per-tenant outbound
+     *   rate limit is exhausted (email.send / webhook.send / after.fetch
+     *   share one per-tenant outbound budget). The immediate fire is
+     *   attempted before the durable marker is written, so a rejected send
+     *   leaves nothing queued — catch and retry later.
+     *
+     * Lifecycle: enumerate in-flight sends with
+     * `kv.prefix("_send/owed/")` (each value is the marker JSON). To
+     * cancel a SCHEDULED send before it fires: `schedule.cancel(id)`
+     * kills the durable wake, then `kv.delete("_send/owed/" + id)`
+     * removes the marker — both in one handler, so the cancellation is
+     * atomic. An already-fired send cannot be recalled.
+     *
+     * @example
+     * webhook.send("https://hooks.example.com/x", {
+     *   body: JSON.stringify({ event: "order.paid", id }),
+     *   on: "hooks/onDelivered",
+     *   ctx: { order_id: id },
+     * });
+     *
+     * @example
+     * // Scheduled fire — write the marker now, fire in 5 minutes.
+     * webhook.send("https://example.test/reminder", {
+     *   body: "ping",
+     *   key: "reminder/" + userId,        // idempotent
+     *   in: "5m",
+     * });
+     */
+    send(url, maybeOpts) {
+      // webhook.send(url, opts) — positional url, matching after.fetch.
+      if (typeof url !== "string")
+        throw new TypeError("webhook.send(url, opts): `url` must be a string");
+      if (maybeOpts != null && typeof maybeOpts !== "object")
+        throw new TypeError("webhook.send: opts must be an object");
+      const opts = Object.assign({}, maybeOpts || {}, { url: url });
+      for (const pair of [["handle", "key"], ["fire_at_ns", "at (or in)"], ["max_attempts", "maxAttempts"], ["timeout_ms", "timeoutMs"], ["on_result", "on"], ["context", "ctx"]]) {
+        if (pair[0] in opts) throw new TypeError("webhook.send: option `" + pair[0] + "` was renamed — use `" + pair[1] + "`");
+      }
 
-    const on_key = typeof opts.on === "string" ? opts.on : null;
-    const ctx_val = opts.ctx !== undefined ? opts.ctx : null;
+      const on_key = typeof opts.on === "string" ? opts.on : null;
+      const ctx_val = opts.ctx !== undefined ? opts.ctx : null;
 
-    // The body must be a string: it JSON-round-trips through the
-    // durable `_send/owed/{id}` marker, which would silently mangle a
-    // Uint8Array to `{"0":..}` (docs/decisions.md §4.11
-    // C3; byte bodies on the durable path are a deferred follow-up).
-    const body = opts.body == null ? "" : opts.body;
-    if (typeof body !== "string")
-      throw new TypeError("webhook.send: `body` must be a string (encode bytes or JSON.stringify explicitly)");
+      // The body must be a string: it JSON-round-trips through the
+      // durable `_send/owed/{id}` marker, which would silently mangle a
+      // Uint8Array to `{"0":..}` (docs/decisions.md §4.11
+      // C3; byte bodies on the durable path are a deferred follow-up).
+      const body = opts.body == null ? "" : opts.body;
+      if (typeof body !== "string")
+        throw new TypeError("webhook.send: `body` must be a string (encode bytes or JSON.stringify explicitly)");
 
-    // `on` is a module path string. Passed verbatim to
-    // `__rove_next(on_result, {ctx: {...}})` inside the
-    // webhook_onresult.mjs shim.
-    const on_result = on_key;
+      // `on` is a module path string. Passed verbatim to
+      // `__rove_next(on_result, {ctx: {...}})` inside the
+      // webhook_onresult.mjs shim.
+      const on_result = on_key;
 
-    // Id derivation: deterministic from the idempotency key, else
-    // randomUUID (taped → replay-deterministic).
-    let id;
-    if (typeof opts.key === "string" && opts.key.length > 0) {
-      // base64url(no pad)(sha256(key)). 43 chars, URL-safe, no
-      // collisions in practice; deterministic so two webhook.sends
-      // with the same key land on the same `_send/owed/{id}`.
-      id = crypto.sha256b64url(opts.key);
-    } else {
-      id = crypto.randomUUID();
-    }
+      // Id derivation: deterministic from the idempotency key, else
+      // randomUUID (taped → replay-deterministic).
+      let id;
+      if (typeof opts.key === "string" && opts.key.length > 0) {
+        // base64url(no pad)(sha256(key)). 43 chars, URL-safe, no
+        // collisions in practice; deterministic so two webhook.sends
+        // with the same key land on the same `_send/owed/{id}`.
+        id = crypto.sha256b64url(opts.key);
+      } else {
+        id = crypto.randomUUID();
+      }
 
-    // Resolve the fire time via the shared `time` library: {at}
-    // (absolute — bigint ns | ms | Date | duration | ISO) or {in}
-    // (delay — ms | duration string).
-    const now_ns = BigInt(Date.now()) * 1_000_000n;
-    let fire_at_ns_big = 0n;
-    if (opts.at != null) {
-      fire_at_ns_big = time.toNs(opts.at);
-    } else if (opts.in != null) {
-      fire_at_ns_big = time.inToNs(opts.in);
-    }
-    const scheduled = fire_at_ns_big > now_ns;
+      // Resolve the fire time via the shared `time` library: {at}
+      // (absolute — bigint ns | ms | Date | duration | ISO) or {in}
+      // (delay — ms | duration string).
+      const now_ns = BigInt(Date.now()) * 1_000_000n;
+      let fire_at_ns_big = 0n;
+      if (opts.at != null) {
+        fire_at_ns_big = time.toNs(opts.at);
+      } else if (opts.in != null) {
+        fire_at_ns_big = time.inToNs(opts.in);
+      }
+      const scheduled = fire_at_ns_big > now_ns;
 
-    // `maxAttempts` caps the built-in retry loop in
-    // `__system/webhook_onresult`. Default 5 (1 initial fire + 4
-    // retries with exponential backoff capped at 60s). Customers
-    // who want a different policy can set it explicitly; the
-    // `retry.send` wrapper sets `1` to disable the built-in retry
-    // and drive its own customer-side chain.
-    const max_attempts = (opts.maxAttempts != null && opts.maxAttempts >= 1)
-      ? Math.floor(opts.maxAttempts)
-      : 5;
+      // `maxAttempts` caps the built-in retry loop in
+      // `__system/webhook_onresult`. Default 5 (1 initial fire + 4
+      // retries with exponential backoff capped at 60s). Customers
+      // who want a different policy can set it explicitly; the
+      // `retry.send` wrapper sets `1` to disable the built-in retry
+      // and drive its own customer-side chain.
+      const max_attempts = (opts.maxAttempts != null && opts.maxAttempts >= 1)
+        ? Math.floor(opts.maxAttempts)
+        : 5;
 
-    const marker = {
-      url: opts.url,
-      method: opts.method || "POST",
-      body: body,
-      headers: opts.headers || {},
-      attempts: 0,
-      max_attempts: max_attempts,
-      on_result: on_result,
-      context: ctx_val,
-    };
-    if (opts.timeoutMs != null) marker.timeout_ms = Math.floor(opts.timeoutMs);
-
-    // Immediate path: attempt the inline fire FIRST, BEFORE writing the
-    // durable marker / watchdog. The per-tenant outbound rate limit is
-    // enforced at the fetch primitive (bindings/http.zig `outboundRateOk`);
-    // if it throws `rate_limited`, this send must leave NO durable residue
-    // — otherwise the crash-recovery watchdog below would still deliver it,
-    // and a customer who catches `rate_limited` and retries would
-    // double-send. Ordering the fetch ahead of the `kv.set`/`schedule`
-    // writes makes a rejected send atomic (nothing written). The fetch is
-    // buffered as a `Cmd.http_fetch` and released post-commit, so it still
-    // shares the marker's commit gate (docs/architecture/effects-and-handlers.md);
-    // moving it earlier in the handler body doesn't change WHEN it fires,
-    // only that a rate-limit throw pre-empts the writes.
-    //
-    // Phase 4.1.2 (inline fire): the earlier sweep-only path was a
-    // workaround for a marker-commit race, resolved by the Cmd-pattern
-    // commit gate — the worker stages every `http.fetch` from a write-path
-    // handler on the parked unit's `BufferedCmds` and `drainRaftPending`
-    // submits it STRICTLY AFTER raft commits the writeset. Scheduled fires
-    // (`fire_at_ns > now`) go wake-only — the baked `__system/webhook_fire`
-    // issues the fetch when the durable wake fires; the held-sync path
-    // stays correct either way (the 25s mandatory deadline covers both).
-    if (!scheduled) {
-      sysHttp.fetch({
+      const marker = {
         url: opts.url,
         method: opts.method || "POST",
         body: body,
-        headers: Object.assign({}, opts.headers || {}, {
-          "X-Rove-Schedule-Id": id,
-          "X-Rove-Schedule-Version": "1",
-        }),
-        on_chunk: "__system/webhook_onresult",
-        // Held state (docs/architecture/effects-and-handlers.md): stamp the
-        // send_id so the chunk router (Zig) consults
-        // bound_send_owners[id] and routes the callback to the
-        // cont's owning worker (instead of hash(tenant_id), which
-        // may differ from the SO_REUSEPORT-chosen accept worker).
-        // Platform-internal option — customers don't use it
-        // directly.
-        bound_send_id: id,
-        timeout_ms: marker.timeout_ms,
-        ctx: {
-          id: id,
-          on_result: on_result,
-          context: ctx_val,
-        },
-      });
-    }
+        headers: opts.headers || {},
+        attempts: 0,
+        max_attempts: max_attempts,
+        on_result: on_result,
+        context: ctx_val,
+      };
+      if (opts.timeoutMs != null) marker.timeout_ms = Math.floor(opts.timeoutMs);
 
-    kv.set("_send/owed/" + id, JSON.stringify(marker));
+      // Immediate path: attempt the inline fire FIRST, BEFORE writing the
+      // durable marker / watchdog. The per-tenant outbound rate limit is
+      // enforced at the fetch primitive (bindings/http.zig `outboundRateOk`);
+      // if it throws `rate_limited`, this send must leave NO durable residue
+      // — otherwise the crash-recovery watchdog below would still deliver it,
+      // and a customer who catches `rate_limited` and retries would
+      // double-send. Ordering the fetch ahead of the `kv.set`/`schedule`
+      // writes makes a rejected send atomic (nothing written). The fetch is
+      // buffered as a `Cmd.http_fetch` and released post-commit, so it still
+      // shares the marker's commit gate (docs/architecture/effects-and-handlers.md);
+      // moving it earlier in the handler body doesn't change WHEN it fires,
+      // only that a rate-limit throw pre-empts the writes.
+      //
+      // Phase 4.1.2 (inline fire): the earlier sweep-only path was a
+      // workaround for a marker-commit race, resolved by the Cmd-pattern
+      // commit gate — the worker stages every `http.fetch` from a write-path
+      // handler on the parked unit's `BufferedCmds` and `drainRaftPending`
+      // submits it STRICTLY AFTER raft commits the writeset. Scheduled fires
+      // (`fire_at_ns > now`) go wake-only — the baked `__system/webhook_fire`
+      // issues the fetch when the durable wake fires; the held-sync path
+      // stays correct either way (the 25s mandatory deadline covers both).
+      if (!scheduled) {
+        sysHttp.fetch({
+          url: opts.url,
+          method: opts.method || "POST",
+          body: body,
+          headers: Object.assign({}, opts.headers || {}, {
+            "X-Rove-Schedule-Id": id,
+            "X-Rove-Schedule-Version": "1",
+          }),
+          on_chunk: "__system/webhook_onresult",
+          // Held state (docs/architecture/effects-and-handlers.md): stamp the
+          // send_id so the chunk router (Zig) consults
+          // bound_send_owners[id] and routes the callback to the
+          // cont's owning worker (instead of hash(tenant_id), which
+          // may differ from the SO_REUSEPORT-chosen accept worker).
+          // Platform-internal option — customers don't use it
+          // directly.
+          bound_send_id: id,
+          timeout_ms: marker.timeout_ms,
+          ctx: {
+            id: id,
+            on_result: on_result,
+            context: ctx_val,
+          },
+        });
+      }
 
-    // The durable next-fire entry (one per send, idempotency key
-    // `_send/{id}` — re-sends with the same handle MOVE it, mirroring
-    // the marker's last-write-wins). Scheduled: the customer's fire
-    // time. Immediate: the crash-recovery watchdog (onresult cancels
-    // it on the terminal event; a retry re-arm moves it to the
-    // backoff time).
-    if (scheduled) {
-      sysSched({ at: fire_at_ns_big }, "__system/webhook_fire", { id: id }, { key: "_send/" + id });
-    } else {
-      sysSched({ in: WEBHOOK_WATCHDOG_MS }, "__system/webhook_fire", { id: id }, { key: "_send/" + id });
-    }
-    return id;
-  },
-};
+      kv.set("_send/owed/" + id, JSON.stringify(marker));
+
+      // The durable next-fire entry (one per send, idempotency key
+      // `_send/{id}` — re-sends with the same handle MOVE it, mirroring
+      // the marker's last-write-wins). Scheduled: the customer's fire
+      // time. Immediate: the crash-recovery watchdog (onresult cancels
+      // it on the terminal event; a retry re-arm moves it to the
+      // backoff time).
+      if (scheduled) {
+        sysSched({ at: fire_at_ns_big }, "__system/webhook_fire", { id: id }, { key: "_send/" + id });
+      } else {
+        sysSched({ in: WEBHOOK_WATCHDOG_MS }, "__system/webhook_fire", { id: id }, { key: "_send/" + id });
+      }
+      return id;
+    },
+  };
+})();
 
 })();
 // ── src/js/globals/blob.js ──
