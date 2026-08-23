@@ -25,7 +25,9 @@ const WS = "_workspace/";
 // imported so this stays a standalone onHeaders module, incl. in the baked
 // genesis bundle). Same normalization (trim+lowercase) and same membership +
 // legacy-fallback logic, so a team member can upload to a shared tenant.
-function ownsTenant(sub, tenant) {
+// `kv` is threaded rather than ambient: a module-scope helper has no
+// activation to receive it from, so its caller hands it over.
+function ownsTenant(kv, sub, tenant) {
   const hash = crypto.sha256(String(sub).trim().toLowerCase());
   const aid = kv.get("instance/" + tenant + "/owner");
   if (aid !== null) {
@@ -38,7 +40,7 @@ function ownsTenant(sub, tenant) {
 // Returns the authorized actor ({ is_root } / { sub }) for `tenant`, or null
 // after stamping the error response. Root token → operator; else an OIDC
 // session that owns `tenant`.
-function authFor(tenant) {
+function authFor(kv, tenant) {
   // Operator root: the engine-computed verdict. `authorization` is stripped on
   // a platform-bound handler, because a header the handler reads is a header
   // the replay tape records (rove docs/architecture/privileged-surface.md).
@@ -46,19 +48,19 @@ function authFor(tenant) {
   let sess = null;
   try { sess = oidc.rp("default").guard(); } catch (_) { sess = null; }
   if (sess && sess.sub) {
-    if (sess.is_root || ownsTenant(sess.sub, tenant)) return sess;
+    if (sess.is_root || ownsTenant(kv, sess.sub, tenant)) return sess;
     response.status = 403; return null;
   }
   response.status = 401; return null;
 }
 
-export function onHeaders() {
+export function onHeaders({ kv, next, platform }) {
   const q = new URLSearchParams(request.query || "");
   const tenant = q.get("tenant");
   const path = q.get("path");
   const ct = q.get("content_type") || "";
   if (!tenant || !path) { response.status = 400; return "tenant + path required\n"; }
-  if (!authFor(tenant)) return ""; // status already stamped (401/403)
+  if (!authFor(kv, tenant)) return ""; // status already stamped (401/403)
   // Stream the body → target's file-blobs; onStored records the entry.
   platform.scope(tenant).blob.receive({
     on: "onStored",
@@ -67,7 +69,7 @@ export function onHeaders() {
   return next();
 }
 
-export function onStored() {
+export function onStored({ platform }) {
   const ctx = request.ctx || {};
   const app = ctx.app || {};
   // blob.receive completion: 2xx = stored, status 0 = failed (status is

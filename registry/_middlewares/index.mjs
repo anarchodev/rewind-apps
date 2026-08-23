@@ -29,11 +29,11 @@
 // Bearer grants nothing and publish stays OIDC-only. This is also the general
 // operator/CI publish path once genesis exists.
 
-export function before() {
-    const auth = guardSession();
+export function before({ kv }) {
+    const auth = guardSession(kv);
     if (auth) { request.auth = auth; return; } // { sub, is_root }
 
-    const op = operatorAuth();
+    const op = operatorAuth(kv);
     if (op) request.auth = op;
     // else fall through unauthenticated → routeAuthz gates the one publish route
 }
@@ -45,7 +45,9 @@ export function before() {
 // here (mirrors OIDCRelyingParty.guard: the default, only, session path is
 // `_rp/sess/{sid}`; a valid unexpired row yields {sub, is_root}). The operator
 // token path below handles genesis + CI publish without any OIDC at all.
-function guardSession() {
+// `kv` is threaded rather than ambient: a module-scope helper has no
+// activation to receive it from, so its caller hands it over.
+function guardSession(kv) {
     const sid = request.session && request.session.id;
     if (!sid) return null;
     const raw = kv.get("_rp/sess/" + sid);
@@ -58,7 +60,7 @@ function guardSession() {
 
 // Resolve the operator Bearer against the seeded hash. Returns an is_root auth
 // object or null. Cheap: only touches kv when a Bearer is actually presented.
-function operatorAuth() {
+function operatorAuth(kv) {
     const token = bearerToken();
     if (!token) return null;
     const seeded = kv.get("_optoken/publish_sha256");

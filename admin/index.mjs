@@ -11,7 +11,7 @@ function validId(id) {
 
 // Operator sees every tenant; a customer sees only the tenants of the accounts
 // they belong to (was: ALL tenants leaked to any authenticated session).
-export function listInstance() {
+export function listInstance({ platform }) {
     const a = request.auth || {};
     if (a.is_root) {
         const entries = platform.root.prefix("instance/", "", 1000);
@@ -71,7 +71,7 @@ export function deleteInstance(id, confirm) {
 // The CP's answer to `deleteInstance`. Ownership rows are cleared HERE — only
 // once the tenant is actually gone — so a refused delete leaves the account
 // exactly as it was.
-export function onDeprovisioned() {
+export function onDeprovisioned({ kv }) {
     const ctx = request.ctx || {};
     const id = ctx.name;
     if (!id) return jsonError(500, "delete continuation lost its context");
@@ -104,7 +104,7 @@ export function onDeprovisioned() {
     return null;
 }
 
-export function listDomain() {
+export function listDomain({ platform }) {
     const entries = platform.root.prefix("domain/", "", 1000);
     return {
         domains: entries.map((e) => ({
@@ -784,7 +784,7 @@ function stripeHopFailed(label) {
 
 // Customer created → chain the incomplete subscription. NO kv writes here:
 // a write in this hop would drop the platform call it issues (rove#344).
-export function onBillingCustomer() {
+export function onBillingCustomer({ kv, next }) {
     const failed = stripeHopFailed("stripe customer create");
     if (failed) return failed;
     const ctx = request.ctx || {};
@@ -798,7 +798,7 @@ export function onBillingCustomer() {
 // Terminal hop: the incomplete subscription exists. Write everything —
 // the rove#308 link rows (only now, never earlier in the chain), the
 // subscription rows — and hand the browser the payment intent secret.
-export function onBillingSubscription() {
+export function onBillingSubscription({ kv }) {
     const failed = stripeHopFailed("stripe subscription create");
     if (failed) return failed;
     const ctx = request.ctx || {};
@@ -1276,7 +1276,7 @@ export function deleteTeamAccount(aid, confirm) {
 // The job's single driver — a durable_wake continuation (middleware does
 // not run; request.auth is absent by design). Everything it needs lives in
 // the marker; every branch is idempotent under at-least-once firing.
-export function acctdelWake() {
+export function acctdelWake({ kv, webhook }) {
     const ctx = request.ctx || {};
     const aid = ctx.aid;
     if (typeof aid !== "string" || !aid) return { ok: true };
@@ -1485,7 +1485,7 @@ function acctdelFinish(aid, m) {
 // fires ONCE, delivered or given-up after the retry budget). Dispatched
 // through `acctdel_result.mjs` (webhook.send's `on` runs a module's
 // default export); exported so that door can delegate here.
-export function onAcctdelCpDelete() {
+export function onAcctdelCpDelete({ kv }) {
     const ctx = request.ctx || {};
     const aid = ctx.aid;
     const t = ctx.tenant;
@@ -1520,7 +1520,7 @@ export function onAcctdelCpDelete() {
 // ── Deletion ops surface (root-only) ────────────────────────────────
 // A `failed` deletion freezes the account and waits for a human; these
 // two verbs are how the human sees it and resumes it.
-export function listDeletions() {
+export function listDeletions({ kv }) {
     const rows = kv.prefix(ACCTDEL, "", 1000);
     const out = [];
     for (const e of rows) {
@@ -1618,7 +1618,7 @@ export function provisionInstance(name, account) {
 // `request.auth` is absent (middleware does not re-run) — everything this needs
 // was decided before the fetch and travels in `request.ctx`, which the engine
 // carries and a client cannot touch.
-export function onProvisioned() {
+export function onProvisioned({ kv, platform }) {
     const ctx = request.ctx || {};
     const name = ctx.name;
     const aid = ctx.account;
@@ -1930,7 +1930,7 @@ function handleWsPkgFile(body) {
     return next();
 }
 
-export function onPkgTryCompiled() {
+export function onPkgTryCompiled({ platform }) {
     const ctx = request.ctx;
     const app = (ctx && ctx.app) || {};
     if (ctx && ctx.ok) {
@@ -1966,7 +1966,7 @@ export function onPkgTryCompiled() {
 }
 
 // compile bound-resume (continuation — skips _middlewares) → record the entry.
-export function onFileStaged() {
+export function onFileStaged({ platform }) {
     const ctx = request.ctx;
     if (!ctx || !ctx.ok) {
         response.status = 500;
@@ -2009,7 +2009,7 @@ function handleWsRef(body) {
 // blob.get resume (flat ctx — blob.get passes the caller ctx through,
 // unlike stage/compile which nest it under `.app`): 2xx = the blob exists →
 // record the workspace row, mirroring the shape v1/upload's onStored writes.
-export function onRefVerified() {
+export function onRefVerified({ platform }) {
     const app = request.ctx || {};
     if (!(request.status >= 200 && request.status < 300)) {
         response.status = 404;
@@ -2342,7 +2342,7 @@ function handleReadSources(tenant, depArg) {
 // Read-door continuation: the manifest JSON arrives on request.body. Parse it,
 // then kick off the sequential handler-source reads (or finish if there are
 // none).
-export function onManifest() {
+export function onManifest({ next, platform }) {
     const ctx = request.ctx || {};
     if (!(request.status >= 200 && request.status < 300)) {
         response.headers = { "content-type": "application/json" };
@@ -2393,7 +2393,7 @@ export function onManifest() {
 // Read-door continuation: one handler's source bytes arrive on request.body.
 // Accumulate, then either read the next handler or move on to the package
 // files.
-export function onModuleSource() {
+export function onModuleSource({ next, platform }) {
     const ctx = request.ctx || {};
     const handlers = (ctx.entries || []).filter((e) => e.kind === "handler");
     const ok = request.status >= 200 && request.status < 300;
@@ -2427,7 +2427,7 @@ function startPkgSources(ctx, handlerAcc) {
 }
 
 // Read-door continuation: one package file's source bytes arrive.
-export function onPkgSource() {
+export function onPkgSource({ next, platform }) {
     const ctx = request.ctx || {};
     const files = (ctx.pkgs || []).flatMap((p) => p.files);
     // `status` is the single result signal (handler-shape.md — no request.ok).
@@ -2525,7 +2525,7 @@ function handleReadSource(tenant, depArg, qs) {
 
 // Read-door continuation: locate the requested entry in the manifest, gate
 // on textiness, then read its blob.
-export function onSourceFileManifest() {
+export function onSourceFileManifest({ next, platform }) {
     const ctx = request.ctx || {};
     if (!(request.status >= 200 && request.status < 300)) {
         response.headers = { "content-type": "application/json" };
