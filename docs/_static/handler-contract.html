@@ -51,10 +51,11 @@
 <h3 id="1-1-capabilities-how-a-handler-reaches-its-effects">1.1 Capabilities — how a handler reaches its effects</h3>
 <p><strong>Every export the platform invokes receives one argument: the activation.</strong> Destructure what you need.</p>
 <p>The same names are also still bound as globals, so the ambient spellings in the examples further down keep working — that is the migration, not the contract. Write new code against the parameter: the globals go away, and when they do, a capability you were not handed is simply not there.</p>
-<pre><code>export default async ({ request, response, kv, http }) =&gt; {
+<pre><code>export default async ({ request, response, kv, webhook }) =&gt; {
   const v = kv.get("k");
   response.status = 201;
-  return http.send("https://api.example/x", v);
+  webhook.send("https://api.example/x", { body: v });
+  return { ok: true };
 };</code></pre>
 <p>This holds for every platform-invoked export — the default, each <code>on…</code> variant, a resume target named by <code>{on: …}</code>, and <code>_middlewares</code>' <code>before</code>. It does <strong>not</strong> hold for exports your own JS calls, like the <code>rpc</code> recipe in §3.1: the platform passes those nothing, so they keep whatever signature you gave them.</p>
 <p><strong>What arrives, and what stays ambient.</strong> The rule is reach, not convenience: a name that can touch tenant data, the network, another activation or a durable record is a capability and arrives as a parameter. Pure computation and web-platform standards stay global.</p>
@@ -88,7 +89,9 @@ export default function (a) {                 // named, because forwarding to
 }</code></pre>
 <p>The dispatcher is the one place that names the whole activation instead of destructuring it. That is its job, and it is the trust root.</p>
 <p><strong>A package receives capabilities the same way</strong>, which is the point: promoting a module to a package is a move, not a rewrite.</p>
-<pre><code>export function charge({ http }, amount) { … }
+<pre><code>export function charge({ http }, amount) {
+  return http.fetch("https://api.stripe.com/v1/charges", { method: "POST" });
+}
 
 // at the call site, narrow before you delegate
 charge({ http: http.to("api.stripe.com") }, amount);</code></pre>
