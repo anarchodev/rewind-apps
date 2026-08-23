@@ -3770,5 +3770,6 @@ globalThis.blob = {
 ;// Zig constant the worker and the native replay driver build from,
 ;// so the browser arena cannot drift from either.
 globalThis.__CAPS = ["after", "blob", "http", "kv", "next", "platform", "stream", "webhook"];
+globalThis.__REQ_FX = ["tag", "unmaskedIp", "shredKey"];
 
 ;delete globalThis._system;

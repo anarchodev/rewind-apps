@@ -897,6 +897,11 @@ export function buildRequestEpilogue({ record = {}, requestReads = null, bodyByt
         "  for (const __k of (globalThis.__CAPS || [])) if (__k in globalThis) __act[__k] = globalThis[__k];\n" +
         "  __act.request = request;\n" +
         "  __act.response = globalThis.response;\n" +
+        // The three effects that hid on `request` (rove package-isolation.md
+        // §3.4) — same function objects; they stay on `request` through the
+        // transition. `__REQ_FX` comes from the prelude, generated from the
+        // same Zig constant the other two engines read.
+        "  for (const __k of (globalThis.__REQ_FX || [])) if (request[__k] !== undefined) __act[__k] = request[__k];\n" +
         "  const ns = __arena_entry_ns();\n" +
         // `_middlewares`' `before` runs FIRST at the trust boundary: it sees
         // globalThis.request/response, may MUTATE the request (request.auth
