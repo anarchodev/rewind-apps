@@ -1728,6 +1728,13 @@
   const sys = _system.platform;
   // `after.fetch` native (captured before `_harden.js` deletes `_system`) —
   // `platform.compile` lowers to a bound fetch to a trusted compile door.
+  // `_dispatch/owed/{id}` record version (`format-versioning.md` §1f).
+  // Read by `__system/dispatch_fire`; `__system/dispatch_result` keys on
+  // the marker's PRESENCE, not its contents, so it needs no version of
+  // its own. Declared per file — see
+  // `scripts/ops/record_version_lint.py`.
+  const DISPATCH_OWED_V = 1;
+
   const sysOn = _system.after;
   // `blob.receive` native — `platform.scope(t).blob.receive` lowers to a
   // cross-tenant streamed upload (extra target + ctx args, admin-gated).
@@ -2154,6 +2161,7 @@
 
       const id = crypto.randomUUID();
       const marker = {
+        v: DISPATCH_OWED_V,
         tenant: tenant,
         module: module,
         ctx: opts.ctx === undefined ? null : opts.ctx,
@@ -2693,6 +2701,15 @@ globalThis.time = {
   const SCHED_MAX_OUTSTANDING = 10_000;
   const SCHED_MAX_MSG_BYTES = 16 * 1024;
 
+  // `_sched/by_id/{id}` record version (`format-versioning.md` §1f).
+  // The shape is written from every module that arms a wake, so the
+  // field is what stops one of them shipping a new shape that another
+  // reads at the old one. An unknown `v` is treated exactly like an
+  // unparseable record: this is a shim-writable namespace, so a value
+  // this reader does not understand is as likely a customer's write as
+  // an engine skew, and dropping the entry answers both.
+  const SCHED_REC_V = 1;
+
   const BY_ID_PREFIX = "_sched/by_id/";
   const BY_TIME_PREFIX = "_sched/by_time/";
 
@@ -2792,7 +2809,7 @@ globalThis.time = {
       _enforceOutstandingCap();
     }
 
-    const record = { when_ns: String(rounded), target: target, msg: payload };
+    const record = { v: SCHED_REC_V, when_ns: String(rounded), target: target, msg: payload };
     if (key !== null) record.key = key;
     // Provenance: the saga arming this entry. The FIRE roots its own
     // saga (crossing the durability boundary starts a new saga —
@@ -2880,9 +2897,11 @@ globalThis.time = {
       if (raw === null) return false;
       try {
         const rec = JSON.parse(raw);
+        if (rec.v !== SCHED_REC_V) throw new Error("version");
         kv.delete(_byTimeKey(BigInt(rec.when_ns), id));
       } catch (_e) {
-        // Corrupt record — still drop the by_id entry below. A stale
+        // Corrupt or unknown-version record — still drop the by_id
+        // entry below. A stale
         // by_time index entry self-heals (scheduler_tick deletes an
         // index entry whose by_id is gone).
       }
@@ -2912,6 +2931,9 @@ globalThis.time = {
       } catch (_e) {
         return null;
       }
+      // A record this build cannot read is reported as absent rather
+      // than described from fields it may be misreading.
+      if (rec.v !== SCHED_REC_V) return null;
       return {
         id: id,
         whenNs: BigInt(rec.when_ns),
@@ -3027,6 +3049,16 @@ globalThis.time = {
   // Crash-recovery watchdog distance for the immediate-fire path: one
   // attempt timeout (the fetch binding's 30 s cap) + grace. Mirrored in
   // `__system/webhook_fire.mjs` (its per-attempt re-arm) — keep in sync.
+  // `_send/owed/{id}` record version (`format-versioning.md` §1f).
+  // Read by `__system/webhook_fire` and `__system/webhook_onresult`,
+  // which ship in the worker binary while this shim ships in the
+  // tenant's deployment — the two can be from different builds, and
+  // the marker is the only thing that crosses between them. Declared
+  // per file because there is no import path between a global, a baked
+  // module and a package; `scripts/ops/record_version_lint.py` is what
+  // keeps the copies in step.
+  const SEND_OWED_V = 1;
+
   const WEBHOOK_WATCHDOG_MS = 40_000;
 
   /**
@@ -3178,6 +3210,8 @@ globalThis.time = {
         : 5;
 
       const marker = {
+        // `_send/owed/{id}` record version (`format-versioning.md`
+        v: SEND_OWED_V,
         url: opts.url,
         method: opts.method || "POST",
         body: body,
@@ -3295,6 +3329,12 @@ function _rejectRenamedBlob(verb, opts) {
   }
 }
 
+// `_blob/owed/{hash}` record version (`format-versioning.md` §1f).
+// Read by `__system/blob_onresult`, which ships in the worker binary
+// while this shim ships in the tenant's deployment. Declared per file —
+// see `scripts/ops/record_version_lint.py` for why the copies exist.
+const BLOB_OWED_V = 1;
+
 const BLOB_ORIGIN = "http://rove-blob.internal/";
 const COMPOSE_ORIGIN = "http://rove-compose.internal/";
 const HASH_RE = /^[0-9a-f]{64}$/;
@@ -3405,6 +3445,7 @@ globalThis.blob = {
     const context = opts.ctx !== undefined ? opts.ctx : null;
 
     const marker = {
+      v: BLOB_OWED_V,
       hash: hash,
       content_type: opts.contentType || null,
       attempts: 1,
