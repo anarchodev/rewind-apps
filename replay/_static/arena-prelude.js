@@ -3733,4 +3733,11 @@ globalThis.blob = {
 
 })();
 
+// ── the capability names (rove-reserved CAPABILITY_NAMES) ──
+;// The activation object's members — see
+;// docs/architecture/package-isolation.md. Generated from the same
+;// Zig constant the worker and the native replay driver build from,
+;// so the browser arena cannot drift from either.
+globalThis.__CAPS = ["after", "blob", "http", "kv", "next", "platform", "stream", "webhook"];
+
 ;delete globalThis._system;
