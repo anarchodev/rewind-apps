@@ -932,7 +932,7 @@ export function buildRequestEpilogue({ record = {}, requestReads = null, bodyByt
         "      globalThis.__replay_result = \"_middlewares/index.mjs must export a `before` function\\n\";\n" +
         "      __short = true;\n" +
         "    } else {\n" +
-        "      const __mwr = __rove_mw.before();\n" +
+        "      const __mwr = __rove_mw.before(__act);\n" +
         "      if (__mwr !== undefined && __mwr !== null) { globalThis.__replay_result = __mwr; __short = true; }\n" +
         "    }\n" +
         "  }\n" +
