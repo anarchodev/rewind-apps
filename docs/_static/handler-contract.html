@@ -49,7 +49,8 @@
 </table>
 <p>A module exports the subset of variants it cares about; the runtime introspects exports at load (§6) and dispatches each activation to its matching export. The default export handles inbound HTTP — the 80%+ case; everything else is opt-in via additional named exports.</p>
 <h3 id="1-1-capabilities-how-a-handler-reaches-its-effects">1.1 Capabilities — how a handler reaches its effects</h3>
-<p><strong>Every export the platform invokes receives one argument: the activation.</strong> Destructure what you need; nothing else is in scope.</p>
+<p><strong>Every export the platform invokes receives one argument: the activation.</strong> Destructure what you need.</p>
+<p>The same names are also still bound as globals, so the ambient spellings in the examples further down keep working — that is the migration, not the contract. Write new code against the parameter: the globals go away, and when they do, a capability you were not handed is simply not there.</p>
 <pre><code>export default async ({ request, response, kv, http }) =&gt; {
   const v = kv.get("k");
   response.status = 201;
