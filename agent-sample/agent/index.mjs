@@ -35,7 +35,7 @@ const DESTRUCTIVE_RE =
 const MAX_TRANSCRIPT = 24; // bound kv growth (see trim())
 
 // ── Activation: one inbound WS frame from the page ──────────────────
-export function onMessage() {
+export function onMessage({ kv, next }) {
   const frame = browser.message();
   const ctx = request.ctx || {};
   if (!frame) return next(ctx);
@@ -246,7 +246,7 @@ function callLLM(sid, userTurn, parkCtx) {
 }
 
 // ── Activation: the LLM responded ───────────────────────────────────
-export function onLLM() {
+export function onLLM({ next }) {
   const ctx = request.ctx || {};
   const sid = ctx.sid;
   // Bound-fetch surface (handler-shape §7): the response bytes ride
