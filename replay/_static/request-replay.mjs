@@ -882,6 +882,21 @@ export function buildRequestEpilogue({ record = {}, requestReads = null, bodyByt
         "  }\n" +
         "  globalThis.request = request;\n" +
         "  globalThis.response = { status: 200, headers: {}, cookies: [] };\n" +
+        // The activation object — the single argument every export receives
+        // (rove docs/architecture/package-isolation.md). Built HERE, before
+        // middleware, because that is where the worker builds it
+        // (globals.installRequest runs ahead of module_execution.runMiddleware);
+        // `request`/`response` are the same objects the globals name, so a
+        // middleware that mutates `request` is seen through either spelling.
+        // `__CAPS` comes from the prelude, generated from rove-reserved's
+        // CAPABILITY_NAMES — the same constant the worker and the native
+        // replay driver build from, so this mirror cannot drift from them on
+        // the one thing it would be silent about. Names absent from this
+        // arena are skipped rather than set undefined.
+        "  const __act = {};\n" +
+        "  for (const __k of (globalThis.__CAPS || [])) if (__k in globalThis) __act[__k] = globalThis[__k];\n" +
+        "  __act.request = request;\n" +
+        "  __act.response = globalThis.response;\n" +
         "  const ns = __arena_entry_ns();\n" +
         // `_middlewares`' `before` runs FIRST at the trust boundary: it sees
         // globalThis.request/response, may MUTATE the request (request.auth
@@ -925,11 +940,11 @@ export function buildRequestEpilogue({ record = {}, requestReads = null, bodyByt
         "  if (!__short) {\n" +
         "    const __fn = ns[D.fn];\n" +
         "    if (typeof __fn === \"function\") {\n" +
-        "      globalThis.__replay_result = __fn();\n" +
+        "      globalThis.__replay_result = __fn(__act);\n" +
         "    } else if (D.kind === \"disconnect\") {\n" +
         "      /* prod: optional cleanup, no response */\n" +
         "    } else if ((D.kind === \"inbound_headers\" || D.kind === \"inbound_chunk\") && typeof ns[\"default\"] === \"function\") {\n" +
-        "      globalThis.__replay_result = ns[\"default\"]();\n" +
+        "      globalThis.__replay_result = ns[\"default\"](__act);\n" +
         "    } else {\n" +
         "      globalThis.response = { status: 404, headers: {}, cookies: [] };\n" +
         "      globalThis.__replay_result = 'module export \"' + D.fn + '\" not found or not a function\\n';\n" +
