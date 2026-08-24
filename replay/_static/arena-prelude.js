@@ -509,6 +509,26 @@
       maxTotalBytes: (o && o.max_total_response_bytes != null) ? o.max_total_response_bytes : 52428800 });
     return id;
   };
+  // Record-format versions for the shim-owned `_`-namespaces
+  // (docs/architecture/format-versioning.md §1f). The worker installs these
+  // natively from `RecordVersions` in src/js/globals.zig; the offline
+  // runtimes have no native bindings, so the same numbers are declared here.
+  //
+  // These two declarations are pinned to each other by
+  // `test "record versions agree with the offline recorders"` in globals.zig,
+  // which parses THIS file. Change one side and that test fails — which is
+  // the point, because the shims and baked modules that read this write
+  // records the worker later has to read.
+  globalThis.__rove = globalThis.__rove || {};
+  globalThis.__rove.formats = {
+    sched: 1,
+    sendOwed: 1,
+    blobOwed: 1,
+    dispatchOwed: 1,
+    segIdx: 1,
+    exportRec: 1,
+  };
+
   globalThis._system = {
     // The park/continue native (`next.js` captures this at base-eval).
     // Mirrors the worker's disposition: target "" = same-module;
@@ -1731,9 +1751,8 @@
   // `_dispatch/owed/{id}` record version (`format-versioning.md` §1f).
   // Read by `__system/dispatch_fire`; `__system/dispatch_result` keys on
   // the marker's PRESENCE, not its contents, so it needs no version of
-  // its own. Declared per file — see
-  // `scripts/ops/record_version_lint.py`.
-  const DISPATCH_OWED_V = 1;
+  // its own.
+  const DISPATCH_OWED_V = __rove.formats.dispatchOwed;
 
   const sysOn = _system.after;
   // `blob.receive` native — `platform.scope(t).blob.receive` lowers to a
@@ -2708,7 +2727,7 @@ globalThis.time = {
   // unparseable record: this is a shim-writable namespace, so a value
   // this reader does not understand is as likely a customer's write as
   // an engine skew, and dropping the entry answers both.
-  const SCHED_REC_V = 1;
+  const SCHED_REC_V = __rove.formats.sched;
 
   const BY_ID_PREFIX = "_sched/by_id/";
   const BY_TIME_PREFIX = "_sched/by_time/";
@@ -3053,11 +3072,8 @@ globalThis.time = {
   // Read by `__system/webhook_fire` and `__system/webhook_onresult`,
   // which ship in the worker binary while this shim ships in the
   // tenant's deployment — the two can be from different builds, and
-  // the marker is the only thing that crosses between them. Declared
-  // per file because there is no import path between a global, a baked
-  // module and a package; `scripts/ops/record_version_lint.py` is what
-  // keeps the copies in step.
-  const SEND_OWED_V = 1;
+  // the marker is the only thing that crosses between them.
+  const SEND_OWED_V = __rove.formats.sendOwed;
 
   const WEBHOOK_WATCHDOG_MS = 40_000;
 
@@ -3331,9 +3347,8 @@ function _rejectRenamedBlob(verb, opts) {
 
 // `_blob/owed/{hash}` record version (`format-versioning.md` §1f).
 // Read by `__system/blob_onresult`, which ships in the worker binary
-// while this shim ships in the tenant's deployment. Declared per file —
-// see `scripts/ops/record_version_lint.py` for why the copies exist.
-const BLOB_OWED_V = 1;
+// while this shim ships in the tenant's deployment.
+const BLOB_OWED_V = __rove.formats.blobOwed;
 
 const BLOB_ORIGIN = "http://rove-blob.internal/";
 const COMPOSE_ORIGIN = "http://rove-compose.internal/";
