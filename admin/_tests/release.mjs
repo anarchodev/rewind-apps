@@ -21,7 +21,11 @@ const RP_CONFIG = {
 };
 const FAR = 4102444800000; // 2100-01-01 in ms — well past the scenario clock
 
-const sess = (sub, is_root) => JSON.stringify({ sub, is_root, exp: FAR });
+// The RP session record as `@rewind/oidc` writes it. `v` is REQUIRED: the
+// shim refuses a record whose version it does not implement, and it refuses
+// an ABSENT version the same way — a seed without it reads as no session at
+// all, and `guard()` deletes the row on its way to returning null.
+const sess = (sub, is_root) => JSON.stringify({ v: 1, sub, is_root, exp: FAR });
 
 // An operator session: is_root bypasses the tenant-ownership gate, so the run
 // exercises the dep_id logic itself rather than authz.

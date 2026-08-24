@@ -22,7 +22,11 @@ const j = JSON.stringify;
 const alice = "alice@x.com", bob = "bob@x.com", ops = "ops@rewindjs.com";
 const A = uh(alice), B = uh(bob);
 const TEAM = "team1";
-const sess = (sub, is_root) => j({ sub, is_root, exp: FAR });
+// The RP session record as `@rewind/oidc` writes it. `v` is REQUIRED: the
+// shim refuses a record whose version it does not implement, and it refuses
+// an ABSENT version the same way — a seed without it reads as no session at
+// all, and `guard()` deletes the row on its way to returning null.
+const sess = (sub, is_root) => j({ v: 1, sub, is_root, exp: FAR });
 
 // alice: personal account owning app1+app2 with a live subscription; also
 // SOLE owner of team1 (which blocks deletion until transferred/deleted).
@@ -244,7 +248,9 @@ const idpAt = (step) => ({ [DEL + A]: marker({ phase: "idp", idp_step: step, idp
 // Step 0: alice's dashboard session dies; bob's survives.
 const w0 = mk(idpAt(0)).wake({ on: "index.mjs.acctdelWake", ctx: { aid: A }, key: DEL + A });
 expect(w0.kv("_rp/sess/al")).toBe(null);
-expect(w0.kv("_rp/sess/bo")).toEqual({ sub: bob, is_root: false, exp: FAR });
+// The record round-trips WITH its version — this assertion is the one place
+// the stored shape is pinned, so it is what catches a stamp going missing.
+expect(w0.kv("_rp/sess/bo")).toEqual({ v: 1, sub: bob, is_root: false, exp: FAR });
 expect(w0.kv(DEL + A).idp_step).toBe(1);
 expect(w0).toHaveScheduled("index.mjs.acctdelWake"); // continues immediately
 // Step 1: __auth__ sessions — alice's swept by sub match, bob's kept.

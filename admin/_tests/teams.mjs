@@ -24,7 +24,11 @@ const A = uh(alice), B = uh(bob), C = uh(carol);
 const TEAM = "team1";
 const INV = "inv-secret", INV_OLD = "inv-expired";
 
-const sess = (sub, is_root) => j({ sub, is_root, exp: FAR });
+// The RP session record as `@rewind/oidc` writes it. `v` is REQUIRED: the
+// shim refuses a record whose version it does not implement, and it refuses
+// an ABSENT version the same way — a seed without it reads as no session at
+// all, and `guard()` deletes the row on its way to returning null.
+const sess = (sub, is_root) => j({ v: 1, sub, is_root, exp: FAR });
 
 // team1: alice owner, bob member; plus a pending + an expired invite for carol,
 // and alice's personal account (aid === her hash).

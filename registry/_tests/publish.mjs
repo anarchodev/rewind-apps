@@ -19,7 +19,11 @@ const RP = {
 const FAR = 4102444800000;
 const j = JSON.stringify;
 const HOST = "registry.rewindjs.com";
-const sess = (sub, is_root) => j({ sub, is_root, exp: FAR });
+// The RP session record as `@rewind/oidc` writes it. `v` is REQUIRED: the
+// shim refuses a record whose version it does not implement, and it refuses
+// an ABSENT version the same way — a seed without it reads as no session at
+// all, and `guard()` deletes the row on its way to returning null.
+const sess = (sub, is_root) => j({ v: 1, sub, is_root, exp: FAR });
 
 // ── independent JCS pkg_hash reimplementation (the contract cross-check) ──
 const H = (s) => crypto.sha256(s);
