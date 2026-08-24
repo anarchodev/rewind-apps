@@ -298,25 +298,30 @@ function parseQuery(qs) {
 }
 
 // ── storage accessors (the impure snapshot providers resolve() consumes) ──
+// The one read every JSON-valued row goes through: absent or unparseable both
+// answer `fallback`, so no caller repeats the try/catch and there is a single
+// place to receive `kv` from the activation when the ambient surface retires
+// (docs/architecture/package-isolation.md §3.2).
+function readJson(key, fallback) {
+    const raw = kv.get(key);
+    if (raw == null) return fallback;
+    try {
+        const v = JSON.parse(raw);
+        return v == null ? fallback : v;
+    } catch (_) { return fallback; }
+}
 function readIndex(spec) {
-    const raw = kv.get("pkg/idx/" + spec);
-    if (raw == null) return [];
-    try { return JSON.parse(raw) || []; } catch (_) { return []; }
+    return readJson("pkg/idx/" + spec, []);
 }
 function readLabels(hash) {
-    const raw = kv.get("pkg/lbl/" + hash);
-    if (raw == null) return [];
-    try { return JSON.parse(raw) || []; } catch (_) { return []; }
+    return readJson("pkg/lbl/" + hash, []);
 }
 // The content record, with its CANONICAL label (first published) spliced on so
 // callers that need a name for a bare hash have a STABLE one. Deriving the name
 // from the label list rather than storing it in the record is what lets several
 // versions name one content identity without one publish overwriting another's.
 function readRecordByHash(hash) {
-    const raw = kv.get("pkg/hash/" + hash);
-    if (raw == null) return null;
-    let rec;
-    try { rec = JSON.parse(raw); } catch (_) { return null; }
+    const rec = readJson("pkg/hash/" + hash, null);
     if (!rec) return null;
     const canonical = readLabels(hash)[0] || null;
     rec.spec = canonical ? canonical.spec : null;
@@ -324,9 +329,7 @@ function readRecordByHash(hash) {
     return rec;
 }
 function readRecord(spec, version) {
-    const raw = kv.get("pkg/ver/" + spec + "/" + version);
-    if (raw == null) return null;
-    try { return JSON.parse(raw); } catch (_) { return null; }
+    return readJson("pkg/ver/" + spec + "/" + version, null);
 }
 
 // ── publish (operator-only): source in, gated, immutable ──────────────────
@@ -407,17 +410,19 @@ function publish(body) {
     // the index.
     for (let i = 0; i < files.length; i++) kv.set("pkg/src/" + recFiles[i].source_hash, files[i].source);
     kv.set("pkg/ver/" + spec + "/" + version, JSON.stringify(record));
-    // Write-once. Identical bytes yield an identical record, so re-writing
-    // would be harmless — but skipping it keeps "content is immutable" a
-    // property of the store rather than a coincidence of the encoder.
-    if (kv.get("pkg/hash/" + pkg_hash) == null) {
-        kv.set("pkg/hash/" + pkg_hash, JSON.stringify(content));
-    }
     const labels = readLabels(pkg_hash);
+    // Write-once, gated on the LABEL list because the two rows are written
+    // together — an empty list means this content has never been stored. That
+    // is one read rather than two, and it cannot report the rows as disagreeing
+    // when they cannot. Identical bytes yield an identical record, so
+    // re-writing would be harmless; skipping it keeps "content is immutable" a
+    // property of the store rather than a coincidence of the encoder.
+    if (!labels.length) kv.set("pkg/hash/" + pkg_hash, JSON.stringify(content));
     if (!labels.some((l) => l.spec === spec && l.version === version)) {
         labels.push({ spec: spec, version: version });
         kv.set("pkg/lbl/" + pkg_hash, JSON.stringify(labels));
     }
+
     const idx = readIndex(spec);
     if (!idx.some((e) => e.version === version)) idx.push({ version: version, pkg_hash: pkg_hash });
     kv.set("pkg/idx/" + spec, JSON.stringify(idx));
