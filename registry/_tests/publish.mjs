@@ -21,25 +21,21 @@ const j = JSON.stringify;
 const HOST = "registry.rewindjs.com";
 const sess = (sub, is_root) => j({ sub, is_root, exp: FAR });
 
-// ── independent JCS pkg_hash reimplementation (the contract cross-check) ──
+// ── independent merkle pkg_hash reimplementation (the contract cross-check) ──
+// Written from the spec, not lifted from the handler — the point is that a
+// second implementation agrees byte-for-byte. Note it takes NO spec/version:
+// pkg_hash identifies content, and a version is a label naming it.
 const H = (s) => crypto.sha256(s);
-function canon(v) {
-  if (v === null) return "null";
-  if (Array.isArray(v)) return "[" + v.map(canon).join(",") + "]";
-  if (typeof v === "object") return "{" + Object.keys(v).sort().map((k) => JSON.stringify(k) + ":" + canon(v[k])).join(",") + "}";
-  if (typeof v === "string") return JSON.stringify(v);
-  return String(v);
-}
-function pkgHash(spec, version, files, imports) {
-  const fs = files.slice().sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0)).map((f) => ({ path: f.path, source_hash: f.source_hash }));
-  const ip = Object.keys(imports || {}).sort().map((k) => [k, imports[k]]);
-  return crypto.sha256(canon({ spec: spec, version: version, files: fs, imports: ip }));
+function pkgHash(files, imports) {
+  const fl = files.map((f) => f.path + " " + f.source_hash).sort();
+  const il = Object.keys(imports || {}).sort().map((k) => k + " " + imports[k]);
+  return crypto.sha256("rewind-pkg-v1\n" + fl.join("\n") + "\n--imports--\n" + il.join("\n"));
 }
 
 // A tiny frozen jwt@1.4.0 record so dep-freezing has something to resolve against.
 const JWT_SRC = "export function verify(t){ return crypto.sha256(t); }";
 const JWT_FILES = [{ path: "index.mjs", source_hash: H(JWT_SRC) }];
-const JWT_HASH = pkgHash("@rewind/jwt", "1.4.0", JWT_FILES, {});
+const JWT_HASH = pkgHash(JWT_FILES, {});
 const JWT_REC = { spec: "@rewind/jwt", version: "1.4.0", pkg_hash: JWT_HASH, files: JWT_FILES, imports: {}, capabilities: ["crypto"], private: false, published_at: 0 };
 
 const BASE = {
@@ -47,7 +43,10 @@ const BASE = {
   "_rp/sess/op": sess("ops@rewindjs.com", true),   // operator
   "_rp/sess/jess": sess("jess@x.com", false),      // non-operator
   "pkg/idx/@rewind/jwt": j([{ version: "1.4.0", pkg_hash: JWT_HASH }]),
-  ["pkg/hash/" + JWT_HASH]: j(JWT_REC),
+  // A real publish leaves three rows: the CONTENT (no spec/version), the LABEL,
+  // and the label list naming that content.
+  ["pkg/hash/" + JWT_HASH]: j({ pkg_hash: JWT_HASH, files: JWT_FILES, imports: {}, capabilities: ["crypto"] }),
+  ["pkg/lbl/" + JWT_HASH]: j([{ spec: "@rewind/jwt", version: "1.4.0" }]),
   "pkg/ver/@rewind/jwt/1.4.0": j(JWT_REC),
 };
 const s = () => scenario({ now: "2026-07-01T00:00:00Z", seed: 1, kv: BASE });
@@ -95,7 +94,7 @@ const SRC = "export function issue(){ return webhook.send({}) || kv.get('x'); }"
 const okBody = { spec: "@rewind/mailer", version: "2.0.0", files: [{ path: "index.mjs", source: SRC }] };
 const ok = pub("op", okBody);
 expect(ok.status).toBe(201);
-const wantHash = pkgHash("@rewind/mailer", "2.0.0", [{ path: "index.mjs", source_hash: H(SRC) }], {});
+const wantHash = pkgHash([{ path: "index.mjs", source_hash: H(SRC) }], {});
 expect(ok.body.pkg_hash).toBe(wantHash);           // byte-for-byte contract cross-check
 expect(ok.body.capabilities).toEqual(["kv", "webhook"]);
 // the version record + hash record + index row + source blob were all written
@@ -117,7 +116,7 @@ expect(pub("op", { spec: "@rewind/oidc", version: "2.3.1", files: [{ path: "i.mj
 // ── immutability: identical re-publish is idempotent; different is a conflict ──
 // seed a record whose hash MATCHES the content we re-publish → 200 idempotent
 const idSrc = "export const x = 1;";
-const idHash = pkgHash("@rewind/frozen", "1.0.0", [{ path: "index.mjs", source_hash: H(idSrc) }], {});
+const idHash = pkgHash([{ path: "index.mjs", source_hash: H(idSrc) }], {});
 const idRec = { spec: "@rewind/frozen", version: "1.0.0", pkg_hash: idHash, files: [{ path: "index.mjs", source_hash: H(idSrc) }], imports: {}, capabilities: [], private: false, published_at: 0 };
 const withFrozen = scenario({
   now: "2026-07-01T00:00:00Z", seed: 1,
@@ -131,3 +130,46 @@ expect(idem.status).toBe(200);
 expect(idem.body.idempotent).toBe(true);
 const conflict = withFrozen.inbound({ method: "POST", path: "/v1/packages", host: HOST, body: { spec: "@rewind/conflict", version: "1.0.0", files: [{ path: "index.mjs", source: idSrc }] }, session: { id: "op" } });
 expect(conflict.status).toBe(409);
+
+// ── a version is a LABEL: identical bytes at a new version keep the pkg_hash ──
+// The case that motivated the merkle. `SEED_VERSION` republishes the whole
+// first-party set on a bump, so most packages are re-published byte-identical
+// at a new number. Their content identity must NOT move — otherwise every
+// importing deployment is re-keyed for a change that did not happen.
+const lblSrc = "export const stable = 1;";
+const lblHash = pkgHash([{ path: "index.mjs", source_hash: H(lblSrc) }], {});
+const v104 = pub("op", { spec: "@rewind/labelled", version: "1.0.4", files: [{ path: "index.mjs", source: lblSrc }] });
+expect(v104.status).toBe(201);
+expect(v104.body.pkg_hash).toBe(lblHash);
+
+// Same bytes, new version number, against a store that already holds 1.0.4.
+const at104 = scenario({
+  now: "2026-07-01T00:00:00Z", seed: 1,
+  kv: Object.assign({}, BASE, {
+    "pkg/ver/@rewind/labelled/1.0.4": j({ spec: "@rewind/labelled", version: "1.0.4", pkg_hash: lblHash, files: [{ path: "index.mjs", source_hash: H(lblSrc) }], imports: {}, capabilities: [], private: false, published_at: 0 }),
+    ["pkg/hash/" + lblHash]: j({ pkg_hash: lblHash, files: [{ path: "index.mjs", source_hash: H(lblSrc) }], imports: {}, capabilities: [] }),
+    ["pkg/lbl/" + lblHash]: j([{ spec: "@rewind/labelled", version: "1.0.4" }]),
+    "pkg/idx/@rewind/labelled": j([{ version: "1.0.4", pkg_hash: lblHash }]),
+  }),
+});
+const v105 = at104.inbound({ method: "POST", path: "/v1/packages", host: HOST, body: { spec: "@rewind/labelled", version: "1.0.5", files: [{ path: "index.mjs", source: lblSrc }] }, session: { id: "op" } });
+expect(v105.status).toBe(201);
+expect(v105.body.pkg_hash).toBe(lblHash);           // the identity did not move
+// Both labels now name that one content identity, in publish order.
+expect(v105.kv("pkg/lbl/" + lblHash)).toEqual([   // kv() auto-parses JSON values
+  { spec: "@rewind/labelled", version: "1.0.4" },
+  { spec: "@rewind/labelled", version: "1.0.5" },
+]);
+// The content row is write-once: the 1.0.5 publish did not overwrite it, and it
+// carries no spec/version to be overwritten WITH.
+const contentRow = v105.kv("pkg/hash/" + lblHash);
+expect(contentRow.spec).toBe(undefined);
+expect(contentRow.version).toBe(undefined);
+expect(contentRow.pkg_hash).toBe(lblHash);
+
+// ── a path that could forge an encoding line is refused ──
+// The merkle is line-oriented, so a newline in a path would let two different
+// packages encode identically. A space is fine — the right-hand field is a
+// fixed-width 64-hex hash, so nothing can absorb it.
+expect(pub("op", { spec: "@rewind/badpath", version: "1.0.0", files: [{ path: "a\nb.mjs", source: "export const x=1;" }] }).status).toBe(400);
+expect(pub("op", { spec: "@rewind/spacepath", version: "1.0.0", files: [{ path: "a b.mjs", source: "export const x=1;" }] }).status).toBe(201);
