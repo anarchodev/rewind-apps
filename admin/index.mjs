@@ -2779,14 +2779,16 @@ const ROUTES = [
     ["GET",    "/v1/cp/:op",                    "self",          (c) => handleCpRead(c.params.op, c.qs)],
 ];
 
+// `request.query` is the raw query STRING; `URLSearchParams` is installed and
+// knows the encoding rules. Hand-rolling it is how `+`, `%2B` and an encoded
+// KEY end up handled three different ways in three handlers (rove#883) — this
+// one decoded the value and left the key raw, so `?a%2Fb=1` keyed on `a%2Fb`.
+//
+// Still returns a plain object: callers read `q.name`, and a repeated parameter
+// keeps its LAST value, which is what the previous behaviour was.
 function parseQuery(qs) {
     const out = {};
-    for (const part of (qs || "").split("&")) {
-        if (!part) continue;
-        const eq = part.indexOf("=");
-        const k = eq === -1 ? part : part.slice(0, eq);
-        out[k] = eq === -1 ? "" : decodeURIComponent(part.slice(eq + 1).replace(/\+/g, "%20"));
-    }
+    for (const [k, v] of new URLSearchParams(qs || "")) out[k] = v;
     return out;
 }
 
