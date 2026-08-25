@@ -24,47 +24,69 @@
 //
 // ── kv layout (this tenant's own home store) ────────────────────────────
 //   pkg/src/{source_hash}        raw source bytes (content-addressed, deduped)
-//   pkg/ver/{spec}/{version}     immutable version record (JSON, see makeRecord)
-//   pkg/hash/{pkg_hash}          same record, keyed by content identity (resolve)
+//   pkg/ver/{spec}/{version}     immutable version record (JSON) — the LABEL:
+//                                spec, version, publisher, published_at, and the
+//                                pkg_hash it names
+//   pkg/hash/{pkg_hash}          CONTENT record: files, imports, capabilities.
+//                                Write-once. Carries no spec/version/publisher —
+//                                many labels may name one content identity, the
+//                                way several tags can name one git object
+//                                (rove decisions.md §11.7)
+//   pkg/lbl/{pkg_hash}           JSON [{spec, version}, ...] — every label naming
+//                                this content, in publish order. [0] is the
+//                                CANONICAL label: stable, so anything deriving an
+//                                identity from it (a lockfile, a dep_id) does not
+//                                move when a later version republishes the same
+//                                bytes
 //   pkg/idx/{spec}               JSON [{version, pkg_hash}, ...] (discovery + resolve)
 // The `spec` (`@rewind/jwt`) contains a '/', which kv keys allow (rove 6513ce0).
 
 // ════════════════════════════════════════════════════════════════════════
 // ==== pkg_hash.mjs (pure) — the canonical package content identity (D2) ====
 // PERMANENT cross-publisher wire contract: independent implementations MUST
-// agree byte-for-byte. Encoding = RFC-8785-style canonical JSON (sorted keys,
-// minified) over SOURCE hashes (never bytecode — identity must be
-// engine-version-independent) plus the frozen dep `imports` (encapsulation).
+// agree byte-for-byte. A MERKLE over content hashes — a hash of hashes, with a
+// fixed line-oriented encoding, so there is no JSON key-ordering, whitespace or
+// string-escaping ambiguity for a second implementation to get subtly wrong.
+// Over SOURCE hashes (never bytecode — identity must be engine-version-
+// independent) plus the frozen dep `imports` (encapsulation).
+//
+// The name and the VERSION are deliberately absent. pkg_hash identifies
+// CONTENT; a version is a label pointing at content, and folding a label in
+// meant a first-party seed bump re-keyed every importing deployment even when
+// every package's bytes were unchanged (rove decisions.md §11.7, the same rule
+// that keeps bytecode and `kind` out of `dep_id`).
+//
 // The engine treats pkg_hash as opaque (rove manifest_json.zig only requires
 // 64 lowercase hex); this formula is ours to own.
 // ════════════════════════════════════════════════════════════════════════
 
-// Canonical JSON: object keys sorted, no whitespace, standard JSON string
-// escaping. Inputs here are only strings/arrays/objects.
-function canonJSON(v) {
-    if (v === null) return "null";
-    if (Array.isArray(v)) return "[" + v.map(canonJSON).join(",") + "]";
-    if (typeof v === "object") {
-        return "{" + Object.keys(v).sort().map(
-            (k) => JSON.stringify(k) + ":" + canonJSON(v[k])
-        ).join(",") + "}";
-    }
-    if (typeof v === "string") return JSON.stringify(v);
-    return String(v);
+// A path that could forge a line break would let two different packages encode
+// identically. The right-hand field is a fixed-width 64-hex hash, so a SPACE in
+// a path is unambiguous (nothing on the right can absorb it) — a NEWLINE is
+// not, so it is refused at publish rather than trusted here.
+function pathBreaksEncoding(path) {
+    return path.indexOf("\n") !== -1 || path.indexOf("\r") !== -1;
 }
 
-// pkg_hash = sha256(canonical-JSON({spec, version, files, imports})) → 64 hex.
-//   files:   [{path, source_hash}]   sorted by path
-//   imports: [[specifier, dep_pkg_hash]]   sorted by specifier
-function computePkgHash(spec, version, files, imports) {
-    const sortedFiles = files.slice()
-        .sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0))
-        .map((f) => ({ path: f.path, source_hash: f.source_hash }));
-    const importPairs = Object.keys(imports || {}).sort()
-        .map((k) => [k, imports[k]]);
-    return crypto.sha256(canonJSON({
-        spec: spec, version: version, files: sortedFiles, imports: importPairs,
-    }));
+// pkg_hash = sha256(
+//   "rewind-pkg-v1\n"
+//   + join("\n", sort(files.map(f => f.path + " " + f.source_hash)))
+//   + "\n--imports--\n"
+//   + join("\n", sort(imports.map(i => i.specifier + " " + i.dep_pkg_hash)))
+// ) → 64 hex.
+//
+// Sorted on the WHOLE LINE, not on the path, so an implementation needs no
+// notion of which half is the key — the encoding is the contract.
+function computePkgHash(files, imports) {
+    const fileLines = files
+        .map((f) => f.path + " " + f.source_hash)
+        .sort();
+    const importLines = Object.keys(imports || {}).sort()
+        .map((k) => k + " " + imports[k]);
+    return crypto.sha256(
+        "rewind-pkg-v1\n" + fileLines.join("\n") +
+        "\n--imports--\n" + importLines.join("\n")
+    );
 }
 
 // ════════════════════════════════════════════════════════════════════════
@@ -276,20 +298,38 @@ function parseQuery(qs) {
 }
 
 // ── storage accessors (the impure snapshot providers resolve() consumes) ──
-function readIndex(spec) {
-    const raw = kv.get("pkg/idx/" + spec);
-    if (raw == null) return [];
-    try { return JSON.parse(raw) || []; } catch (_) { return []; }
+// The one read every JSON-valued row goes through: absent or unparseable both
+// answer `fallback`, so no caller repeats the try/catch and there is a single
+// place to receive `kv` from the activation when the ambient surface retires
+// (docs/architecture/package-isolation.md §3.2).
+function readJson(key, fallback) {
+    const raw = kv.get(key);
+    if (raw == null) return fallback;
+    try {
+        const v = JSON.parse(raw);
+        return v == null ? fallback : v;
+    } catch (_) { return fallback; }
 }
+function readIndex(spec) {
+    return readJson("pkg/idx/" + spec, []);
+}
+function readLabels(hash) {
+    return readJson("pkg/lbl/" + hash, []);
+}
+// The content record, with its CANONICAL label (first published) spliced on so
+// callers that need a name for a bare hash have a STABLE one. Deriving the name
+// from the label list rather than storing it in the record is what lets several
+// versions name one content identity without one publish overwriting another's.
 function readRecordByHash(hash) {
-    const raw = kv.get("pkg/hash/" + hash);
-    if (raw == null) return null;
-    try { return JSON.parse(raw); } catch (_) { return null; }
+    const rec = readJson("pkg/hash/" + hash, null);
+    if (!rec) return null;
+    const canonical = readLabels(hash)[0] || null;
+    rec.spec = canonical ? canonical.spec : null;
+    rec.version = canonical ? canonical.version : null;
+    return rec;
 }
 function readRecord(spec, version) {
-    const raw = kv.get("pkg/ver/" + spec + "/" + version);
-    if (raw == null) return null;
-    try { return JSON.parse(raw); } catch (_) { return null; }
+    return readJson("pkg/ver/" + spec + "/" + version, null);
 }
 
 // ── publish (operator-only): source in, gated, immutable ──────────────────
@@ -307,6 +347,9 @@ function publish(body) {
     for (const f of files) {
         if (typeof f.path !== "string" || typeof f.source !== "string") {
             return jsonError(400, "each file needs {path, source}");
+        }
+        if (pathBreaksEncoding(f.path)) {
+            return jsonError(400, "file path must not contain a newline (it would forge a pkg_hash encoding line)", { path: f.path });
         }
         if (referencesPrivilegedSurface(f.source)) {
             return jsonError(400, "package source must not reference the privileged surface (_system / __rove)", { path: f.path });
@@ -334,7 +377,7 @@ function publish(body) {
     }
     const capabilities = Object.keys(caps).sort();
 
-    const pkg_hash = computePkgHash(spec, version, recFiles, imports);
+    const pkg_hash = computePkgHash(recFiles, imports);
 
     // Immutability: a published spec@version is frozen. Re-publishing identical
     // content is idempotent; different content is a conflict.
@@ -347,18 +390,39 @@ function publish(body) {
         return jsonError(409, "version already published with different content", { pkg_hash: existing.pkg_hash });
     }
 
+    // The LABEL: who published what, under which name, naming a content hash.
     const record = {
         spec: spec, version: version, pkg_hash: pkg_hash,
         files: recFiles, imports: imports, capabilities: capabilities,
         private: false, published_at: Date.now(),
         published_by: (request.auth && request.auth.sub) || null,
     };
+    // The CONTENT: everything derivable from the bytes, and nothing else. No
+    // spec, no version, no publisher — those belong to the label, and folding
+    // them in here is what made a second publish of identical bytes overwrite
+    // the first one's record.
+    const content = {
+        pkg_hash: pkg_hash, files: recFiles,
+        imports: imports, capabilities: capabilities,
+    };
 
-    // Store: source blobs (deduped), the version record (twice-keyed), index.
+    // Store: source blobs (deduped), the label, the content, the label list,
+    // the index.
     for (let i = 0; i < files.length; i++) kv.set("pkg/src/" + recFiles[i].source_hash, files[i].source);
-    const recJson = JSON.stringify(record);
-    kv.set("pkg/ver/" + spec + "/" + version, recJson);
-    kv.set("pkg/hash/" + pkg_hash, recJson);
+    kv.set("pkg/ver/" + spec + "/" + version, JSON.stringify(record));
+    const labels = readLabels(pkg_hash);
+    // Write-once, gated on the LABEL list because the two rows are written
+    // together — an empty list means this content has never been stored. That
+    // is one read rather than two, and it cannot report the rows as disagreeing
+    // when they cannot. Identical bytes yield an identical record, so
+    // re-writing would be harmless; skipping it keeps "content is immutable" a
+    // property of the store rather than a coincidence of the encoder.
+    if (!labels.length) kv.set("pkg/hash/" + pkg_hash, JSON.stringify(content));
+    if (!labels.some((l) => l.spec === spec && l.version === version)) {
+        labels.push({ spec: spec, version: version });
+        kv.set("pkg/lbl/" + pkg_hash, JSON.stringify(labels));
+    }
+
     const idx = readIndex(spec);
     if (!idx.some((e) => e.version === version)) idx.push({ version: version, pkg_hash: pkg_hash });
     kv.set("pkg/idx/" + spec, JSON.stringify(idx));
@@ -394,8 +458,13 @@ function getPackage(spec) {
     const idx = readIndex(spec);
     if (!idx.length) return jsonError(404, "package not found", { spec: spec });
     const versions = idx.map((e) => {
-        const rec = readRecordByHash(e.pkg_hash) || {};
-        return { version: e.version, pkg_hash: e.pkg_hash, capabilities: rec.capabilities || [], published_at: rec.published_at || null };
+        // capabilities are CONTENT (same bytes, same caps); published_at is a
+        // property of this LABEL, so it comes from the version record — reading
+        // it off the content record would report the first publisher's clock
+        // for every later version naming the same bytes.
+        const content = readRecordByHash(e.pkg_hash) || {};
+        const label = readRecord(spec, e.version) || {};
+        return { version: e.version, pkg_hash: e.pkg_hash, capabilities: content.capabilities || [], published_at: label.published_at || null };
     }).sort((a, b) => cmpVer(parseVer(a.version), parseVer(b.version)));
     response.status = 200;
     return { spec: spec, versions: versions, latest: versions[versions.length - 1] || null };
@@ -404,7 +473,16 @@ function getVersion(spec, version) {
     const rec = readRecord(spec, version);
     if (!rec) return jsonError(404, "version not found", { spec: spec, version: version });
     response.status = 200;
-    return rec;
+    // `aliases` is every OTHER label naming the same bytes — a republish at a
+    // new version whose content did not move. This is the read a dashboard
+    // needs to say "this content is also 1.0.5" instead of implying each
+    // version is distinct content. Additive, and read-only: the resolve wire
+    // the CLI consumes is untouched.
+    return Object.assign({}, rec, {
+        aliases: readLabels(rec.pkg_hash).filter(
+            (l) => !(l.spec === spec && l.version === version),
+        ),
+    });
 }
 function getBlob(hash) {
     const src = kv.get("pkg/src/" + hash);

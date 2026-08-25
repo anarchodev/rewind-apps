@@ -5,7 +5,8 @@
 //
 // Writes don't leak between inbounds, so the "already-published" packages are
 // SEEDED into kv (as a real publish would leave them) with content-consistent
-// pkg_hashes computed by the same JCS formula the handler uses.
+// pkg_hashes computed by an independent reimplementation of the merkle
+// formula the handler uses.
 import { scenario, expect } from "rewind:test";
 
 const RP = {
@@ -17,27 +18,26 @@ const RP = {
 const j = JSON.stringify;
 const HOST = "registry.rewindjs.com";
 const H = (s) => crypto.sha256(s);
-function canon(v) {
-  if (v === null) return "null";
-  if (Array.isArray(v)) return "[" + v.map(canon).join(",") + "]";
-  if (typeof v === "object") return "{" + Object.keys(v).sort().map((k) => JSON.stringify(k) + ":" + canon(v[k])).join(",") + "}";
-  if (typeof v === "string") return JSON.stringify(v);
-  return String(v);
-}
-function pkgHash(spec, version, files, imports) {
-  const fs = files.slice().sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0)).map((f) => ({ path: f.path, source_hash: f.source_hash }));
-  const ip = Object.keys(imports || {}).sort().map((k) => [k, imports[k]]);
-  return crypto.sha256(canon({ spec: spec, version: version, files: fs, imports: ip }));
+function pkgHash(files, imports) {
+  const fl = files.map((f) => f.path + " " + f.source_hash).sort();
+  const il = Object.keys(imports || {}).sort().map((k) => k + " " + imports[k]);
+  return crypto.sha256("rewind-pkg-v1\n" + fl.join("\n") + "\n--imports--\n" + il.join("\n"));
 }
 
 // A published package: source blob + version record (twice-keyed) + index row.
 function mk(kv, idxAcc, spec, version, source, imports, caps) {
   const files = [{ path: "index.mjs", source_hash: H(source) }];
-  const ph = pkgHash(spec, version, files, imports || {});
+  const ph = pkgHash(files, imports || {});
+  // The label and the content are separate rows — a real publish leaves both,
+  // plus the label list that names the content (see index.mjs's kv layout).
   const rec = { spec: spec, version: version, pkg_hash: ph, files: files, imports: imports || {}, capabilities: caps || [], private: false, published_at: 0 };
+  const content = { pkg_hash: ph, files: files, imports: imports || {}, capabilities: caps || [] };
   kv["pkg/src/" + H(source)] = source;
   kv["pkg/ver/" + spec + "/" + version] = j(rec);
-  kv["pkg/hash/" + ph] = j(rec);
+  if (kv["pkg/hash/" + ph] == null) kv["pkg/hash/" + ph] = j(content);
+  const lbl = kv["pkg/lbl/" + ph] ? JSON.parse(kv["pkg/lbl/" + ph]) : [];
+  if (!lbl.some((l) => l.spec === spec && l.version === version)) lbl.push({ spec: spec, version: version });
+  kv["pkg/lbl/" + ph] = j(lbl);
   (idxAcc[spec] = idxAcc[spec] || []).push({ version: version, pkg_hash: ph });
   return ph;
 }
