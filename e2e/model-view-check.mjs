@@ -26,11 +26,16 @@ console.log("=== replay: the handler's view of the Model ===");
 
 // ── what the handler can see ──────────────────────────────────────
 {
+    // As the producer records them (RTAP v10): storage-modeling keys are
+    // STORE-spelled, carrying the `_user/` root — and so are the read log
+    // (hooked at the host) and the overlay snapshot. Rendered rows come
+    // back in the handler's spelling; asserting that here is what pins
+    // the pane's normalization.
     const kvEntries = [
-        { op: KV_GET, outcome: 0, key: "cart/1", value: "7" },
-        { op: KV_GET, outcome: 1, key: "cart/2", value: "" },      // absent
-        { op: KV_PREFIX, outcome: 0, key: "items/", results: [
-            { key: "items/a", value: "1" }, { key: "items/b", value: "2" },
+        { op: KV_GET, outcome: 0, key: "_user/cart/1", value: "7" },
+        { op: KV_GET, outcome: 1, key: "_user/cart/2", value: "" },      // absent
+        { op: KV_PREFIX, outcome: 0, key: "_user/items/", results: [
+            { key: "_user/items/a", value: "1" }, { key: "_user/items/b", value: "2" },
         ] },
     ];
 
@@ -39,18 +44,18 @@ console.log("=== replay: the handler's view of the Model ===");
     check("a stop before the first read shows no state",
         eq(foldModelView({ kvEntries, reads: [] }), []));
 
-    const afterOne = foldModelView({ kvEntries, reads: ["cart/1"] });
+    const afterOne = foldModelView({ kvEntries, reads: ["_user/cart/1"] });
     check("a served read appears with the value the handler got",
         afterOne.length === 1 && afterOne[0].key === "cart/1" &&
         afterOne[0].value === "7" && afterOne[0].origin === "read",
         JSON.stringify(afterOne));
 
-    const afterTwo = foldModelView({ kvEntries, reads: ["cart/1", "cart/2"] });
+    const afterTwo = foldModelView({ kvEntries, reads: ["_user/cart/1", "_user/cart/2"] });
     const absent = afterTwo.find((r) => r.key === "cart/2");
     check("a read that found nothing is a fact, not an omission",
         absent && absent.state === "absent" && absent.value === null, JSON.stringify(absent));
 
-    const afterScan = foldModelView({ kvEntries, reads: ["cart/1", "cart/2", "items/"] });
+    const afterScan = foldModelView({ kvEntries, reads: ["_user/cart/1", "_user/cart/2", "_user/items/"] });
     check("a prefix scan contributes every row it returned",
         afterScan.some((r) => r.key === "items/a") && afterScan.some((r) => r.key === "items/b"),
         JSON.stringify(afterScan.map((r) => r.key)));
@@ -59,13 +64,13 @@ console.log("=== replay: the handler's view of the Model ===");
     // too — otherwise the pane shows a stale value the handler could
     // not possibly have read back.
     const shadowed = foldModelView({
-        kvEntries, reads: ["cart/1", "cart/2", "items/"], writes: new Map([["cart/1", "5"]]),
+        kvEntries, reads: ["_user/cart/1", "_user/cart/2", "_user/items/"], writes: new Map([["_user/cart/1", "5"]]),
     });
     const cart1 = shadowed.find((r) => r.key === "cart/1");
     check("a write shadows the read of the same key, and is marked as yours",
         cart1.value === "5" && cart1.origin === "you", JSON.stringify(cart1));
 
-    const deleted = foldModelView({ kvEntries, reads: ["cart/1"], writes: new Map([["cart/1", null]]) });
+    const deleted = foldModelView({ kvEntries, reads: ["_user/cart/1"], writes: new Map([["_user/cart/1", null]]) });
     check("a delete reads as deleted, not as absent-from-view",
         deleted[0].state === "deleted" && deleted[0].origin === "you", JSON.stringify(deleted[0]));
 
@@ -74,7 +79,7 @@ console.log("=== replay: the handler's view of the Model ===");
     // customer's data.
     const noise = foldModelView({
         kvEntries: [], reads: [],
-        writes: new Map([["__rove_store/auth/token", null], ["__replay_output__", "{}"], ["real/k", "v"]]),
+        writes: new Map([["__rove_store/auth/token", null], ["__replay_output__", "{}"], ["_user/real/k", "v"]]),
     });
     check("harness bookkeeping never appears as customer state",
         noise.length === 1 && noise[0].key === "real/k", JSON.stringify(noise));
@@ -98,22 +103,22 @@ console.log("=== replay: the handler's view of the Model ===");
     // The fetch that FOLLOWS it is not claimed — nothing at this stop
     // witnesses it, and inventing a promise the handler has not made is
     // the one error this pane must not make.
-    let c = cutInteractionLog(log, { reads: ["cart/1"], writes: new Map() });
+    let c = cutInteractionLog(log, { reads: ["_user/cart/1"], writes: new Map() });
     check("an effect after the last confirmed point is not claimed to have run",
         c.confident && c.cut === 1, JSON.stringify(c));
 
     // Stop after the first write: the overlay pins it past the read.
-    c = cutInteractionLog(log, { reads: ["cart/1"], writes: new Map([["cart/1", "8"]]) });
+    c = cutInteractionLog(log, { reads: ["_user/cart/1"], writes: new Map([["_user/cart/1", "8"]]) });
     check("a write moves the cut past it — the overlay is the witness",
         c.confident && c.cut === 4, JSON.stringify(c));
 
     // The read-your-write at index 3 consumes no tape entry, so the
     // cursor must NOT be expected to advance for it.
-    c = cutInteractionLog(log, { reads: ["cart/1", "other"], writes: new Map([["cart/1", "8"]]) });
+    c = cutInteractionLog(log, { reads: ["_user/cart/1", "_user/other"], writes: new Map([["_user/cart/1", "8"]]) });
     check("a read served from the handler's own write does not move the cursor",
         c.confident && c.cut === 6, JSON.stringify(c));
 
-    c = cutInteractionLog(log, { reads: ["cart/1", "other"], writes: new Map([["cart/1", "8"], ["done", "1"]]) });
+    c = cutInteractionLog(log, { reads: ["_user/cart/1", "_user/other"], writes: new Map([["_user/cart/1", "8"], ["_user/done", "1"]]) });
     check("the last confirmed prefix wins", c.confident && c.cut === 7, JSON.stringify(c));
 
     // A stop neither signal can pin must SAY so rather than assert a
@@ -140,10 +145,12 @@ console.log("=== replay: the handler's view of the Model ===");
 
     // Durable verbs have no private queue — they ARE kv rows, so the
     // pane surfaces those rows as the promises they are.
+    // Overlay rows arrive store-spelled: the shim writes `_send/owed/…`
+    // through the rooted binding, so the snapshot holds `_user/_send/owed/…`.
     const durable = pendingEffects([], 0, new Map([
-        ["_send/owed/wh_84c1", "{}"],
-        ["_sched/by_id/abc", "{}"],
-        ["ordinary/key", "v"],
+        ["_user/_send/owed/wh_84c1", "{}"],
+        ["_user/_sched/by_id/abc", "{}"],
+        ["_user/ordinary/key", "v"],
     ]));
     check("a durable send shows as a pending effect, from its own row",
         durable.some((e) => e.label === "send owed" && e.detail === "wh_84c1"),
@@ -162,12 +169,12 @@ console.log("=== replay: the handler's view of the Model ===");
     // `|| []` fallback never fires and the fold threw on every render.
     // The pane showed nothing for its entire first life; the tests
     // could not catch it because they hand-built the array.
-    const asArray = [{ op: KV_GET, outcome: 0, key: "k", value: "v" }];
+    const asArray = [{ op: KV_GET, outcome: 0, key: "_user/k", value: "v" }];
     check("the tape is an ARRAY of entries, and the fold takes it as one",
-        foldModelView({ kvEntries: asArray, reads: ["k"] }).length === 1);
+        foldModelView({ kvEntries: asArray, reads: ["_user/k"] }).length === 1);
     // Degrading means: no throw, and the read is reported as
     // unrecorded — never silently rendered as a value or as absent.
-    const degraded = foldModelView({ kvEntries: asArray.entries, reads: ["k"] });
+    const degraded = foldModelView({ kvEntries: asArray.entries, reads: ["_user/k"] });
     check("a non-array tape degrades to 'unrecorded' instead of throwing",
         degraded.length === 1 && degraded[0].state === "unrecorded", JSON.stringify(degraded));
 

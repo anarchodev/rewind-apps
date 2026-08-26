@@ -23,6 +23,8 @@
 // reads never reach the strict tape (see the epilogue's `__rove_store/`
 // seeding). Production has no such keys; they are not customer state
 // and must not appear in a view of it.
+import { namedKvKey } from "./rtap.mjs";
+
 const HARNESS_PREFIX = "__rove_store/";
 // The channel the epilogue parks its outcome on — machinery, not state.
 const OUTPUT_KEY = "__replay_output__";
@@ -69,6 +71,14 @@ export function durableEffectFor(key) {
 export function foldModelView({ kvEntries = [], reads = [], writes = new Map() }) {
     const rows = new Map();
 
+    // Every store-side source here — the tape's storage-modeling keys
+    // (v10), the overlay snapshot, and the read log (hooked at the host,
+    // below the binding) — is STORE-spelled, carrying the user root. The
+    // pane is a presentation surface for the person who named the key, so
+    // everything normalizes to the handler's spelling on ingest
+    // (`namedKvKey`) and the joins below all happen in that one spelling.
+    // Refusal tape entries are named already and pass through unchanged.
+
     // Index the recorded inputs the way the HOST does — by key, first
     // occurrence wins — because that is what a read was actually
     // served.
@@ -77,21 +87,25 @@ export function foldModelView({ kvEntries = [], reads = [], writes = new Map() }
     for (const e of Array.isArray(kvEntries) ? kvEntries : []) {
         if (!e || isInternalKey(e.key)) continue;
         if (e.op === KV_OP_PREFIX) {
-            if (!prefixByKey.has(e.key)) prefixByKey.set(e.key, e);
-        } else if (e.op === KV_OP_GET && !byKey.has(e.key)) {
-            byKey.set(e.key, e);
+            const k = namedKvKey(e.key);
+            if (!prefixByKey.has(k)) prefixByKey.set(k, e);
+        } else if (e.op === KV_OP_GET) {
+            const k = namedKvKey(e.key);
+            if (!byKey.has(k)) byKey.set(k, e);
         }
     }
 
     // Reads first, in the order the handler asked. A prefix scan
     // contributes every row it returned — those are keys it saw.
-    for (const key of Array.isArray(reads) ? reads : []) {
-        if (typeof key !== "string" || isInternalKey(key)) continue;
+    for (const stored of Array.isArray(reads) ? reads : []) {
+        if (typeof stored !== "string" || isInternalKey(stored)) continue;
+        const key = namedKvKey(stored);
         const scan = prefixByKey.get(key);
         if (scan) {
             for (const r of scan.results || []) {
                 if (isInternalKey(r.key)) continue;
-                rows.set(r.key, { key: r.key, value: r.value, origin: "read", state: "ok" });
+                const rk = namedKvKey(r.key);
+                rows.set(rk, { key: rk, value: r.value, origin: "read", state: "ok" });
             }
             continue;
         }
@@ -115,8 +129,8 @@ export function foldModelView({ kvEntries = [], reads = [], writes = new Map() }
             : e.outcome === KV_REFUSED ? "refused"
             : e.outcome === KV_ELIDED ? "elided"
             : "error";
-        rows.set(e.key, {
-            key: e.key,
+        rows.set(key, {
+            key,
             value: state === "ok" ? e.value : null,
             origin: "read",
             state,
@@ -124,8 +138,9 @@ export function foldModelView({ kvEntries = [], reads = [], writes = new Map() }
     }
 
     // Writes shadow reads — the engine's own precedence.
-    for (const [k, v] of writes) {
-        if (isInternalKey(k)) continue;
+    for (const [sk, v] of writes) {
+        if (isInternalKey(sk)) continue;
+        const k = namedKvKey(sk);
         rows.set(k, { key: k, value: v, origin: "you", state: v === null ? "deleted" : "ok" });
     }
 
@@ -203,8 +218,12 @@ export function cutInteractionLog(log = [], { reads = [], writes = new Map(), en
     // mid-run cut below would withhold a trailing effect here and the
     // pane would report 'none queued' for a hop that queued one.
     if (end) return { cut: log.length, confident: true, complete: true };
+    // The log's keys are handler-spelled; the overlay and the read log are
+    // store-spelled. The overlay is compared BY KEY, so it normalizes
+    // (`namedKvKey`); the read log is only ever counted, so its spelling
+    // never meets the log's and it passes through.
     const real = new Map();
-    for (const [k, v] of writes) if (!isInternalKey(k)) real.set(k, v);
+    for (const [k, v] of writes) if (!isInternalKey(k)) real.set(namedKvKey(k), v);
     const readKeys = (Array.isArray(reads) ? reads : []).filter((k) => !isInternalKey(k));
 
     const sim = new Map();
@@ -278,8 +297,9 @@ export function pendingEffects(log = [], cut = 0, writes = new Map()) {
     // The durable verbs decompose into kv rows rather than a private
     // queue, so surface those rows AS the effects they are — the same
     // promise, seen from the Model side.
-    for (const [k, v] of writes) {
-        if (typeof k !== "string" || v === null) continue;
+    for (const [sk, v] of writes) {
+        if (typeof sk !== "string" || v === null) continue;
+        const k = namedKvKey(sk);
         const d = durableEffectFor(k);
         if (d) out.push({ kind: "durable", label: d.label, detail: d.id, key: k });
     }
