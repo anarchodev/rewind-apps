@@ -61,6 +61,18 @@ const setNow = Module.cwrap("arena_set_date_now", null, ["number", "number"]);
 if (init_open(8192, 8192) !== 0) out({ replayed: null, error: "arena_init_open failed" });
 if (eval_base(readFileSync(join(STATIC, "arena-prelude.js"), "utf-8")) !== 0)
   out({ replayed: null, error: "arena_eval_base(prelude) failed" });
+// The config door resolves against the deployment the record ran under —
+// the tape's `_config/{dep:016x}/…` stored keys only match under the same
+// scope. record.deployment_id is "dep_{16 hex}"; the setter is a JS-callable
+// native (`__rove_set_config_scope`, installed by rove_arena_install), so no
+// wasm C export is needed. Base-evaled pre-freeze; one record per process,
+// so the base scope is exact.
+{
+  const depHex = typeof record.deployment_id === "string" && record.deployment_id.startsWith("dep_")
+    ? record.deployment_id.slice(4) : "0";
+  if (eval_base(`__rove_set_config_scope(${JSON.stringify(depHex)})`) !== 0)
+    out({ replayed: null, error: "arena_eval_base(config scope) failed" });
+}
 freeze();
 
 let tapes;
