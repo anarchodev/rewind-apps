@@ -28,14 +28,15 @@ console.log("=== replay: a value the kv budget dropped ===");
 
 // ── the wire: v9 carries the outcome and the elided page's lost bytes ──
 {
-    check("RTAP_VERSION is the version that knows `elided`", RTAP_VERSION === 9, String(RTAP_VERSION));
+    check("RTAP_VERSION is the version that knows `elided`", RTAP_VERSION === 10, String(RTAP_VERSION));
 
+    // Keys as the producer records them (v10): store-spelled.
     const blob = serializeTape(CHANNEL_KV, [
-        { op: KV_GET, outcome: KV_OK, key: "user/jess", value: "{\"n\":1}" },
-        { op: KV_GET, outcome: KV_ELIDED, key: "big/blob", value: "900000" },
+        { op: KV_GET, outcome: KV_OK, key: "_user/user/jess", value: "{\"n\":1}" },
+        { op: KV_GET, outcome: KV_ELIDED, key: "_user/big/blob", value: "900000" },
         // An elided page carries NO rows — all-or-nothing, because a partial
         // page would replay as a complete, shorter one.
-        { op: KV_PREFIX, outcome: KV_ELIDED, key: "feed/", cursor: "", limit: 100, results: [], value: "400000" },
+        { op: KV_PREFIX, outcome: KV_ELIDED, key: "_user/feed/", cursor: "", limit: 100, results: [], value: "400000" },
     ]);
     const { channel, entries } = parseTapeBlob(blob);
     check("kv channel round-trips", channel === CHANNEL_KV && entries.length === 3, `${channel}/${entries.length}`);
@@ -52,10 +53,10 @@ console.log("=== replay: a value the kv budget dropped ===");
 {
     const rows = foldModelView({
         kvEntries: [
-            { op: KV_GET, outcome: KV_OK, key: "cart/1", value: "7" },
-            { op: KV_GET, outcome: KV_ELIDED, key: "big/blob", value: "900000" },
+            { op: KV_GET, outcome: KV_OK, key: "_user/cart/1", value: "7" },
+            { op: KV_GET, outcome: KV_ELIDED, key: "_user/big/blob", value: "900000" },
         ],
-        reads: ["cart/1", "big/blob"],
+        reads: ["_user/cart/1", "_user/big/blob"],
     });
     const byKey = new Map(rows.map((r) => [r.key, r]));
     const cut = byKey.get("big/blob");

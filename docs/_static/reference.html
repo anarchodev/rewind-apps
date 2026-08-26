@@ -35,7 +35,7 @@
   <p class="lede">Every ambient global a handler can reach, generated from the shipped shims' own documentation — the same source whose examples are compiled and executed by the engine's test gate. This page cannot lag the code, because it is the code.</p>
 
 <table>
-<tr><td>Model &amp; state</td><td><a href="#kv"><code>kv</code></a> · <a href="#blob"><code>blob</code></a> · <a href="#segments"><code>segments</code></a></td></tr>
+<tr><td>Model &amp; state</td><td><a href="#kv"><code>kv</code></a> · <a href="#config"><code>config</code></a> · <a href="#blob"><code>blob</code></a> · <a href="#segments"><code>segments</code></a></td></tr>
 <tr><td>Connection &amp; wakes</td><td><a href="#after"><code>after</code></a> · <a href="#next"><code>next</code></a> · <a href="#stream"><code>stream</code></a> · <a href="#http"><code>http</code></a></td></tr>
 <tr><td>Durable effects</td><td><a href="#webhook"><code>webhook</code></a> · <a href="#email"><code>email</code></a> · <a href="#retry"><code>retry</code></a> · <a href="#schedule"><code>schedule</code></a> · <a href="#cron"><code>cron</code></a></td></tr>
 <tr><td>Browser agent</td><td><a href="#browser"><code>browser</code></a></td></tr>
@@ -87,6 +87,17 @@ if (page.length === 0) break;
 all.push(...page);
 cursor = page[page.length - 1].key;
 }</code></pre>
+<h3 id="config"><code>config</code></h3>
+<p>Deploy-time configuration, read-only. A config file deployed at <code>_config/&lt;name&gt;.json</code> is readable here as <code>&lt;name&gt;</code> — and only here: config is not part of the kv keyspace a handler can name.</p><p>Values are scoped to the deployment the activation runs under, so code and its config switch atomically on release — including a rollback, and a deploy that removes a file (the read then returns <code>null</code>).</p>
+<h4 id="config-get"><code>config.get(name)</code></h4>
+<p>Read one config value.</p>
+<table><tr><th>Param</th><th>Type</th><th></th></tr>
+<tr><td><code>name</code></td><td><code>string</code></td><td><p>The config path without the <code>_config/</code> prefix or the <code>.json</code> suffix (e.g. <code>"oauth/google"</code> for a deployed <code>_config/oauth/google.json</code>).</p></td></tr>
+</table>
+<p><b>Returns</b> <code>string|null</code> — The file's bytes as a string — parse JSON yourself — or <code>null</code> if this deployment carries no such config.</p>
+<pre><code>const raw = config.get("oauth/google");
+if (raw === null) { response.status = 500; return "missing config: oauth/google"; }
+const cfg = JSON.parse(raw);</code></pre>
 <h3 id="blob"><code>blob</code></h3>
 <p>Content-addressed tenant object storage.</p><p>Two shapes: one-shot (<code>put</code>/<code>get</code>) for values you hold in hand, and the upload session (<code>receive</code> → <code>write</code> → <code>seal</code>) for large inbound bodies that stream in chunk by chunk. "Seal" = freeze the bytes into an immutable blob and get back its hash (<code>segments.seal</code> is the same metaphor applied to a log tail). <code>blob.write</code> appends INTO an upload session — the opposite direction from <code>stream.write</code>, which emits response bytes OUT over the held connection.</p>
 <h4 id="blob-put"><code>blob.put(bytes, opts?)</code></h4>

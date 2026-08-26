@@ -43,8 +43,10 @@ const KV_OP_GET = 0;
 const KV_OK = 0, KV_NOT_FOUND = 1;
 const tapes = {
     kv: [
-        { op: KV_OP_GET, outcome: KV_OK, key: "cart/1", value: "7" },
-        { op: KV_OP_GET, outcome: KV_NOT_FOUND, key: "cart/missing", value: "" },
+        // STORE-spelled (RTAP v10): the rooted binding asks the host with
+        // the resolved key, so the recorded inputs carry the `_user/` root.
+        { op: KV_OP_GET, outcome: KV_OK, key: "_user/cart/1", value: "7" },
+        { op: KV_OP_GET, outcome: KV_NOT_FOUND, key: "_user/cart/missing", value: "" },
     ],
     module: [],
     request_reads: [],
@@ -123,15 +125,15 @@ check("`.entries` on a tape is Array.prototype.entries, never the data",
 // THE OVERLAY + THE RECORDED READS at end of run.
 const end = mat.endKv;
 check("the end-of-run view carries the writes the handler made",
-    end && end.writes instanceof Map && end.writes.get("cart/1") === "8",
+    end && end.writes instanceof Map && end.writes.get("_user/cart/1") === "8",
     end ? JSON.stringify([...end.writes]) : "null");
 check("the end-of-run view records the keys actually read",
-    Array.isArray(end.reads) && end.reads.includes("cart/1") && end.reads.includes("cart/missing"),
+    Array.isArray(end.reads) && end.reads.includes("_user/cart/1") && end.reads.includes("_user/cart/missing"),
     JSON.stringify(end.reads));
 // The read-back of its own write must be answered by the overlay, so it
 // must NOT appear a second time in the recorded reads.
 check("a read-your-write does not reach the recorded inputs",
-    end.reads.filter((k) => k === "cart/1").length === 1, JSON.stringify(end.reads));
+    end.reads.filter((k) => k === "_user/cart/1").length === 1, JSON.stringify(end.reads));
 
 // THE FOLD over real inputs.
 const rows = foldModelView({ kvEntries: mat.replay.tapes.kv, reads: end.reads, writes: end.writes });

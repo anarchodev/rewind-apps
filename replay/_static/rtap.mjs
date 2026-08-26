@@ -52,7 +52,16 @@ export const RTAP_MAGIC   = 0x52544150;
 // {written_unix_ms, digest, offset, len} — 32 bytes where it was
 // 20. Unlike every bump before it this is NOT a trailing field:
 // it sits mid-entry, so everything after it shifts.
-export const RTAP_VERSION = 9;
+// 9 → 10 by the user key root (rove#829): the kv channel's
+// storage-modeling keys — get entries; prefix requests, cursors,
+// and rows — are STORE-spelled, carrying the `_user/` root exactly
+// as the store and the writeset hold them, so a replay overlay is
+// fed verbatim. Refusal entries stay NAMED (a verdict on what the
+// handler named, judged before the key resolves). No layout
+// change; the bump exists because a v9 tape's named keys read
+// against a store-spelled overlay miss on every row — a silent
+// all-miss dressed as a divergence.
+export const RTAP_VERSION = 10;
 // The oldest layout this reader still understands (mirrors
 // src/replay/tape_decode.zig MIN_VERSION).
 //
@@ -65,6 +74,19 @@ export const RTAP_MIN_VERSION = RTAP_VERSION;
 
 // Digest bytes in a pool reference (rove `pool_object.DIGEST_LEN`).
 export const POOL_DIGEST_LEN = 16;
+
+// The root every handler-named key resolves under (rove
+// `reserved.USER_KEY_ROOT`). Since v10 the kv channel's storage-modeling
+// keys carry it; a surface that RENDERS a key for the person who wrote
+// `kv.get("orders/42")` — or joins tape/overlay keys against the
+// handler-spelled interaction log — strips it here. One strip, defined
+// beside the format that carries it (mirrors rove `reserved.userNamedKey`).
+export const USER_KEY_ROOT = "_user/";
+export function namedKvKey(k) {
+    return typeof k === "string" && k.startsWith(USER_KEY_ROOT)
+        ? k.slice(USER_KEY_ROOT.length)
+        : k;
+}
 
 export const CHANNEL_KV            = 0;
 export const CHANNEL_MODULE        = 1;

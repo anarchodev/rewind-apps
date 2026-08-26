@@ -175,6 +175,10 @@ function writeChunk(from) {
   return next({ from: from + rows.length });
 }</code></pre>
 <p>Each hop commits its own writes and hands the cursor on, so the work completes without any one entry growing. The hops are separate transactions — write the loop so a repeat of the last hop is harmless (a cursor in <code>ctx</code>, idempotent keys), because that is what makes it resumable across a leader change.</p>
+<p><strong>Deploy-time config — <code>config.get</code>.</strong> A JSON file deployed at <code>_config/&lt;name&gt;.json</code> is readable as <code>config.get("&lt;name&gt;")</code> — the file's bytes as a string (parse JSON yourself), or <code>null</code> if this deployment carries no such file. That is the whole surface, and it is the only one: config is not part of the kv keyspace, it cannot be written at runtime, and its values are scoped to the deployment the activation runs under — code and config switch atomically on release, including a rollback and a deploy that removes a file. The reads are recorded like kv reads, so replay and sim cover them; a sim world seeds them as ordinary <code>_config/&lt;name&gt;</code> rows.</p>
+<pre><code>const raw = config.get("oauth/google");   // _config/oauth/google.json
+if (raw === null) { response.status = 500; return "missing config: oauth/google"; }
+const cfg = JSON.parse(raw);</code></pre>
 <h3 id="2-6-the-rule-and-why-there-are-no-scope-flags">2.6 The rule, and why there are no scope flags</h3>
 <div class="note"><p><strong>All wakes registered through <code>after.*</code> are for the current connection. Every other trigger creates a connectionless request.</strong></p></div>
 <p>Scope must be a *verb*, not a flag, because a connectionless trigger is <strong>durable</strong>, and durability isn't a boolean — it's a Model-row + commit-gate + reload-on-leader-change overlay (<code>effect-algebra.md</code> §2.2, §6.1). A <code>{ durable: true }</code> / <code>{ detach: true }</code> flag can't conjure that lifecycle; flipping scope with a flag is the <code>bind</code> mistake the model retired (§6.3). So:</p>
