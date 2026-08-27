@@ -35,7 +35,7 @@ const DESTRUCTIVE_RE =
 const MAX_TRANSCRIPT = 24; // bound kv growth (see trim())
 
 // ── Activation: one inbound WS frame from the page ──────────────────
-export function onMessage({ kv, next }) {
+export function onMessage({ kv, next, tag }) {
   const frame = browser.message();
   const ctx = request.ctx || {};
   if (!frame) return next(ctx);
@@ -45,7 +45,7 @@ export function onMessage({ kv, next }) {
   // getReplay also works without this via the auto `_saga` tag, but
   // tagging makes the session explicit + survives reconnects.
   const tagSid = frame.sid || ctx.sid;
-  if (tagSid) request.tag("session", tagSid);
+  if (tagSid) tag("session", tagSid);
 
   switch (frame.t) {
     case "hello": {

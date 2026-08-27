@@ -89,7 +89,7 @@
     <p><strong>Client IP addresses are masked before your code sees them.</strong>
        IPv4 addresses have the final octet zeroed; IPv6 addresses are truncated
        to the first 48 bits. A handler can call
-       <code>request.unmaskedIp()</code> to obtain the full address — a
+       <code>unmaskedIp()</code> (a capability it receives with the activation) to obtain the full address — a
        deliberate escalation, not the default — and when it does, the full
        address is recorded in that request's tape. If you run an app here, that
        call is your decision and yours to disclose to your users.</p>
