@@ -373,7 +373,7 @@ kv.set("firehose/subscription_id", id);</code></pre>
 <h2>Durable effects</h2>
 <p>Connectionless work that survives anything: outbound delivery (<code>webhook</code>, <code>email</code>, <code>retry</code>) and future activations (<code>schedule</code>, <code>cron</code>).</p>
 <h3 id="webhook"><code>webhook</code></h3>
-<p>Durable outbound HTTP — at-least-once delivery, replay-deterministic. The connectionless counterpart to <code>after.fetch</code>: the send fires after the handler commits and is owned by the platform until a terminal result, surviving crashes and leader changes.</p>
+<p>Durable outbound HTTP — at-least-once delivery, replay-deterministic. See the <code>send</code> JSDoc on the returned object.</p>
 <h4 id="webhook-send"><code>webhook.send(url, opts?)</code></h4>
 <p>Send a webhook. Writes a durable <code>_send/owed/{id}</code> marker through raft, then fires the request post-commit. On failure the platform retries with exponential backoff (1s, 2s, 4s, …, capped at 60s, max 5 attempts) — controlled by the baked <code>__system/webhook_onresult</code> shim, not customer code. Deferred fires (scheduled sends, retries, crash recovery) ride the durable {@link schedule} and survive leader changes.</p><p>The handler's commit gates the marker: if the handler throws or raft faults, no marker is written and no request fires. After commit the platform owns delivery; the customer's <code>on_result</code> module sees one terminal result event (success or give-up after the retry budget).</p>
 <table><tr><th>Param</th><th>Type</th><th></th></tr>

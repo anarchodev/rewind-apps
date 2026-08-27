@@ -6,6 +6,8 @@
 // freeze, before any run, outside every drill trace — so a replayed
 // handler sees the same pure compute globals a live handler does.
 
+;globalThis.__rove_factories = {};
+
 // ── src/replay/js/textcodec_pure.js ──
 ;// SPDX-FileCopyrightText: 2026 Loop46, Inc.
 // SPDX-License-Identifier: AGPL-3.0-or-later
@@ -2965,8 +2967,7 @@ globalThis.time = {
 })();
 
 // ── src/js/globals/webhook.js ──
-;(function () {
-// SPDX-FileCopyrightText: 2026 Loop46, Inc.
+;// SPDX-FileCopyrightText: 2026 Loop46, Inc.
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // `webhook.send` — durable outbound HTTP, composed in JS on top of
 // the reified primitives: `kv.set` (durable marker), `http.fetch`
@@ -3038,33 +3039,27 @@ globalThis.time = {
 // upstream services can dedupe by `(id, version)` consistently across
 // first-fire-from-handler and wake-fired retries.
 
-// Handler-surface Phase 3: the customer `http.fetch` spelling is
-// retired — webhook.send composes durability over the internal fetch
-// PRIMITIVE (`_system.http.fetch`), not the public surface. Capture it
-// at eval time (before the `_harden.js` `delete globalThis._system`
-// step); the `send` closure below uses the captured reference, which
-// stays valid post-harden (only the globalThis property is removed, not
-// the object). Same closure-capture posture as globals/on.js.
-
-// IIFE-wrapped like every other shim. Without this its top-level `const`s
-// land in the GLOBAL LEXICAL scope of the base context, where customer
-// handler modules resolve them by name — including `sysHttp` and `sysSched`,
-// the `_system` captures taken pre-harden precisely so they survive
-// `delete globalThis._system`. Deleting the property then hides nothing:
-// measured, a handler saw `_system` undefined but `sysHttp` as an object.
-// Reaching them is not escalation — the capability natives are
-// tenant-scoped and the outbound limit lives at the frozen fetch primitive
-// (`architecture/privileged-surface.md`) — but the hygiene that delete
-// exists for is only real if the captures are enclosed.
-(function () {
-  const sysHttp = _system.http;
-
-  // The durable scheduler core (globals/schedule.js) installs the private
-  // `_system.sched`; capture it here the same way as `sysHttp` (before
-  // `_harden.js` deletes `_system`) so webhook.send's durable re-arm keeps
-  // working post-harden without exposing an ambient `schedule` to customers
-  // (the customer-facing verb is the `@rewind/schedule` package).
-  const sysSched = _system.sched;
+// A FACTORY, not an IIFE (`docs/architecture/package-isolation.md`, the
+// received-not-ambient model): the engine invokes it once per context with
+// the capabilities a platform shim receives (`_factories_invoke.js`), and
+// installs the returned object. webhook.send composes durability over the
+// internal fetch PRIMITIVE (`caps.http.fetch` — the retired customer
+// `http.fetch` spelling stays retired), the durable scheduler core
+// (`caps.sched`), and ordinary rooted kv markers (`caps.kv`).
+//
+// A parameter is scoped by the language — the reason this shape replaces
+// the IIFE + capture convention: an unwrapped shim's top-level `const`s
+// landed in the base context's global lexical scope, where a handler
+// measurably read `sysHttp` while `_system` was correctly undefined. A
+// factory has no module-scope bindings for a handler to resolve, and its
+// capabilities exist only inside this closure.
+/**
+ * Durable outbound HTTP — at-least-once delivery, replay-deterministic.
+ * See the `send` JSDoc on the returned object.
+ * @namespace webhook
+ */
+__rove_factories.webhook = function (caps) {
+  const { http, sched, kv, formats } = caps;
 
   // Crash-recovery watchdog distance for the immediate-fire path: one
   // attempt timeout (the fetch binding's 30 s cap) + grace. Mirrored in
@@ -3074,7 +3069,7 @@ globalThis.time = {
   // which ship in the worker binary while this shim ships in the
   // tenant's deployment — the two can be from different builds, and
   // the marker is the only thing that crosses between them.
-  const SEND_OWED_V = __rove.formats.sendOwed;
+  const SEND_OWED_V = formats.sendOwed;
 
   const WEBHOOK_WATCHDOG_MS = 40_000;
 
@@ -3083,10 +3078,8 @@ globalThis.time = {
    * The connectionless counterpart to `after.fetch`: the send fires after
    * the handler commits and is owned by the platform until a terminal
    * result, surviving crashes and leader changes.
-   *
-   * @namespace webhook
    */
-  globalThis.webhook = {
+  return {
     /**
      * Send a webhook. Writes a durable `_send/owed/{id}` marker through
      * raft, then fires the request post-commit. On failure
@@ -3262,7 +3255,7 @@ globalThis.time = {
       // issues the fetch when the durable wake fires; the held-sync path
       // stays correct either way (the 25s mandatory deadline covers both).
       if (!scheduled) {
-        sysHttp.fetch({
+        http.fetch({
           url: opts.url,
           method: opts.method || "POST",
           body: body,
@@ -3297,16 +3290,15 @@ globalThis.time = {
       // it on the terminal event; a retry re-arm moves it to the
       // backoff time).
       if (scheduled) {
-        sysSched({ at: fire_at_ns_big }, "__system/webhook_fire", { id: id }, { key: "_send/" + id });
+        sched({ at: fire_at_ns_big }, "__system/webhook_fire", { id: id }, { key: "_send/" + id });
       } else {
-        sysSched({ in: WEBHOOK_WATCHDOG_MS }, "__system/webhook_fire", { id: id }, { key: "_send/" + id });
+        sched({ in: WEBHOOK_WATCHDOG_MS }, "__system/webhook_fire", { id: id }, { key: "_send/" + id });
       }
       return id;
     },
   };
-})();
+};
 
-})();
 // ── src/js/globals/blob.js ──
 ;// SPDX-FileCopyrightText: 2026 Loop46, Inc.
 // SPDX-License-Identifier: AGPL-3.0-or-later
@@ -3819,6 +3811,24 @@ globalThis.blob = {
   },
 };
 
+})();
+
+;(function () {
+  const reg = globalThis.__rove_factories;
+  const caps = {
+    http: _system.http,
+    sched: _system.sched,
+    kv: {
+      get: (k) => globalThis.kv.get(k),
+      set: (k, v) => globalThis.kv.set(k, v),
+      delete: (k) => globalThis.kv.delete(k),
+      prefix: (p, c, l) => globalThis.kv.prefix(p, c, l),
+    },
+    formats: __rove.formats,
+  };
+  for (const name of Object.keys(reg)) {
+    globalThis[name] = reg[name](caps);
+  }
 })();
 
 // ── the capability names (rove-reserved CAPABILITY_NAMES) ──
