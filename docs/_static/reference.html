@@ -272,8 +272,9 @@ return next({ user });</code></pre>
 <tr><td><code>opts <em>(optional)</em></code></td><td><code>object</code></td><td></td></tr>
 <tr><td><code>opts.on <em>(optional)</em></code></td><td><code>string</code></td><td><p>Export to resume into (<code>"module.method"</code> or a bare <code>"method"</code>); defaults to <code>onWake</code>.</p></td></tr>
 </table>
-<p><b>Returns</b> <code>void</code></p>
+<p><b>Returns</b> <code>Promise&lt;void&gt;|undefined</code> — On a held connection, a promise that settles when the timer fires — <code>await</code> it to continue in place instead of parking with <code>next()</code> and resuming in <code>onWake</code>. <code>undefined</code> where the connection cannot be held.</p>
 <pre><code>after.ms(30_000, { on: "onTimeout" }); // deadline for a join</code></pre>
+<pre><code>export default async () =&gt; { await after.ms(500); return "later"; };</code></pre>
 <h4 id="after-kv"><code>after.kv(prefix, opts?)</code></h4>
 <p>Wake the held connection after any key under <code>prefix</code> changes — anchored to the version this activation read, so a write between "you read" and "you parked" still fires it. Without <code>on</code>, the wake lands in the <code>onWake</code> export.</p>
 <table><tr><th>Param</th><th>Type</th><th></th></tr>
