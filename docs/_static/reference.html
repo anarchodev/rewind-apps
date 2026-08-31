@@ -282,9 +282,9 @@ return next({ user });</code></pre>
 <tr><td><code>opts <em>(optional)</em></code></td><td><code>object</code></td><td></td></tr>
 <tr><td><code>opts.on <em>(optional)</em></code></td><td><code>string</code></td><td><p>Export to resume into; defaults to <code>onWake</code>.</p></td></tr>
 </table>
-<p><b>Returns</b> <code>void</code></p>
-<pre><code>after.kv(`rooms/${roomId}/`);             // default onWake
-after.kv(`jobs/${id}/`, { on: "onJob" }); // explicit target</code></pre>
+<p><b>Returns</b> <code>Promise&lt;{kind:string,prefix:string,firedAt:number</code> — &gt;|undefined} Without <code>on</code>, on a held connection: a promise that settles with the fired wake entry (the <code>wakes[]</code> shape) — <code>await</code> it to continue in place; the wake is an edge ("go look"), so re-read kv for the values. With <code>on</code>, or where the connection cannot be held: <code>undefined</code>, and the wake lands in the export.</p>
+<pre><code>after.kv(`jobs/${id}/`, { on: "onJob" }); // export target</code></pre>
+<pre><code>export default async () =&gt; { await after.kv("rooms/1/"); return JSON.stringify(kv.prefix("rooms/1/")); };</code></pre>
 <h4 id="after-fetch"><code>after.fetch(url, opts?)</code></h4>
 <p>Perform an outbound HTTP request and wake the held connection on its result. Connection-scoped: the result resumes THIS chain's <code>{on}</code> export (defaults: <code>onFetchResult</code> for a non-streamed whole body, <code>onFetchChunk</code>/<code>onFetchDone</code> for a streamed one) while it still holds the socket; if the activation doesn't hold the socket the fetch is inert (its durable twin is <code>webhook.send</code>). With <code>opts.stream</code> each upstream writeback wakes the handler as it arrives.</p>
 <table><tr><th>Param</th><th>Type</th><th></th></tr>
@@ -301,10 +301,11 @@ after.kv(`jobs/${id}/`, { on: "onJob" }); // explicit target</code></pre>
 <tr><td><code>opts.on <em>(optional)</em></code></td><td><code>string</code></td><td><p>Export the result wakes; overrides the per-event-shape defaults for every event of this fetch.</p></td></tr>
 <tr><td><code>opts.relay <em>(optional)</em></code></td><td><code>boolean</code></td><td><p>CAS→connection relay (platform-internal; today only the <code>__system/static</code> streamer's door engages it): intermediate chunks are spliced straight onto the held stream — <code>{on}</code> fires only for the first event and the terminal. Inert on any other fetch.</p></td></tr>
 </table>
-<p><b>Returns</b> <code>string</code> — The fetch id (<code>ftch_…</code>, opaque — compare to <code>request.fetchId</code>).</p>
+<p><b>Returns</b> <code>Promise&lt;{status:number,bytes:Uint8Array,text:string,headers:Object,truncated:boolean</code> — &gt;|string} Without <code>on</code>, on a held connection: a promise that resolves once with the whole buffered response — <code>await</code> it to continue in place (<code>status</code> alone is the success contract; a streamed response rejects — pass <code>{on}</code> to consume chunks). The fetch id rides the promise as <code>.fetchId</code> (for <code>after.cancel</code>). With <code>on</code>, or where the connection cannot be held: the fetch id string (<code>ftch_…</code>, opaque — compare to <code>request.fetchId</code>).</p>
 <pre><code>after.fetch('https://api.example.com/stream',
 { stream: true, on: 'onUpstream' });
 return next();</code></pre>
+<pre><code>export default async () =&gt; { const res = await after.fetch("https://api.example.com/x"); return String(res.status); };</code></pre>
 <h4 id="after-cancel"><code>after.cancel(id)</code></h4>
 <p>Cancel an in-flight <code>after.fetch</code> by the id it returned (also on <code>request.fetchId</code> in its wake events). No-op if it already completed. Cooperative: a chunk already in flight at the engine may still land after the cancel returns — track "we moved on" in your chain ctx.</p>
 <table><tr><th>Param</th><th>Type</th><th></th></tr>
