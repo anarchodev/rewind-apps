@@ -34,7 +34,7 @@ export function getInstance(id) {
 
 export function createInstance(c, id) {
     if (!validId(id)) { response.status = 400; return { error: "invalid id" }; }
-    // The root write is an ACTIVATION in `__root__`'s own scope (rove#715):
+    // The root write is an ACTIVATION in `__root__`'s own scope:
     // dispatch the baked writer, park this request on the owed marker, and
     // resume when the engine-sent resolution deletes it — a delete
     // broadcasts a kv wake like any write. Spurious wakes are permitted, so
@@ -42,14 +42,14 @@ export function createInstance(c, id) {
     const did = c.caps.platform.dispatch("__root__", "__system/root_kv_install",
         { ctx: { pairs: [{ key: "instance/" + id, value: "" }] } });
     c.caps.after.kv("_dispatch/owed/" + did, { on: "onCreateInstanceDone" });
-    return c.caps.next({ ctx: { did: did, id: id } });
+    return c.caps.next({ did: did, id: id });
 }
 
 export function onCreateInstanceDone({ kv, platform, next }) {
     const c = request.ctx || {};
     // Marker still standing = a spurious wake (possibly our own arming
     // write) — re-park and wait for the resolution.
-    if (kv.get("_dispatch/owed/" + c.did) !== null) return next({ ctx: c });
+    if (kv.get("_dispatch/owed/" + c.did) !== null) return next(c);
     // Resolved: the root row is the authoritative answer.
     if (platform.root.get("instance/" + c.id) === null) {
         response.status = 500;
@@ -149,12 +149,12 @@ export function assignDomain(c, host, instance_id) {
     const did = c.caps.platform.dispatch("__root__", "__system/root_kv_install",
         { ctx: { pairs: [{ key: "domain/" + host, value: instance_id }] } });
     c.caps.after.kv("_dispatch/owed/" + did, { on: "onAssignDomainDone" });
-    return c.caps.next({ ctx: { did: did, host: host, instance_id: instance_id } });
+    return c.caps.next({ did: did, host: host, instance_id: instance_id });
 }
 
 export function onAssignDomainDone({ kv, platform, next }) {
     const c = request.ctx || {};
-    if (kv.get("_dispatch/owed/" + c.did) !== null) return next({ ctx: c });
+    if (kv.get("_dispatch/owed/" + c.did) !== null) return next(c);
     if (platform.root.get("domain/" + c.host) !== c.instance_id) {
         response.status = 500;
         return { error: "root write resolved without landing" };

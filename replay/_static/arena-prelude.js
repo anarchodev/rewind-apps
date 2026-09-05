@@ -2169,8 +2169,15 @@
       // marker before firing: an attempt that escaped a rolled-back
       // activation would be an effect the cluster never agreed to.
       kv.set("_dispatch/owed/" + id, JSON.stringify(marker));
+      // The FIRST fire arms at now — the durable wake IS the fire path, so
+      // an initial arm at the watchdog distance would make every dispatch
+      // wait out the recovery interval (measured: a caller parked on the
+      // marker's resolution timed out at 15s against a 40s first fire).
+      // `dispatch_fire` re-arms its own +WATCHDOG per attempt under the
+      // same idempotency key, so recovery pacing is unchanged after the
+      // first attempt.
       sysSched(
-        { in: DISPATCH_WATCHDOG_MS },
+        { in: 0 },
         "__system/dispatch_fire",
         { id: id },
         { key: "_dispatch/" + id },
