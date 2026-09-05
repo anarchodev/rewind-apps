@@ -686,8 +686,8 @@
       // jsPlatformScope (globals.zig): id required + non-empty (ToString
       // coerced), and the instance must RESOLVE — prod throws
       // Error{code:"InstanceNotFound"} at the call site for a ghost id.
-      // Known offline = declared via `scenario({instances})` or created by
-      // `instances.create` this run (both set the hidden exists marker).
+      // Known offline = declared via `scenario({instances})` (sets the
+      // hidden exists marker).
       scope: gate(function(id){
         if (id === undefined) throw new TypeError("platform.scope requires (instance_id)");
         id = String(id);
@@ -699,15 +699,10 @@
         push({ kind: "platform", op: "scope", id: id });
         return { kv: storeKv(NS_STORE + "i/" + id + "/", "i/" + id), blob: {} };
       }),
-      root: { get: gate(rootStore_r.get), set: gate(rootStore_r.set), delete: gate(rootStore_r.delete), prefix: gate(rootStore_r.prefix) },
-      // instances.create records the exists marker as a STORE-TAGGED write
-      // (not just a hidden native set): resumes rebuild kv from the folded
-      // effect log, and only recorded writes fold forward — so an instance
-      // created in one activation stays scope-resolvable in the next.
-      // create(name): prod takes a NAME string (valueToOwnedString) and
-      // returns undefined — the instance id IS the name. Record it, and seed
-      // the exists marker keyed by name so a later platform.scope(name) folds.
-      instances: { create: gate(function(name){ push({ kind: "platform", op: "instances.create", name: name }); push({ kind: "write", store: "exists", key: "i/" + name, value: "1" }); globalThis.kv.set(NS_STORE + "exists/i/" + name, "1"); }), deployStarter: gate(function(name){ push({ kind: "platform", op: "instances.deployStarter", name: name }); }) },
+      // root WRITES are dispatched activations against the `__root__` group
+      // — the shim exposes only the reads, so the recorder mirrors that.
+      root: { get: gate(rootStore_r.get), prefix: gate(rootStore_r.prefix) },
+      instances: { deployStarter: gate(function(name){ push({ kind: "platform", op: "instances.deployStarter", name: name }); }) },
       releases: { publish: gate(function(tenant, depId){ push({ kind: "platform", op: "releases.publish", tenant: tenant, depId: depId }); }) },
       // No `auth` verb: the operator-root verdict is `request.rewind.isRoot`,
       // supplied by the world (scenario({ isRoot })) and folded from the
@@ -2024,24 +2019,6 @@
         return sys.root.get(key);
       },
       /**
-       * Write to the root store. Replicates via the root writeset.
-       * @param {string} key
-       * @param {string} value
-       * @returns {void}
-       * @example platform.root.set(`domain/${host}`, JSON.stringify(rec));
-       */
-      set(key, value) {
-        return sys.root.set(key, value);
-      },
-      /**
-       * @param {string} key
-       * @returns {void}
-       * @example platform.root.delete(`domain/${host}`);
-       */
-      delete(key) {
-        return sys.root.delete(key);
-      },
-      /**
        * Prefix scan of the root store. Same pagination contract as
        * {@link kv.prefix} (limit default 100, max 1000).
        * @param {string} prefix
@@ -2061,18 +2038,6 @@
      * @namespace platform.instances
      */
     instances: {
-      /**
-       * Create an instance: its directory + `app.db`, the local
-       * `instance/{name}` marker, and the replicated root marker.
-       * Idempotent. Throws `Error{code:"InvalidName"}` on a bad name.
-       *
-       * @param {string} name - Instance id.
-       * @returns {void}
-       * @example platform.instances.create("acme-prod");
-       */
-      create(name) {
-        return sys.instances.create(name);
-      },
       /**
        * Deploy the platform-baked starter app (`index.mjs` +
        * `_static/index.html`) into `name` and flip
@@ -2197,8 +2162,15 @@
       // marker before firing: an attempt that escaped a rolled-back
       // activation would be an effect the cluster never agreed to.
       kv.set("_dispatch/owed/" + id, JSON.stringify(marker));
+      // The FIRST fire arms at now — the durable wake IS the fire path, so
+      // an initial arm at the watchdog distance would make every dispatch
+      // wait out the recovery interval (measured: a caller parked on the
+      // marker's resolution timed out at 15s against a 40s first fire).
+      // `dispatch_fire` re-arms its own +WATCHDOG per attempt under the
+      // same idempotency key, so recovery pacing is unchanged after the
+      // first attempt.
       sysSched(
-        { in: DISPATCH_WATCHDOG_MS },
+        { in: 0 },
         "__system/dispatch_fire",
         { id: id },
         { key: "_dispatch/" + id },
