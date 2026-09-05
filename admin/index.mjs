@@ -163,64 +163,140 @@ export function onAssignDomainDone({ kv, platform, next }) {
     return { host: c.host, instance_id: c.instance_id };
 }
 
-// Per-tenant KV browse. The instance id comes from the route
-// (`/v1/instances/:id/kv`) — `kv` (the global) is ALWAYS __admin__-home, so a
-// scoped browse reaches the target explicitly via `platform.scope(id).kv`.
-// __admin__'s own kv is reached by id `__admin__` (operator-gated via canAccess,
-// is_root bypass). Returns the store, or null after stamping a 404.
-function kvStoreFor(id) {
+// ── Dispatched scoped kv ────────────────────────────────────────────
+// A cross-tenant kv op is an activation in the TARGET tenant's own scope:
+// dispatch the baked `__system/scope_kv` against it, park on the owed
+// marker, and let the wake read the engine-carried result row
+// (`_dispatch/result/{did}`). The target's log carries the op; this app
+// only shapes the response. `fin` names the finisher in
+// SCOPED_KV_FINISHERS that turns the parsed result into the route's
+// response; `extra` threads route state (key, limit, tenant) to it.
+function scopedKvPark(c, tenant, ask, fin, extra) {
+    const auth = request.auth || {};
+    let did;
     try {
-        return platform.scope(id).kv;
+        did = c.caps.platform.dispatch(tenant, "__system/scope_kv", {
+            ctx: ask,
+            actor: auth.is_root ? "operator" : "tenant_user",
+        });
     } catch (e) {
         if (e && e.code === "InstanceNotFound") {
             response.status = 404;
-            return null;
+            return { error: "unknown instance" };
         }
         throw e;
     }
+    c.caps.after.kv("_dispatch/owed/" + did, { on: "onScopedKv" });
+    const ctx = Object.assign({ did: did, fin: fin }, extra || {});
+    return c.caps.next(ctx);
 }
 
-// GET /v1/instances/:id/kv — `?key=` for a single value, else a prefix list
-// (`?prefix=&cursor=&limit=`).
-function kvRead(id, q) {
-    const store = kvStoreFor(id);
-    if (store === null) return { error: "unknown instance" };
-    if (q.key) {
-        const v = store.get(q.key);
-        if (v === null) { response.status = 404; return { error: "not found" }; }
+// The wake half. Spurious wakes re-park (the marker is the authoritative
+// pending signal); a resolved marker means the result row is readable —
+// they commit in one writeset on the engine side. The result bytes are
+// another tenant's output: parsed defensively, version-checked against
+// the shape THIS reader understands (a literal, never the engine's
+// current constant — rows can outlive engines), and consumed (deleted)
+// so the store holds no residue per completed op.
+export function onScopedKv({ kv, next }) {
+    const c = request.ctx || {};
+    if (kv.get("_dispatch/owed/" + c.did) !== null) return next(c);
+    const raw = kv.get("_dispatch/result/" + c.did);
+    if (raw === null) {
+        response.status = 502;
+        return { error: "scoped kv resolved without a result" };
+    }
+    kv.delete("_dispatch/result/" + c.did);
+    let rec = null;
+    try { rec = JSON.parse(raw); } catch (_e) { /* fall through */ }
+    if (!rec || rec.v !== 1) {
+        response.status = 502;
+        return { error: "unknown scoped kv result version" };
+    }
+    if (rec.overflow) {
+        response.status = 502;
+        return { error: "scoped kv result exceeded the engine carry cap — narrow the ask" };
+    }
+    if (rec.status !== 200) {
+        response.status = 502;
+        return { error: "scoped kv refused in target scope", status: rec.status };
+    }
+    let payload = null;
+    try { payload = JSON.parse(rec.body); } catch (_e) { /* fall through */ }
+    if (!payload) {
+        response.status = 502;
+        return { error: "unparseable scoped kv result" };
+    }
+    const fin = SCOPED_KV_FINISHERS[c.fin];
+    if (!fin) { response.status = 500; return { error: "unknown scoped kv finisher" }; }
+    return fin(c, payload);
+}
+
+const SCOPED_KV_FINISHERS = {
+    kvGet: function (c, r) {
+        const v = r.values ? r.values[c.key] : null;
+        if (v === null || v === undefined) {
+            response.status = 404;
+            return { error: "not found" };
+        }
         return v;
+    },
+    kvList: function (c, r) {
+        const entries = (r.pages && r.pages[0]) || [];
+        const body = { entries: entries };
+        if (entries.length === c.limit && entries.length > 0) {
+            body.next_cursor = entries[entries.length - 1].key;
+        }
+        return body;
+    },
+    kvSet: function (c, _r) { return { key: c.key }; },
+    kvDelete: function (_c, _r) { response.status = 204; return null; },
+    history: function (c, r) {
+        const curHex = r.values ? r.values["_deploy/current"] : null;
+        const rows = (r.pages && r.pages[0]) || [];
+        const releases = rows.map(function (row) {
+            return {
+                ts_ms: parseInt(row.key.slice("_release/".length), 10),
+                dep_id: parseInt(row.value, 16),
+                dep_hex: row.value,
+                live: !!curHex && row.value === curHex,
+            };
+        }).reverse();
+        return {
+            tenant: c.tenant,
+            current: curHex ? parseInt(curHex, 16) : null,
+            current_hex: curHex || null,
+            releases: releases,
+        };
+    },
+};
+
+// GET /v1/instances/:id/kv — `?key=` for a single value, else a prefix list
+// (`?prefix=&cursor=&limit=`). The page cap is the scoped-kv module's
+// (500); deeper listings page with `cursor`.
+function kvRead(c, id, q) {
+    if (q.key) {
+        return scopedKvPark(c, id, { gets: [q.key] }, "kvGet", { key: q.key });
     }
-    const p = q.prefix || "";
-    const c = q.cursor || "";
-    const l = Math.max(1, Math.min(parseInt(q.limit ?? 100, 10) || 100, 1000));
-    const entries = store.prefix(p, c, l);
-    const body = { entries: entries.map((e) => ({ key: e.key, value: e.value })) };
-    if (entries.length === l && entries.length > 0) {
-        body.next_cursor = entries[entries.length - 1].key;
-    }
-    return body;
+    const l = Math.max(1, Math.min(parseInt(q.limit ?? 100, 10) || 100, 500));
+    return scopedKvPark(c, id, {
+        prefixes: [{ prefix: q.prefix || "", after: q.cursor || undefined, limit: l }],
+    }, "kvList", { limit: l });
 }
 
 // PUT /v1/instances/:id/kv  {key, value}
-function kvSet(id, key, value) {
+function kvSet(c, id, key, value) {
     if (!key) { response.status = 400; return { error: "missing key" }; }
     if (typeof value !== "string") {
         response.status = 400; return { error: "value must be a string" };
     }
-    const store = kvStoreFor(id);
-    if (store === null) return { error: "unknown instance" };
-    store.set(key, value);
-    return { key: key };
+    return scopedKvPark(c, id, { pairs: [{ key: key, value: value }] }, "kvSet", { key: key });
 }
 
 // DELETE /v1/instances/:id/kv?key=
-function kvDelete(id, key) {
+function kvDelete(c, id, key) {
     if (!key) { response.status = 400; return { error: "missing key" }; }
-    const store = kvStoreFor(id);
-    if (store === null) return { error: "unknown instance" };
-    store.delete(key);
-    response.status = 204;
-    return null;
+    return scopedKvPark(c, id, { deletes: [key] }, "kvDelete", {});
 }
 
 // Publish a release for `instance_id` at `dep_id`. Stamps
@@ -2606,7 +2682,7 @@ export function onSourceFileBlob() {
 // read endpoint"). Powers `rewind deployments <t>`; `rewind rollback` is just a
 // publishRelease at an older dep_id. Authz mirrors deploy/release: operator
 // (is_root) any tenant; a customer only their own.
-function handleHistory(tenant) {
+function handleHistory(c, tenant) {
     const auth = request.auth || {};
     if (!auth.sub) return jsonError(401, "unauthenticated");
     if (!validId(tenant)) return jsonError(400, "invalid tenant");
@@ -2617,28 +2693,13 @@ function handleHistory(tenant) {
     if (!auth.is_root && !canAccess(accountHashFor(auth.sub), tenant)) {
         return jsonError(403, "not your instance");
     }
-    const sk = platform.scope(tenant).kv;
-    let curHex;
-    try { curHex = sk.get("_deploy/current"); }
-    catch (e) { return jsonError(404, "instance not found"); }
-    // `_release/{ts_ms:020}` keys are lex-ascending by timestamp; reverse for
-    // newest-first. Release cadence is low, so a 1000-row cap is generous.
-    const rows = sk.prefix("_release/", "", 1000);
-    const releases = rows.map(function (row) {
-        const depHex = row.value;
-        return {
-            ts_ms: parseInt(row.key.slice("_release/".length), 10),
-            dep_id: parseInt(depHex, 16),
-            dep_hex: depHex,
-            live: !!curHex && depHex === curHex,
-        };
-    }).reverse();
-    return {
-        tenant: tenant,
-        current: curHex ? parseInt(curHex, 16) : null,
-        current_hex: curHex || null,
-        releases: releases,
-    };
+    // `_release/{ts_ms:020}` keys are lex-ascending by timestamp; the
+    // finisher reverses for newest-first. Release cadence is low, so the
+    // scoped-kv page cap (500) is generous.
+    return scopedKvPark(c, tenant, {
+        gets: ["_deploy/current"],
+        prefixes: [{ prefix: "_release/", limit: 500 }],
+    }, "history", { tenant: tenant });
 }
 
 // ── Instance data export (rove#340) ─────────────────────────────────
@@ -2765,9 +2826,9 @@ const ROUTES = [
     ["GET",    "/v1/instances/:id/export",      "tenantRead",    (c) => listExports(c.params.id)],
     ["GET",    "/v1/instances/:id/export/:eid", "tenantRead",    (c) => getExport(c.params.id, c.params.eid)],
     ["GET",    "/v1/instances/:id/export/:eid/links", "tenantRead", (c) => getExportLinks(c.params.id, c.params.eid)],
-    ["GET",    "/v1/instances/:id/kv",          "tenantRead",    (c) => kvRead(c.params.id, c.query)],
-    ["PUT",    "/v1/instances/:id/kv",          "tenantWrite",   (c) => kvSet(c.params.id, c.body.key, c.body.value)],
-    ["DELETE", "/v1/instances/:id/kv",          "tenantWrite",   (c) => kvDelete(c.params.id, c.query.key)],
+    ["GET",    "/v1/instances/:id/kv",          "tenantRead",    (c) => kvRead(c, c.params.id, c.query)],
+    ["PUT",    "/v1/instances/:id/kv",          "tenantWrite",   (c) => kvSet(c, c.params.id, c.body.key, c.body.value)],
+    ["DELETE", "/v1/instances/:id/kv",          "tenantWrite",   (c) => kvDelete(c, c.params.id, c.query.key)],
     // domains (operator)
     ["GET",    "/v1/domains",                   "root",          (c) => listDomain()],
     ["PUT",    "/v1/domains/:host",             "root",          (c) => assignDomain(c, c.params.host, c.body.instance_id)],
@@ -2800,7 +2861,7 @@ const ROUTES = [
     ["POST",   "/v1/deploy/ref",                "open",          (c) => handleWsRef(c.rawBody || "{}")],
     ["POST",   "/v1/deploy/cut",                "open",          (c) => handleWsCut(c.rawBody || "{}")],
     // deployment history (handler enforces ownership) — /v1/history/{tenant}
-    ["GET",    "/v1/history/:id",               "self",          (c) => handleHistory(c.params.id)],
+    ["GET",    "/v1/history/:id",               "self",          (c) => handleHistory(c, c.params.id)],
     // log query door (handler enforces is_root) — /v1/logs/{tenant}/{list|count|show/{id}}
     ["GET",    "/v1/logs/*",                    "self",          (c) => handleLogQuery(c.path, c.qs)],
     // source read door (handler enforces canAccess) — /v1/sources/{tenant}/{dep}
