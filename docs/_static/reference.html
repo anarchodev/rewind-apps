@@ -1241,21 +1241,6 @@ return next();
 </table>
 <p><b>Returns</b> <code>string|null</code> — The value, or <code>null</code> if absent.</p>
 <pre><code>const acct = JSON.parse(platform.root.get(`account/${id}`));</code></pre>
-<h4 id="platform-root-set"><code>platform.root.set(key, value)</code></h4>
-<p>Write to the root store. Replicates via the root writeset.</p>
-<table><tr><th>Param</th><th>Type</th><th></th></tr>
-<tr><td><code>key</code></td><td><code>string</code></td><td></td></tr>
-<tr><td><code>value</code></td><td><code>string</code></td><td></td></tr>
-</table>
-<p><b>Returns</b> <code>void</code></p>
-<pre><code>platform.root.set(`domain/${host}`, JSON.stringify(rec));</code></pre>
-<h4 id="platform-root-delete"><code>platform.root.delete(key)</code></h4>
-
-<table><tr><th>Param</th><th>Type</th><th></th></tr>
-<tr><td><code>key</code></td><td><code>string</code></td><td></td></tr>
-</table>
-<p><b>Returns</b> <code>void</code></p>
-<pre><code>platform.root.delete(`domain/${host}`);</code></pre>
 <h4 id="platform-root-prefix"><code>platform.root.prefix(prefix, cursor?, limit?)</code></h4>
 <p>Prefix scan of the root store. Same pagination contract as {@link kv.prefix} (limit default 100, max 1000).</p>
 <table><tr><th>Param</th><th>Type</th><th></th></tr>
@@ -1267,13 +1252,6 @@ return next();
 <pre><code>const all = platform.root.prefix("instance/", null, 1000);</code></pre>
 <h3 id="platform-instances"><code>platform.instances</code></h3>
 <p>Instance lifecycle.</p>
-<h4 id="platform-instances-create"><code>platform.instances.create(name)</code></h4>
-<p>Create an instance: its directory + <code>app.db</code>, the local <code>instance/{name}</code> marker, and the replicated root marker. Idempotent. Throws <code>Error{code:"InvalidName"}</code> on a bad name.</p>
-<table><tr><th>Param</th><th>Type</th><th></th></tr>
-<tr><td><code>name</code></td><td><code>string</code></td><td><p>Instance id.</p></td></tr>
-</table>
-<p><b>Returns</b> <code>void</code></p>
-<pre><code>platform.instances.create("acme-prod");</code></pre>
 <h4 id="platform-instances-deploystarter"><code>platform.instances.deployStarter(name)</code></h4>
 <p>Deploy the platform-baked starter app (<code>index.mjs</code> + <code>_static/index.html</code>) into <code>name</code> and flip <code>_deploy/current</code> via raft. Sealed primitive in v1 (starter content is not customer-supplied). Throws <code>Error{code:"InstanceNotFound"}</code> if <code>name</code> doesn't resolve.</p>
 <table><tr><th>Param</th><th>Type</th><th></th></tr>

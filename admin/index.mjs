@@ -32,11 +32,31 @@ export function getInstance(id) {
     return { id: id, host: kv.get("instance/" + id + "/host") };
 }
 
-export function createInstance(id) {
+export function createInstance(c, id) {
     if (!validId(id)) { response.status = 400; return { error: "invalid id" }; }
-    platform.root.set("instance/" + id, "");
+    // The root write is an ACTIVATION in `__root__`'s own scope (rove#715):
+    // dispatch the baked writer, park this request on the owed marker, and
+    // resume when the engine-sent resolution deletes it — a delete
+    // broadcasts a kv wake like any write. Spurious wakes are permitted, so
+    // the continuation re-reads authoritative state, never trusts the event.
+    const did = c.caps.platform.dispatch("__root__", "__system/root_kv_install",
+        { ctx: { pairs: [{ key: "instance/" + id, value: "" }] } });
+    c.caps.after.kv("_dispatch/owed/" + did, { on: "onCreateInstanceDone" });
+    return c.caps.next({ ctx: { did: did, id: id } });
+}
+
+export function onCreateInstanceDone({ kv, platform, next }) {
+    const c = request.ctx || {};
+    // Marker still standing = a spurious wake (possibly our own arming
+    // write) — re-park and wait for the resolution.
+    if (kv.get("_dispatch/owed/" + c.did) !== null) return next({ ctx: c });
+    // Resolved: the root row is the authoritative answer.
+    if (platform.root.get("instance/" + c.id) === null) {
+        response.status = 500;
+        return { error: "root write resolved without landing" };
+    }
     response.status = 201;
-    return { id: id };
+    return { id: c.id };
 }
 
 // Deprovision an instance (rove#294). Authz is the route's `tenant` class:
@@ -114,7 +134,7 @@ export function listDomain({ platform }) {
     };
 }
 
-export function assignDomain(host, instance_id) {
+export function assignDomain(c, host, instance_id) {
     if (!host || !instance_id) {
         response.status = 400;
         return { error: "host and instance_id required" };
@@ -124,9 +144,23 @@ export function assignDomain(host, instance_id) {
         response.status = 404;
         return { error: "instance not found" };
     }
-    platform.root.set("domain/" + host, instance_id);
+    // Same shape as createInstance: the write is a dispatched activation in
+    // root scope; this request parks on the owed marker's resolution.
+    const did = c.caps.platform.dispatch("__root__", "__system/root_kv_install",
+        { ctx: { pairs: [{ key: "domain/" + host, value: instance_id }] } });
+    c.caps.after.kv("_dispatch/owed/" + did, { on: "onAssignDomainDone" });
+    return c.caps.next({ ctx: { did: did, host: host, instance_id: instance_id } });
+}
+
+export function onAssignDomainDone({ kv, platform, next }) {
+    const c = request.ctx || {};
+    if (kv.get("_dispatch/owed/" + c.did) !== null) return next({ ctx: c });
+    if (platform.root.get("domain/" + c.host) !== c.instance_id) {
+        response.status = 500;
+        return { error: "root write resolved without landing" };
+    }
     response.status = 201;
-    return { host: host, instance_id: instance_id };
+    return { host: c.host, instance_id: c.instance_id };
 }
 
 // Per-tenant KV browse. The instance id comes from the route
@@ -2723,7 +2757,7 @@ const ROUTES = [
     // instances
     ["GET",    "/v1/instances",                 "authed",        (c) => listInstance()],
     ["POST",   "/v1/instances",                 "authed",        (c) => provisionInstance(c.body.name, c.body.account)],
-    ["PUT",    "/v1/instances/:id",             "root",          (c) => createInstance(c.params.id)],  // operator raw
+    ["PUT",    "/v1/instances/:id",             "root",          (c) => createInstance(c, c.params.id)],  // operator raw
     ["GET",    "/v1/instances/:id",             "tenant",        (c) => getInstance(c.params.id)],
     ["DELETE", "/v1/instances/:id",             "tenant",        (c) => deleteInstance(c.params.id, c.body && c.body.confirm)],
     ["POST",   "/v1/instances/:id/release",     "tenant",        (c) => publishRelease(c.params.id, c.body.dep_id)],
@@ -2736,7 +2770,7 @@ const ROUTES = [
     ["DELETE", "/v1/instances/:id/kv",          "tenantWrite",   (c) => kvDelete(c.params.id, c.query.key)],
     // domains (operator)
     ["GET",    "/v1/domains",                   "root",          (c) => listDomain()],
-    ["PUT",    "/v1/domains/:host",             "root",          (c) => assignDomain(c.params.host, c.body.instance_id)],
+    ["PUT",    "/v1/domains/:host",             "root",          (c) => assignDomain(c, c.params.host, c.body.instance_id)],
     // accounts / teams
     ["POST",   "/v1/accounts",                  "authed",        (c) => createAccount(c.body.name)],
     ["GET",    "/v1/accounts/:aid/members",     "accountMember", (c) => listMembers(c.params.aid)],
@@ -2865,7 +2899,7 @@ function handleSourcesPath(path) {
 // for non-pre-auth paths). The async completion modules (`_rp/complete.mjs`,
 // `_rp/jwks.mjs`), the streamed `v1/upload` module, and the `on*` continuation
 // exports above are invoked by callback dispatch — NOT routed here.
-export default function() {
+export default function({ platform, after, kv, next }) {
     // `request.path` NEVER carries the query string — it lives only on
     // `request.query` (handler-shape.md, the default-activation surface).
     // Splitting `path` on "?" always produced an empty query, so every routed
@@ -2878,6 +2912,10 @@ export default function() {
     const denied = routeAuthz(m.authz, m.params);
     if (denied) return denied;
     return m.thunk({
+        // Received capabilities, threaded to route handlers (rove#753's
+        // idiom — new code receives; the module's legacy ambient uses
+        // migrate under #858).
+        caps: { platform: platform, after: after, kv: kv, next: next },
         params: m.params, query: parseQuery(qs), qs: qs,
         body: parseBody(), rawBody: request.text || "", path: path,
     });

@@ -699,7 +699,9 @@
         push({ kind: "platform", op: "scope", id: id });
         return { kv: storeKv(NS_STORE + "i/" + id + "/", "i/" + id), blob: {} };
       }),
-      root: { get: gate(rootStore_r.get), set: gate(rootStore_r.set), delete: gate(rootStore_r.delete), prefix: gate(rootStore_r.prefix) },
+      // root WRITES are dispatched activations now (rove#715) — the shim
+      // exposes only the reads, so the recorder mirrors that.
+      root: { get: gate(rootStore_r.get), prefix: gate(rootStore_r.prefix) },
       // instances.create records the exists marker as a STORE-TAGGED write
       // (not just a hidden native set): resumes rebuild kv from the folded
       // effect log, and only recorded writes fold forward — so an instance
@@ -707,7 +709,7 @@
       // create(name): prod takes a NAME string (valueToOwnedString) and
       // returns undefined — the instance id IS the name. Record it, and seed
       // the exists marker keyed by name so a later platform.scope(name) folds.
-      instances: { create: gate(function(name){ push({ kind: "platform", op: "instances.create", name: name }); push({ kind: "write", store: "exists", key: "i/" + name, value: "1" }); globalThis.kv.set(NS_STORE + "exists/i/" + name, "1"); }), deployStarter: gate(function(name){ push({ kind: "platform", op: "instances.deployStarter", name: name }); }) },
+      instances: { deployStarter: gate(function(name){ push({ kind: "platform", op: "instances.deployStarter", name: name }); }) },
       releases: { publish: gate(function(tenant, depId){ push({ kind: "platform", op: "releases.publish", tenant: tenant, depId: depId }); }) },
       // No `auth` verb: the operator-root verdict is `request.rewind.isRoot`,
       // supplied by the world (scenario({ isRoot })) and folded from the
@@ -2024,24 +2026,6 @@
         return sys.root.get(key);
       },
       /**
-       * Write to the root store. Replicates via the root writeset.
-       * @param {string} key
-       * @param {string} value
-       * @returns {void}
-       * @example platform.root.set(`domain/${host}`, JSON.stringify(rec));
-       */
-      set(key, value) {
-        return sys.root.set(key, value);
-      },
-      /**
-       * @param {string} key
-       * @returns {void}
-       * @example platform.root.delete(`domain/${host}`);
-       */
-      delete(key) {
-        return sys.root.delete(key);
-      },
-      /**
        * Prefix scan of the root store. Same pagination contract as
        * {@link kv.prefix} (limit default 100, max 1000).
        * @param {string} prefix
@@ -2061,18 +2045,6 @@
      * @namespace platform.instances
      */
     instances: {
-      /**
-       * Create an instance: its directory + `app.db`, the local
-       * `instance/{name}` marker, and the replicated root marker.
-       * Idempotent. Throws `Error{code:"InvalidName"}` on a bad name.
-       *
-       * @param {string} name - Instance id.
-       * @returns {void}
-       * @example platform.instances.create("acme-prod");
-       */
-      create(name) {
-        return sys.instances.create(name);
-      },
       /**
        * Deploy the platform-baked starter app (`index.mjs` +
        * `_static/index.html`) into `name` and flip
