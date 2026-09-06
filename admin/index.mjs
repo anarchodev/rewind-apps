@@ -1428,7 +1428,7 @@ export function deleteTeamAccount(aid, confirm) {
 // The job's single driver — a durable_wake continuation (middleware does
 // not run; request.auth is absent by design). Everything it needs lives in
 // the marker; every branch is idempotent under at-least-once firing.
-export function acctdelWake({ kv, webhook }) {
+export function acctdelWake({ kv, webhook, platform }) {
     const ctx = request.ctx || {};
     const aid = ctx.aid;
     if (typeof aid !== "string" || !aid) return { ok: true };
@@ -1549,7 +1549,7 @@ export function acctdelWake({ kv, webhook }) {
         m.idp_cursor = "";
     }
 
-    if (m.phase === "idp") return acctdelIdpStep(aid, m);
+    if (m.phase === "idp") return acctdelIdpStep(aid, m, { kv: kv, platform: platform });
     // Unknown phase (a marker from a newer schema after a rollback):
     // freeze loudly rather than guess.
     m.state = "failed";
@@ -1590,33 +1590,139 @@ function acctdelRowMatches(value, addr) {
     } catch (_) { return false; }
 }
 
-function acctdelIdpStep(aid, m) {
+// Rows per dispatched scan page. Sized for the engine's result carry cap
+// (32 KiB): session/token rows run a few hundred bytes, so a page must
+// stay well under it or the scan resolves flagged `overflow`.
+const ACCTDEL_SCAN_LIMIT = 64;
+
+// Harvest a resolved dispatch: null = still pending (park), else the
+// parsed result record. The result row is consumed here — this wake hop
+// writes anyway (marker bookkeeping), and no fetch binds from it.
+function acctdelHarvest(caps, m) {
+    if (caps.kv.get("_dispatch/owed/" + m.idp_did) !== null) return null;
+    const raw = caps.kv.get("_dispatch/result/" + m.idp_did);
+    caps.kv.delete("_dispatch/result/" + m.idp_did);
+    m.idp_did = null;
+    let rec = null;
+    try { rec = JSON.parse(raw); } catch (_e) { /* fall through */ }
+    return rec || { v: 0, status: 0, overflow: false, body: "" };
+}
+
+function acctdelIdpStep(aid, m, caps) {
     const addr = m.email;
     if (typeof addr !== "string" || !addr) return acctdelFinish(aid, m);
-    const step = m.idp_step || 0;
-    if (step >= ACCTDEL_IDP_STEPS.length) return acctdelFinish(aid, m);
-    const prefix = ACCTDEL_IDP_STEPS[step][0];
-    const home = ACCTDEL_IDP_STEPS[step][1];
-    const store = home === null ? kv : platform.scope(home).kv;
-    const page = store.prefix(prefix, m.idp_cursor || "", 1000);
-    for (const e of page) {
-        if (acctdelRowMatches(e.value, addr)) store.delete(e.key);
-    }
-    if (page.length >= 1000) {
-        m.idp_cursor = page[page.length - 1].key;
-    } else {
-        m.idp_step = step + 1;
-        m.idp_cursor = "";
-        if (m.idp_step >= ACCTDEL_IDP_STEPS.length) {
-            // Last direct-keyed row: the magic-link send cooldown.
-            platform.scope("__auth__").kv.delete(
-                "_oidc/magic_cooldown/" + crypto.sha256(addr));
-            return acctdelFinish(aid, m);
+
+    // Each dispatched hop (scan, delete batch, the final cooldown) parks on
+    // its resolution live and resolves eagerly offline — the loop harvests
+    // whatever is already resolved and stops at the first pending op or at
+    // a step boundary, so one wake completes at most ONE step.
+    for (;;) {
+        if (m.idp_did) {
+            const rec = acctdelHarvest(caps, m);
+            if (rec === null) {
+                // Still pending — check back shortly. (The dispatch's own
+                // watchdog drives the target side; this poll is ours.)
+                acctdelWrite(aid, m);
+                acctdelArm(aid, "1s");
+                return { ok: true };
+            }
+            const kind = m.idp_kind;
+            m.idp_kind = null;
+            if (kind !== "scan" && !(rec.v === 1 && rec.status === 200)) {
+                // A refused delete batch must never read as swept — freeze
+                // loudly; the erasure did not happen.
+                m.state = "failed";
+                m.error = "idp " + kind + " dispatch failed";
+                acctdelWrite(aid, m);
+                acctdelCancelWatchdog(aid);
+                return { ok: true };
+            }
+            if (kind === "cooldown") return acctdelFinish(aid, m);
+            if (kind === "scan") {
+                let payload = null;
+                if (rec.v === 1 && rec.status === 200 && !rec.overflow) {
+                    try { payload = JSON.parse(rec.body); } catch (_e) { /* fall through */ }
+                }
+                if (!payload) {
+                    // A refused or unreadable scan freezes loudly — spinning
+                    // the sweep on a permanent refusal reports "running"
+                    // forever for an erasure that is not happening.
+                    m.state = "failed";
+                    m.error = "idp scan dispatch failed";
+                    acctdelWrite(aid, m);
+                    acctdelCancelWatchdog(aid);
+                    return { ok: true };
+                }
+                const page = (payload.pages && payload.pages[0]) || [];
+                const hits = [];
+                for (const e of page) {
+                    if (acctdelRowMatches(e.value, addr)) hits.push(e.key);
+                }
+                m.idp_next_cursor =
+                    page.length >= ACCTDEL_SCAN_LIMIT ? page[page.length - 1].key : null;
+                if (hits.length) {
+                    const home = ACCTDEL_IDP_STEPS[m.idp_step || 0][1];
+                    m.idp_did = caps.platform.dispatch(home, "__system/scope_kv",
+                        { ctx: { deletes: hits }, actor: "system" });
+                    m.idp_kind = "del";
+                    continue;
+                }
+            }
+            // A delete batch landed, or a scan with no hits: advance within
+            // (or past) the step the cursor bookmarked.
+            if (m.idp_next_cursor) {
+                m.idp_cursor = m.idp_next_cursor;
+                m.idp_next_cursor = null;
+                // Same step, next page — keep going this wake only if the
+                // page was mid-step; a live park already returned above.
+            } else {
+                m.idp_next_cursor = null;
+                m.idp_step = (m.idp_step || 0) + 1;
+                m.idp_cursor = "";
+                if (m.idp_step < ACCTDEL_IDP_STEPS.length) {
+                    // Step boundary: yield the wake (one step per wake).
+                    acctdelWrite(aid, m);
+                    acctdelArm(aid, 0);
+                    return { ok: true };
+                }
+                // Past the last step: the cooldown hop below.
+            }
         }
+
+        const step = m.idp_step || 0;
+        if (step >= ACCTDEL_IDP_STEPS.length) {
+            // Last direct-keyed row: the magic-link send cooldown; finish
+            // rides its resolution.
+            m.idp_did = caps.platform.dispatch("__auth__", "__system/scope_kv",
+                { ctx: { deletes: ["_oidc/magic_cooldown/" + crypto.sha256(addr)] },
+                  actor: "system" });
+            m.idp_kind = "cooldown";
+            continue;
+        }
+        const prefix = ACCTDEL_IDP_STEPS[step][0];
+        const home = ACCTDEL_IDP_STEPS[step][1];
+        if (home === null) {
+            // Our own store — direct, no dispatch.
+            const page = caps.kv.prefix(prefix, m.idp_cursor || "", 1000);
+            for (const e of page) {
+                if (acctdelRowMatches(e.value, addr)) caps.kv.delete(e.key);
+            }
+            if (page.length >= 1000) {
+                m.idp_cursor = page[page.length - 1].key;
+            } else {
+                m.idp_step = step + 1;
+                m.idp_cursor = "";
+            }
+            acctdelWrite(aid, m);
+            acctdelArm(aid, 0);
+            return { ok: true };
+        }
+        m.idp_did = caps.platform.dispatch(home, "__system/scope_kv",
+            { ctx: { prefixes: [{ prefix: prefix, after: m.idp_cursor || undefined,
+                                  limit: ACCTDEL_SCAN_LIMIT }] },
+              actor: "system" });
+        m.idp_kind = "scan";
     }
-    acctdelWrite(aid, m);
-    acctdelArm(aid, 0); // more to sweep — continue immediately
-    return { ok: true };
 }
 
 function acctdelFinish(aid, m) {
