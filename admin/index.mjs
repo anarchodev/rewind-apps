@@ -50,6 +50,9 @@ export function onCreateInstanceDone({ kv, platform, next }) {
     // Marker still standing = a spurious wake (possibly our own arming
     // write) — re-park and wait for the resolution.
     if (kv.get("_dispatch/owed/" + c.did) !== null) return next(c);
+    // Consume the engine-carried result row — this flow verifies against
+    // the root store instead of the carried body.
+    kv.delete("_dispatch/result/" + c.did);
     // Resolved: the root row is the authoritative answer.
     if (platform.root.get("instance/" + c.id) === null) {
         response.status = 500;
@@ -155,6 +158,7 @@ export function assignDomain(c, host, instance_id) {
 export function onAssignDomainDone({ kv, platform, next }) {
     const c = request.ctx || {};
     if (kv.get("_dispatch/owed/" + c.did) !== null) return next(c);
+    kv.delete("_dispatch/result/" + c.did);
     if (platform.root.get("domain/" + c.host) !== c.instance_id) {
         response.status = 500;
         return { error: "root write resolved without landing" };
@@ -198,7 +202,7 @@ function scopedKvPark(c, tenant, ask, fin, extra) {
 // the shape THIS reader understands (a literal, never the engine's
 // current constant — rows can outlive engines), and consumed (deleted)
 // so the store holds no residue per completed op.
-export function onScopedKv({ kv, next }) {
+export function onScopedKv({ kv, platform, after, next }) {
     const c = request.ctx || {};
     if (kv.get("_dispatch/owed/" + c.did) !== null) return next(c);
     const raw = kv.get("_dispatch/result/" + c.did);
@@ -206,7 +210,12 @@ export function onScopedKv({ kv, next }) {
         response.status = 502;
         return { error: "scoped kv resolved without a result" };
     }
-    kv.delete("_dispatch/result/" + c.did);
+    // Finishers that CONTINUE the held chain issue a bound fetch from this
+    // wake hop, and the hop must stay READ-ONLY for that fetch to bind
+    // (a writing resume drops its connection-scoped fetches —
+    // bind-from-writing-resume is not wired). For those, the result row is
+    // consumed at the chain's terminal hop (`consumeReadResult`) instead.
+    if (!SCOPED_KV_CHAIN_FINS[c.fin]) kv.delete("_dispatch/result/" + c.did);
     let rec = null;
     try { rec = JSON.parse(raw); } catch (_e) { /* fall through */ }
     if (!rec || rec.v !== 1) {
@@ -229,7 +238,17 @@ export function onScopedKv({ kv, next }) {
     }
     const fin = SCOPED_KV_FINISHERS[c.fin];
     if (!fin) { response.status = 500; return { error: "unknown scoped kv finisher" }; }
-    return fin(c, payload);
+    return fin(c, payload, { kv: kv, platform: platform, after: after, next: next });
+}
+
+const SCOPED_KV_CHAIN_FINS = { readSourcesCur: true, readSourceCur: true };
+
+// A read-door chain seeded by a dispatched read threads `rdid` — the
+// `_dispatch/result/{id}` row that fed it. Every TERMINAL hop of such a
+// chain consumes the row here (a terminal hop may write; the wake hop that
+// read it may not — see onScopedKv).
+function consumeReadResult(kv, ctx) {
+    if (ctx && ctx.rdid) kv.delete("_dispatch/result/" + ctx.rdid);
 }
 
 const SCOPED_KV_FINISHERS = {
@@ -251,6 +270,29 @@ const SCOPED_KV_FINISHERS = {
     },
     kvSet: function (c, _r) { return { key: c.key }; },
     kvDelete: function (_c, _r) { response.status = 204; return null; },
+    // The /v1/sources + /v1/source "current" resolution: the live pointer
+    // arrives on the dispatched read; the finisher then continues the
+    // existing manifest chain (readManifest → blob reads) unchanged.
+    readSourcesCur: function (c, r, caps) {
+        const cur = r.values ? r.values["_deploy/current"] : null;
+        if (!cur || !/^[0-9a-fA-F]{1,16}$/.test(cur)) {
+            caps.kv.delete("_dispatch/result/" + c.did);
+            return jsonError(cur ? 400 : 404, cur ? "bad dep_id" : "no current deployment");
+        }
+        caps.platform.scope(c.tenant).deploy.readManifest(cur,
+            { on: "onManifest", ctx: { tenant: c.tenant, dep: cur, rdid: c.did } });
+        return caps.next();
+    },
+    readSourceCur: function (c, r, caps) {
+        const cur = r.values ? r.values["_deploy/current"] : null;
+        if (!cur || !/^[0-9a-fA-F]{1,16}$/.test(cur)) {
+            caps.kv.delete("_dispatch/result/" + c.did);
+            return jsonError(cur ? 400 : 404, cur ? "bad dep_id" : "no current deployment");
+        }
+        caps.platform.scope(c.tenant).deploy.readManifest(cur,
+            { on: "onSourceFileManifest", ctx: { tenant: c.tenant, path: c.path, rdid: c.did } });
+        return caps.next();
+    },
     history: function (c, r) {
         const curHex = r.values ? r.values["_deploy/current"] : null;
         const rows = (r.pages && r.pages[0]) || [];
@@ -2428,40 +2470,39 @@ export function onCut() {
 //
 // GET /v1/sources/{tenant}/{dep_hex|current}. Authz mirrors deploy/release:
 // operator (is_root) any tenant; a customer only their own.
-function handleReadSources(tenant, depArg) {
+function handleReadSources(c, tenant, depArg) {
     const auth = request.auth || {};
     if (!auth.is_root && !auth.sub) return jsonError(401, "unauthenticated");
     if (!validId(tenant)) return jsonError(400, "invalid tenant");
     if (!auth.is_root && !canAccess(accountHashFor(auth.sub), tenant)) {
         return jsonError(403, "not your instance");
     }
-    let dep = depArg;
-    if (dep === "current") {
-        let cur;
-        try { cur = platform.scope(tenant).kv.get("_deploy/current"); }
-        catch (e) { return jsonError(404, "instance not found"); }
-        if (!cur) return jsonError(404, "no current deployment");
-        dep = cur; // stored as hex
+    if (depArg === "current") {
+        // The live pointer is the target's row — a dispatched read; the
+        // finisher continues into the manifest chain.
+        return scopedKvPark(c, tenant, { gets: ["_deploy/current"] },
+            "readSourcesCur", { tenant: tenant });
     }
-    if (!/^[0-9a-fA-F]{1,16}$/.test(dep)) return jsonError(400, "bad dep_id");
-    platform.scope(tenant).deploy.readManifest(dep,
-        { on: "onManifest", ctx: { tenant: tenant, dep: dep } });
-    return next();
+    if (!/^[0-9a-fA-F]{1,16}$/.test(depArg)) return jsonError(400, "bad dep_id");
+    c.caps.platform.scope(tenant).deploy.readManifest(depArg,
+        { on: "onManifest", ctx: { tenant: tenant, dep: depArg } });
+    return c.caps.next();
 }
 
 // Read-door continuation: the manifest JSON arrives on request.body. Parse it,
 // then kick off the sequential handler-source reads (or finish if there are
 // none).
-export function onManifest({ next, platform }) {
+export function onManifest({ next, platform, kv }) {
     const ctx = request.ctx || {};
     if (!(request.status >= 200 && request.status < 300)) {
+        consumeReadResult(kv, ctx);
         response.headers = { "content-type": "application/json" };
         response.status = request.status === 404 ? 404 : 502;
         return JSON.stringify({ error: "manifest read failed", status: request.status || 0 });
     }
     let manifest;
     try { manifest = JSON.parse((request.text || "")); }
-    catch (e) { response.status = 502; return JSON.stringify({ error: "manifest parse failed" }); }
+    catch (e) { consumeReadResult(kv, ctx); response.status = 502; return JSON.stringify({ error: "manifest parse failed" }); }
     // manifest_json stores the source/content hash under "hash".
     const entries = (manifest.entries || []).map((e) => ({
         path: e.path, kind: e.kind, content_type: e.content_type, hash: e.hash,
@@ -2490,9 +2531,10 @@ export function onManifest({ next, platform }) {
     const ctx2 = {
         tenant: ctx.tenant, dep: ctx.dep, entries: entries,
         pkgs: pkgs, app_imports: manifest.app_imports || {},
+        rdid: ctx.rdid,
     };
     const handlers = entries.filter((e) => e.kind === "handler");
-    if (handlers.length === 0) return startPkgSources(ctx2, []);
+    if (handlers.length === 0) return startPkgSources(kv, ctx2, []);
     platform.scope(ctx.tenant).blob.get(handlers[0].hash, {
         on: "onModuleSource",
         ctx: { ...ctx2, idx: 0, acc: [] },
@@ -2503,7 +2545,7 @@ export function onManifest({ next, platform }) {
 // Read-door continuation: one handler's source bytes arrive on request.body.
 // Accumulate, then either read the next handler or move on to the package
 // files.
-export function onModuleSource({ next, platform }) {
+export function onModuleSource({ next, platform, kv }) {
     const ctx = request.ctx || {};
     const handlers = (ctx.entries || []).filter((e) => e.kind === "handler");
     const ok = request.status >= 200 && request.status < 300;
@@ -2519,16 +2561,16 @@ export function onModuleSource({ next, platform }) {
         });
         return next();
     }
-    return startPkgSources(ctx, acc);
+    return startPkgSources(kv, ctx, acc);
 }
 
 // Kick off (or skip) the sequential package-file source reads that follow the
 // handler reads. Package sources are content-addressed blobs in the SAME
 // tenant's file-blobs (the pkgfile door staged them there at deploy time), so
 // the read is the same `blob.get` the handler sources use.
-function startPkgSources(ctx, handlerAcc) {
+function startPkgSources(kv, ctx, handlerAcc) {
     const files = (ctx.pkgs || []).flatMap((p) => p.files);
-    if (files.length === 0) return finishSources(ctx, handlerAcc, []);
+    if (files.length === 0) return finishSources(kv, ctx, handlerAcc, []);
     platform.scope(ctx.tenant).blob.get(files[0].source_hash, {
         on: "onPkgSource",
         ctx: { ...ctx, handler_acc: handlerAcc, pidx: 0, pacc: [] },
@@ -2537,7 +2579,7 @@ function startPkgSources(ctx, handlerAcc) {
 }
 
 // Read-door continuation: one package file's source bytes arrive.
-export function onPkgSource({ next, platform }) {
+export function onPkgSource({ next, platform, kv }) {
     const ctx = request.ctx || {};
     const files = (ctx.pkgs || []).flatMap((p) => p.files);
     // `status` is the single result signal (handler-shape.md — no request.ok).
@@ -2554,14 +2596,15 @@ export function onPkgSource({ next, platform }) {
         });
         return next();
     }
-    return finishSources(ctx, ctx.handler_acc, pacc);
+    return finishSources(kv, ctx, ctx.handler_acc, pacc);
 }
 
 // Merge handler sources into the manifest entries + respond (releases the held
 // chain). Handlers carry `source` (or `missing:true` if the blob read failed);
 // statics carry metadata only. Packages ride alongside with their files'
 // sources folded in under the virtual key.
-function finishSources(ctx, sources, pkgSources) {
+function finishSources(kv, ctx, sources, pkgSources) {
+    consumeReadResult(kv, ctx);
     const srcByPath = {};
     for (const s of sources) srcByPath[s.path] = s;
     const out = (ctx.entries || []).map((e) => {
@@ -2610,7 +2653,7 @@ function isTextual(ct) {
            base === "application/xml" || base === "image/svg+xml";
 }
 
-function handleReadSource(tenant, depArg, qs) {
+function handleReadSource(c, tenant, depArg, qs) {
     const auth = request.auth || {};
     if (!auth.is_root && !auth.sub) return jsonError(401, "unauthenticated");
     if (!validId(tenant)) return jsonError(400, "invalid tenant");
@@ -2619,47 +2662,47 @@ function handleReadSource(tenant, depArg, qs) {
     }
     const filePath = new URLSearchParams(qs || "").get("path");
     if (!filePath) return jsonError(400, "path query param required");
-    let dep = depArg;
-    if (dep === "current") {
-        let cur;
-        try { cur = platform.scope(tenant).kv.get("_deploy/current"); }
-        catch (e) { return jsonError(404, "instance not found"); }
-        if (!cur) return jsonError(404, "no current deployment");
-        dep = cur; // stored as hex
+    if (depArg === "current") {
+        return scopedKvPark(c, tenant, { gets: ["_deploy/current"] },
+            "readSourceCur", { tenant: tenant, path: filePath });
     }
-    if (!/^[0-9a-fA-F]{1,16}$/.test(dep)) return jsonError(400, "bad dep_id");
-    platform.scope(tenant).deploy.readManifest(dep,
+    if (!/^[0-9a-fA-F]{1,16}$/.test(depArg)) return jsonError(400, "bad dep_id");
+    c.caps.platform.scope(tenant).deploy.readManifest(depArg,
         { on: "onSourceFileManifest", ctx: { tenant: tenant, path: filePath } });
-    return next();
+    return c.caps.next();
 }
 
 // Read-door continuation: locate the requested entry in the manifest, gate
 // on textiness, then read its blob.
-export function onSourceFileManifest({ next, platform }) {
+export function onSourceFileManifest({ next, platform, kv }) {
     const ctx = request.ctx || {};
     if (!(request.status >= 200 && request.status < 300)) {
+        consumeReadResult(kv, ctx);
         response.headers = { "content-type": "application/json" };
         response.status = request.status === 404 ? 404 : 502;
         return JSON.stringify({ error: "manifest read failed", status: request.status || 0 });
     }
     let manifest;
     try { manifest = JSON.parse(request.text || ""); }
-    catch (e) { response.status = 502; return JSON.stringify({ error: "manifest parse failed" }); }
+    catch (e) { consumeReadResult(kv, ctx); response.status = 502; return JSON.stringify({ error: "manifest parse failed" }); }
     const entry = (manifest.entries || []).find((e) => e.path === ctx.path);
-    if (!entry) return jsonError(404, "no such file in that deployment");
+    if (!entry) { consumeReadResult(kv, ctx); return jsonError(404, "no such file in that deployment"); }
     if (!isTextual(entry.content_type) && entry.kind !== "handler") {
+        consumeReadResult(kv, ctx);
         return jsonError(415, "not a text file — binary statics carry by hash-reference");
     }
     platform.scope(ctx.tenant).blob.get(entry.hash, {
         on: "onSourceFileBlob",
         ctx: { path: entry.path, kind: entry.kind,
-               content_type: entry.content_type || "", hash: entry.hash },
+               content_type: entry.content_type || "", hash: entry.hash,
+               rdid: ctx.rdid },
     });
     return next();
 }
 
-export function onSourceFileBlob() {
+export function onSourceFileBlob({ kv }) {
     const app = request.ctx || {};
+    consumeReadResult(kv, app);
     response.headers = { "content-type": "application/json" };
     if (!(request.status >= 200 && request.status < 300)) {
         response.status = 502;
@@ -2865,10 +2908,10 @@ const ROUTES = [
     // log query door (handler enforces is_root) — /v1/logs/{tenant}/{list|count|show/{id}}
     ["GET",    "/v1/logs/*",                    "self",          (c) => handleLogQuery(c.path, c.qs)],
     // source read door (handler enforces canAccess) — /v1/sources/{tenant}/{dep}
-    ["GET",    "/v1/sources/*",                 "self",          (c) => handleSourcesPath(c.path)],
+    ["GET",    "/v1/sources/*",                 "self",          (c) => handleSourcesPath(c)],
     // single-file twin (text only; the file path rides the query so its
     // slashes never meet the segment matcher) — /v1/source/{tenant}/{dep}?path=…
-    ["GET",    "/v1/source/:id/:dep",           "self",          (c) => handleReadSource(c.params.id, c.params.dep, c.qs)],
+    ["GET",    "/v1/source/:id/:dep",           "self",          (c) => handleReadSource(c, c.params.id, c.params.dep, c.qs)],
     // CP control + read doors (handlers enforce is_root)
     ["POST",   "/v1/cp/:op",                    "self",          (c) => handleCpPost(c.params.op, c.rawBody)],
     ["GET",    "/v1/cp/:op",                    "self",          (c) => handleCpRead(c.params.op, c.qs)],
@@ -2948,11 +2991,11 @@ function handleCpPost(op, rawBody) {
 }
 
 // /v1/sources/{tenant}/{dep|current} — split the wildcard tail for the read door.
-function handleSourcesPath(path) {
-    const rest = path.slice("/v1/sources/".length);
+function handleSourcesPath(c) {
+    const rest = c.path.slice("/v1/sources/".length);
     const slash = rest.indexOf("/");
     if (slash < 1) return jsonError(400, "bad sources path");
-    return handleReadSources(rest.slice(0, slash), rest.slice(slash + 1));
+    return handleReadSources(c, rest.slice(0, slash), rest.slice(slash + 1));
 }
 
 // ── Single entry point (default export) ─────────────────────────────

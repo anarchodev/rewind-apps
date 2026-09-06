@@ -58,7 +58,7 @@ const M2M_PATHS = ["/v1/deploy/reset", "/v1/deploy/file", "/v1/deploy/pkgfile", 
 // (dispatched root writes) alongside customer-facing routes; the bearer
 // only gets past this line, and `routeAuthz` still decides who may do
 // what on every one of them.
-const M2M_PREFIXES = ["/v1/cp/", "/v1/instances/", "/v1/domains/"];
+const M2M_PREFIXES = ["/v1/cp/", "/v1/instances/", "/v1/domains/", "/v1/sources/", "/v1/source/"];
 const isM2MPath = (p) =>
     M2M_PATHS.indexOf(p) !== -1 || M2M_PREFIXES.some((q) => p.indexOf(q) === 0);
 
