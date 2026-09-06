@@ -79,11 +79,16 @@ expect(m.bundle_requested).toBe(true);
 // job, plus its `_sched/by_time/` index twin. Found via the effect log —
 // the sid derivation is the package's own (crypto.sha256b64url is not a
 // test-context global).
+// The effect log also carries the dispatch's OWN watchdog rows (the
+// start rides a dispatched activation now), so select by parsed target
+// rather than by position.
 const schedWrites = started.effects.filter((e) =>
   typeof e.key === "string" && e.key.indexOf("_sched/by_id/") === 0 &&
-  typeof e.value === "string" && e.value.indexOf("\"target\"") !== -1);
-expect(schedWrites.length >= 1).toBe(true); // the re-arm read shows up too
-const byId = JSON.parse(schedWrites[schedWrites.length - 1].value);
+  typeof e.value === "string" && e.value.indexOf("\"target\"") !== -1)
+  .map((e) => JSON.parse(e.value))
+  .filter((r) => r.target === "__system/export_run");
+expect(schedWrites.length >= 1).toBe(true);
+const byId = schedWrites[schedWrites.length - 1];
 expect(byId.target).toBe("__system/export_run");
 expect(byId.key).toBe("_export/" + eid);
 expect(started.effects.some((e) =>
