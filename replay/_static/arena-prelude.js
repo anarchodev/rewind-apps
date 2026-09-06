@@ -726,6 +726,10 @@
       // surfacing at its site, not a watchdog loop.
       dispatchResolve: function(id, marker){
         var tenant = marker.tenant, module = marker.module;
+        // The op record — what the effect log names (which module, against
+        // which tenant, on whose behalf); the target's own writes follow as
+        // store-tagged entries.
+        push({ kind: "platform", op: "dispatch", tenant: tenant, module: module, actor: marker.actor });
         var msg = marker.ctx === undefined || marker.ctx === null ? {} : marker.ctx;
         var status = 200, body = "";
         if (module === "__system/scope_kv") {
@@ -748,6 +752,22 @@
             for (var di = 0; di < deletes.length; di++) st.delete(deletes[di]);
             body = JSON.stringify({ values: values, pages: pages });
           }
+        } else if (module === "__system/release_flip") {
+          // The release flip (dep_hex via ctx — the dashboard's publish).
+          // Same rows the baked source writes: the live pointer plus the
+          // lex-ordered history row; a same-id re-flip writes nothing.
+          var fst = storeKv(NS_STORE + "i/" + tenant + "/", "i/" + tenant);
+          var fh = typeof msg.dep_hex === "string" ? msg.dep_hex : "";
+          if (!/^[0-9a-fA-F]{1,16}$/.test(fh)) { status = 400; body = "dep_hex must be a hex u64 > 0"; }
+          else {
+            var fhex = fh.toLowerCase();
+            while (fhex.length < 16) fhex = "0" + fhex;
+            if (fst.get("_deploy/current") !== fhex) {
+              fst.set("_deploy/current", fhex);
+              fst.set("_release/" + String(Date.now()).padStart(20, "0"), fhex);
+            }
+            status = 204;
+          }
         } else if (module === "__system/root_kv_install") {
           // Only in root scope: at a TENANT target this module writes the
           // target's store RAW (below the user root), a spelling the sim's
@@ -764,9 +784,11 @@
         // The result row + marker resolve, exactly the writeset
         // `__system/dispatch_result` commits live — recorded
         // (store-untagged = the origin's own store) so it folds forward.
-        var row = JSON.stringify({ v: 1, status: status, overflow: false, body: body });
-        push({ kind: "write", key: "_dispatch/result/" + id, value: row });
-        globalThis.kv.set("_dispatch/result/" + id, row);
+        if (marker.no_result !== true) {
+          var row = JSON.stringify({ v: 1, status: status, overflow: false, body: body });
+          push({ kind: "write", key: "_dispatch/result/" + id, value: row });
+          globalThis.kv.set("_dispatch/result/" + id, row);
+        }
         push({ kind: "delete", key: "_dispatch/owed/" + id });
         globalThis.kv.delete("_dispatch/owed/" + id);
         // Cancel the watchdog pair the shim armed (same derivation as the
@@ -785,7 +807,6 @@
         }
       },
       instances: { deployStarter: gate(function(name){ push({ kind: "platform", op: "instances.deployStarter", name: name }); }) },
-      releases: { publish: gate(function(tenant, depId){ push({ kind: "platform", op: "releases.publish", tenant: tenant, depId: depId }); }) },
       // No `auth` verb: the operator-root verdict is `request.rewind.isRoot`,
       // supplied by the world (scenario({ isRoot })) and folded from the
       // root_verdict tape entry — never a call taking the bearer. A token the
@@ -2610,7 +2631,7 @@ globalThis.time = {
 
   /**
    * Admin control plane: cross-tenant kv access, the platform root
-   * store, instance lifecycle, releases, and root-token auth. Only
+   * store, instance lifecycle, and root-token auth. Only
    * usable from the `__admin__` handler.
    *
    * @namespace platform
@@ -2637,7 +2658,7 @@ globalThis.time = {
      *     (`[{path, kind, source_hex, bytecode_hex?, content_type?}]`);
      *     stampManifest returns the dep_id (16-hex). Compose deploys with
      *     {@link platform.compile} (handlers) + `blob.receive` (statics) +
-     *     `stampManifest`, then activate with {@link platform.releases.publish}.
+     *     `stampManifest`, then activate by dispatching `__system/release_flip`.
      *   Unknown id throws `Error{code:"InstanceNotFound"}`.
      *
      * @example
@@ -2783,7 +2804,7 @@ globalThis.time = {
      * `request.ctx = {ok, results:[{path, source_hex, bytecode_hex}]}`
      * (or `{ok:false, status, error}`). Compose the manifest from those
      * hashes + your statics and stamp it there. Stage/activate is still a
-     * separate `platform.releases.publish`.
+     * separate release dispatch (`__system/release_flip`).
      *
      * Imports resolve — and are therefore VALIDATED — across the whole
      * batch: a handler may import a sibling in the same call, and a
@@ -2885,30 +2906,6 @@ globalThis.time = {
     },
 
     /**
-     * Releases.
-     *
-     * @namespace platform.releases
-     */
-    releases: {
-      /**
-       * Activate deployment `depId` on `tenantId`: stamp
-       * `_deploy/current`, propose envelope-0 through raft (no
-       * blocking on consensus), and enqueue the deployment loader.
-       * Returns sub-millisecond; consensus + bytecode load run async.
-       * Throws `Error{code:"InstanceNotFound"}` if `tenantId` doesn't
-       * resolve.
-       *
-       * @param {string} tenantId - Target instance id.
-       * @param {string} depId - Deployment id to activate.
-       * @returns {void}
-       * @example platform.releases.publish("acme-prod", depId);
-       */
-      publish(tenantId, depId) {
-        return sys.releases.publish(tenantId, depId);
-      },
-    },
-
-    /**
      * Run a platform action in another tenant's scope — durably.
      *
      * The primitive that unfuses *whose code runs* from *whose data it runs
@@ -2939,6 +2936,10 @@ globalThis.time = {
      * @param {object} [opts]
      * @param {*} [opts.ctx] - Argument payload, JSON-serialisable.
      * @param {string} [opts.fn] - Named export; default export when omitted.
+     * @param {boolean} [opts.result=true] - When false, the resolution
+     *   deletes the owed marker but writes no `_dispatch/result/{id}` row —
+     *   fire-and-forget. A caller that will never harvest must say so, or
+     *   every call leaks one row of the target's output into this store.
      * @param {"tenant_user"|"operator"|"system"} [opts.actor="system"] -
      *   WHO caused this, as the target's log will record it. Three values
      *   because "the dashboard did it" hides the split a reader most wants:
@@ -2954,6 +2955,9 @@ globalThis.time = {
     dispatch(tenant, module, opts) {
       opts = opts || {};
       _rejectRenamed("platform.dispatch", opts, { on: "fn", context: "ctx" });
+      if (opts.result !== undefined && typeof opts.result !== "boolean") {
+        throw new TypeError("platform.dispatch: result must be a boolean");
+      }
       if (typeof tenant !== "string" || !tenant) {
         throw new TypeError("platform.dispatch: tenant must be a non-empty string");
       }
@@ -2985,6 +2989,13 @@ globalThis.time = {
         fn: typeof opts.fn === "string" ? opts.fn : null,
         actor: actor,
       };
+      // `result: false` — fire-and-forget: the resolution still deletes the
+      // marker (the durability contract), but writes no `_dispatch/result/`
+      // row. A caller that will never harvest must say so, or every call
+      // leaks one row of another tenant's output into this store. Additive
+      // on the marker (absent = write the row), so the record version
+      // holds.
+      if (opts.result === false) marker.no_result = true;
 
       // The marker and its watchdog ride THIS activation's writeset, so the
       // intent and its recovery commit together or not at all. Written

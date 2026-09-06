@@ -3,14 +3,15 @@
 // The live release path once base-10-coerced a hex dep_id (JSON.parse → f64):
 // sha256-derived dep_ids exceed 2^53, so a coerced id released the WRONG (rounded)
 // manifest, and a–f ids were rejected outright. The fix rejects a JSON *number*
-// and requires a hex *string*, echoed byte-for-byte into platform.releases.publish.
+// and requires a hex *string*, echoed byte-for-byte into the release dispatch.
 // This suite pins that: a number 400s, and a hex id (with a–f, and a full 16-digit
 // id above 2^53) round-trips unchanged.
 //
 // publishRelease is reached through the real router + the real `_middlewares` OIDC
 // guard, so the scenario seeds the RP config (config-mirrored from
 // admin/_config/oidc/rp/default.json on deploy) and an unexpired `_rp/sess/{sid}`.
-// `admin: true` unlocks platform.* (releases.publish is admin-gated).
+// `admin: true` unlocks platform.* (the release dispatch is admin-gated), and
+// the scenario declares `acme` — the dispatch resolves its target eagerly.
 import { scenario, expect } from "rewind:test";
 
 const RP_CONFIG = {
@@ -32,6 +33,7 @@ const op = scenario({
     "_config/oidc/rp/default": RP_CONFIG,
     "_rp/sess/op": sess("ops@rewindjs.com", true),
   },
+  instances: { acme: {} },
 });
 
 function release(s, id, body, sid) {
@@ -43,7 +45,10 @@ function release(s, id, body, sid) {
   });
 }
 
-const published = (n) => n.effects.some((e) => e.kind === "platform" && e.op === "releases.publish");
+// The flip is a dispatched activation now — the platform effect is the
+// dispatch itself, and the flip's rows land in the TARGET's store.
+const published = (n) => n.effects.some((e) =>
+  e.kind === "platform" && e.op === "dispatch" && e.module === "__system/release_flip");
 
 // ── CRITICAL: a JSON-number dep_id is REJECTED, never coerced ──
 // 0x12345678 as a bare number — the old path base-10-coerced this and released a
@@ -58,6 +63,9 @@ const hex = release(op, "acme", { dep_id: "abcdef123456" }, "op");
 expect(hex.status).toBe(202);
 expect(hex.body).toEqual({ instance_id: "acme", dep_id: "abcdef123456", status: "queued" });
 expect(published(hex)).toBe(true);
+// The flip landed in acme's own store, canonically 16-hex-padded, with the
+// lex-ordered history row beside it.
+expect(hex.instanceKv("acme", "_deploy/current")).toBe("0000abcdef123456");
 
 // ── CRITICAL: a full 16-hex-digit id (> 2^53) survives with no precision loss ──
 const big = release(op, "acme", { dep_id: "ffffffffffffffff" }, "op");
@@ -89,6 +97,7 @@ const stranger = scenario({
     "_config/oidc/rp/default": RP_CONFIG,
     "_rp/sess/jess": sess("jess@example.com", false),
   },
+  instances: { acme: {} },
 });
 const denied = release(stranger, "acme", { dep_id: "1a2b" }, "jess");
 expect(denied.status).toBe(403);
