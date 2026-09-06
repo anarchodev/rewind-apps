@@ -431,7 +431,7 @@ function kvDelete(c, id, key) {
 // a non-operator may release ONLY a tenant they own (`account/{hash}/instances/
 // {id}` via `ownedInstances`). Previously this checked nothing — any
 // authenticated session could release any tenant.
-export function publishRelease(instance_id, dep_id) {
+export function publishRelease(c, instance_id, dep_id) {
     if (!validId(instance_id)) {
         response.status = 400;
         return { error: "invalid instance_id" };
@@ -455,8 +455,15 @@ export function publishRelease(instance_id, dep_id) {
     if (!auth.is_root && !canAccess(accountHashFor(auth.sub), instance_id)) {
         return jsonError(403, "not your instance");
     }
+    // Fire-and-forget, like the verb this replaces: the dispatch marker +
+    // watchdog make the flip durable, so the 202 needs no park — the flip
+    // takes a position in the TARGET's own log (the release_flip
+    // activation), and the apply-side observer enqueues the loader on
+    // every node.
     try {
-        platform.releases.publish(instance_id, dep);
+        c.caps.platform.dispatch(instance_id, "__system/release_flip",
+            { ctx: { dep_hex: dep }, result: false,
+              actor: auth.is_root ? "operator" : "tenant_user" });
     } catch (e) {
         if (e && e.code === "InstanceNotFound") {
             response.status = 404;
@@ -3026,7 +3033,7 @@ const ROUTES = [
     ["PUT",    "/v1/instances/:id",             "root",          (c) => createInstance(c, c.params.id)],  // operator raw
     ["GET",    "/v1/instances/:id",             "tenant",        (c) => getInstance(c.params.id)],
     ["DELETE", "/v1/instances/:id",             "tenant",        (c) => deleteInstance(c.params.id, c.body && c.body.confirm)],
-    ["POST",   "/v1/instances/:id/release",     "tenant",        (c) => publishRelease(c.params.id, c.body.dep_id)],
+    ["POST",   "/v1/instances/:id/release",     "tenant",        (c) => publishRelease(c, c.params.id, c.body.dep_id)],
     ["POST",   "/v1/instances/:id/export",      "tenant",        (c) => startExport(c, c.params.id)],
     ["GET",    "/v1/instances/:id/export",      "tenantRead",    (c) => listExports(c, c.params.id)],
     ["GET",    "/v1/instances/:id/export/:eid", "tenantRead",    (c) => getExport(c, c.params.id, c.params.eid)],
