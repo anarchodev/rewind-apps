@@ -190,8 +190,15 @@ function scopedKvPark(c, tenant, ask, fin, extra) {
         }
         throw e;
     }
-    c.caps.after.kv("_dispatch/owed/" + did, { on: "onScopedKv" });
     const ctx = Object.assign({ did: did, fin: fin }, extra || {});
+    // Offline the dispatch resolves eagerly (the sim's dispatchResolve), so
+    // the marker is already gone — harvest inline and answer in THIS
+    // activation. Live the marker stands and the route parks; the wake
+    // below runs the same finish.
+    if (c.caps.kv.get("_dispatch/owed/" + did) === null) {
+        return scopedKvFinish(ctx, c.caps);
+    }
+    c.caps.after.kv("_dispatch/owed/" + did, { on: "onScopedKv" });
     return c.caps.next(ctx);
 }
 
@@ -205,7 +212,17 @@ function scopedKvPark(c, tenant, ask, fin, extra) {
 export function onScopedKv({ kv, platform, after, next }) {
     const c = request.ctx || {};
     if (kv.get("_dispatch/owed/" + c.did) !== null) return next(c);
-    const raw = kv.get("_dispatch/result/" + c.did);
+    return scopedKvFinish(c, { kv: kv, platform: platform, after: after, next: next });
+}
+
+// The finish half — shared by the wake above and scopedKvPark's inline
+// path (a dispatch that resolved before the park was needed).
+function scopedKvFinish(c, caps) {
+    // `caps.kv` spelled at each use, never re-bound to a bare `kv` — a
+    // module-scope `const kv = …` reads as "this file received kv" to the
+    // ambient-use ratchet for everything below it, hiding the file's real
+    // remaining migration behind one helper.
+    const raw = caps.kv.get("_dispatch/result/" + c.did);
     if (raw === null) {
         response.status = 502;
         return { error: "scoped kv resolved without a result" };
@@ -215,7 +232,7 @@ export function onScopedKv({ kv, platform, after, next }) {
     // (a writing resume drops its connection-scoped fetches —
     // bind-from-writing-resume is not wired). For those, the result row is
     // consumed at the chain's terminal hop (`consumeReadResult`) instead.
-    if (!SCOPED_KV_CHAIN_FINS[c.fin]) kv.delete("_dispatch/result/" + c.did);
+    if (!SCOPED_KV_CHAIN_FINS[c.fin]) caps.kv.delete("_dispatch/result/" + c.did);
     let rec = null;
     try { rec = JSON.parse(raw); } catch (_e) { /* fall through */ }
     if (!rec || rec.v !== 1) {
@@ -238,7 +255,7 @@ export function onScopedKv({ kv, platform, after, next }) {
     }
     const fin = SCOPED_KV_FINISHERS[c.fin];
     if (!fin) { response.status = 500; return { error: "unknown scoped kv finisher" }; }
-    return fin(c, payload, { kv: kv, platform: platform, after: after, next: next });
+    return fin(c, payload, caps);
 }
 
 const SCOPED_KV_CHAIN_FINS = { readSourcesCur: true, readSourceCur: true };
@@ -292,6 +309,64 @@ const SCOPED_KV_FINISHERS = {
         caps.platform.scope(c.tenant).deploy.readManifest(cur,
             { on: "onSourceFileManifest", ctx: { tenant: c.tenant, path: c.path, rdid: c.did } });
         return caps.next();
+    },
+    exportList: function (c, r) {
+        const rows = (r.pages && r.pages[0]) || [];
+        const out = [];
+        for (const e of rows) {
+            let st = null;
+            try { st = JSON.parse(e.value); } catch (_) { continue; }
+            out.push(exportMeta(e.key.slice("_export/".length), st));
+        }
+        // `started_at` descending — the UI leads with the newest.
+        out.sort((a, b) => (b.started_at || 0) - (a.started_at || 0));
+        return { tenant: c.tenant, exports: out };
+    },
+    exportStartCheck: function (c, r, caps) {
+        const rows = (r.pages && r.pages[0]) || [];
+        for (const e of rows) {
+            try {
+                if (JSON.parse(e.value).state === "running")
+                    return jsonError(409, "an export is already running");
+            } catch (_) { /* unparseable marker cannot be running */ }
+        }
+        // The lib constructs the rows (one construction for both writers);
+        // the dispatch commits them atomically in the target's own log,
+        // where the apply-side sched arm starts the job.
+        const made = exportLib.startRows({ bundle: true });
+        return scopedKvPark({ caps: caps }, c.tenant, { pairs: made.rows },
+            "exportStarted", { tenant: c.tenant, id: made.id });
+    },
+    exportStarted: function (c, _r) {
+        response.status = 202;
+        return { id: c.id };
+    },
+    exportGet: function (c, r) {
+        const raw = r.values ? r.values["_export/" + c.eid] : null;
+        let st = null;
+        if (raw !== null && raw !== undefined) {
+            try { st = JSON.parse(raw); } catch (_) { /* fall through */ }
+        }
+        if (st === null) return jsonError(404, "no such export");
+        return exportMeta(c.eid, st);
+    },
+    exportLinks: function (c, r, caps) {
+        const raw = r.values ? r.values["_export/" + c.eid] : null;
+        let st = null;
+        if (raw !== null && raw !== undefined) {
+            try { st = JSON.parse(raw); } catch (_) { /* fall through */ }
+        }
+        if (st === null) return jsonError(404, "no such export");
+        if (st.state !== "done") return jsonError(409, "export not finished");
+        const scope = caps.platform.scope(c.tenant);
+        const parts = Array.isArray(st.parts) ? st.parts : [];
+        const links = parts.map((p) => ({
+            hash: p.hash,
+            bytes: p.bytes || 0,
+            kind: p.kind || "kv",
+            url: scope.blob.exportUrl(p.hash, { ttl: EXPORT_LINK_TTL_S }),
+        }));
+        return { id: c.eid, ttl_seconds: EXPORT_LINK_TTL_S, links: links };
     },
     history: function (c, r) {
         const curHex = r.values ? r.values["_deploy/current"] : null;
@@ -2885,56 +2960,37 @@ function exportMeta(id, st) {
     };
 }
 
-function listExports(tenant) {
-    const rows = platform.scope(tenant).kv.prefix("_export/", "", 100);
-    const out = [];
-    for (const e of rows) {
-        let st = null;
-        try { st = JSON.parse(e.value); } catch (_) { continue; }
-        out.push(exportMeta(e.key.slice("_export/".length), st));
-    }
-    // `started_at` descending — the UI leads with the newest.
-    out.sort((a, b) => (b.started_at || 0) - (a.started_at || 0));
-    return { tenant: tenant, exports: out };
+// Every export route's kv is a dispatched activation in the TARGET's own
+// scope (the scoped-kv door is retiring); only the presigned links keep the
+// scope HANDLE — `blob.exportUrl` is an S3 operation keyed by prefix,
+// cluster-agnostic and store-free.
+function listExports(c, tenant) {
+    return scopedKvPark(c, tenant,
+        { prefixes: [{ prefix: "_export/", limit: 100 }] },
+        "exportList", { tenant: tenant });
 }
 
-function startExport(tenant) {
-    const scoped = exportLib.forScope(platform.scope(tenant));
+function startExport(c, tenant) {
     // One at a time per tenant: a second concurrent walk doubles the S3
     // writes for zero information — the artifact is a snapshot either way.
-    const rows = platform.scope(tenant).kv.prefix("_export/", "", 100);
-    for (const e of rows) {
-        try {
-            if (JSON.parse(e.value).state === "running")
-                return jsonError(409, "an export is already running");
-        } catch (_) { /* unparseable marker cannot be running */ }
-    }
-    const id = scoped.start({ bundle: true });
-    response.status = 202;
-    return { id: id };
+    // The check and the start are two dispatched hops, so the window
+    // between them is wider than the old single-activation pair — same
+    // no-lease posture, same worst case (a duplicate snapshot).
+    return scopedKvPark(c, tenant,
+        { prefixes: [{ prefix: "_export/", limit: 100 }] },
+        "exportStartCheck", { tenant: tenant });
 }
 
-function getExport(tenant, eid) {
+function getExport(c, tenant, eid) {
     if (typeof eid !== "string" || !eid) return jsonError(400, "bad export id");
-    const st = exportLib.forScope(platform.scope(tenant)).get(eid);
-    if (st === null) return jsonError(404, "no such export");
-    return exportMeta(eid, st);
+    return scopedKvPark(c, tenant, { gets: ["_export/" + eid] },
+        "exportGet", { tenant: tenant, eid: eid });
 }
 
-function getExportLinks(tenant, eid) {
+function getExportLinks(c, tenant, eid) {
     if (typeof eid !== "string" || !eid) return jsonError(400, "bad export id");
-    const scope = platform.scope(tenant);
-    const st = exportLib.forScope(scope).get(eid);
-    if (st === null) return jsonError(404, "no such export");
-    if (st.state !== "done") return jsonError(409, "export not finished");
-    const parts = Array.isArray(st.parts) ? st.parts : [];
-    const links = parts.map((p) => ({
-        hash: p.hash,
-        bytes: p.bytes || 0,
-        kind: p.kind || "kv",
-        url: scope.blob.exportUrl(p.hash, { ttl: EXPORT_LINK_TTL_S }),
-    }));
-    return { id: eid, ttl_seconds: EXPORT_LINK_TTL_S, links: links };
+    return scopedKvPark(c, tenant, { gets: ["_export/" + eid] },
+        "exportLinks", { tenant: tenant, eid: eid });
 }
 
 // ── REST router ─────────────────────────────────────────────────────
@@ -2971,10 +3027,10 @@ const ROUTES = [
     ["GET",    "/v1/instances/:id",             "tenant",        (c) => getInstance(c.params.id)],
     ["DELETE", "/v1/instances/:id",             "tenant",        (c) => deleteInstance(c.params.id, c.body && c.body.confirm)],
     ["POST",   "/v1/instances/:id/release",     "tenant",        (c) => publishRelease(c.params.id, c.body.dep_id)],
-    ["POST",   "/v1/instances/:id/export",      "tenant",        (c) => startExport(c.params.id)],
-    ["GET",    "/v1/instances/:id/export",      "tenantRead",    (c) => listExports(c.params.id)],
-    ["GET",    "/v1/instances/:id/export/:eid", "tenantRead",    (c) => getExport(c.params.id, c.params.eid)],
-    ["GET",    "/v1/instances/:id/export/:eid/links", "tenantRead", (c) => getExportLinks(c.params.id, c.params.eid)],
+    ["POST",   "/v1/instances/:id/export",      "tenant",        (c) => startExport(c, c.params.id)],
+    ["GET",    "/v1/instances/:id/export",      "tenantRead",    (c) => listExports(c, c.params.id)],
+    ["GET",    "/v1/instances/:id/export/:eid", "tenantRead",    (c) => getExport(c, c.params.id, c.params.eid)],
+    ["GET",    "/v1/instances/:id/export/:eid/links", "tenantRead", (c) => getExportLinks(c, c.params.id, c.params.eid)],
     ["GET",    "/v1/instances/:id/kv",          "tenantRead",    (c) => kvRead(c, c.params.id, c.query)],
     ["PUT",    "/v1/instances/:id/kv",          "tenantWrite",   (c) => kvSet(c, c.params.id, c.body.key, c.body.value)],
     ["DELETE", "/v1/instances/:id/kv",          "tenantWrite",   (c) => kvDelete(c, c.params.id, c.query.key)],
