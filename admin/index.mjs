@@ -455,13 +455,16 @@ export function publishRelease(c, instance_id, dep_id) {
     if (!auth.is_root && !canAccess(accountHashFor(auth.sub), instance_id)) {
         return jsonError(403, "not your instance");
     }
-    // Fire-and-forget, like the verb this replaces: the dispatch marker +
-    // watchdog make the flip durable, so the 202 needs no park — the flip
-    // takes a position in the TARGET's own log (the release_flip
-    // activation), and the apply-side observer enqueues the loader on
-    // every node.
+    // The flip is a dispatched activation in the TARGET's own log (the
+    // apply-side observer enqueues the loader on every node). The 202 is
+    // COMMIT-GATED: the route parks on the owed marker and answers only
+    // once the flip resolved — a client that publishes and immediately
+    // lists deployments must see it live, which is the durability boundary
+    // the trampoline this replaced gave. `result: false` — the marker's
+    // resolution is the signal; no result row to consume.
+    let did;
     try {
-        c.caps.platform.dispatch(instance_id, "__system/release_flip",
+        did = c.caps.platform.dispatch(instance_id, "__system/release_flip",
             { ctx: { dep_hex: dep }, result: false,
               actor: auth.is_root ? "operator" : "tenant_user" });
     } catch (e) {
@@ -471,8 +474,24 @@ export function publishRelease(c, instance_id, dep_id) {
         }
         throw e;
     }
+    const rctx = { did: did, instance_id: instance_id, dep_id: dep };
+    // Offline the dispatch resolves eagerly — answer in this activation.
+    if (c.caps.kv.get("_dispatch/owed/" + did) === null) {
+        return releaseFlipAnswer(rctx);
+    }
+    c.caps.after.kv("_dispatch/owed/" + did, { on: "onReleaseFlipDone" });
+    return c.caps.next(rctx);
+}
+
+function releaseFlipAnswer(c) {
     response.status = 202;
-    return { instance_id: instance_id, dep_id: dep, status: "queued" };
+    return { instance_id: c.instance_id, dep_id: c.dep_id, status: "queued" };
+}
+
+export function onReleaseFlipDone({ kv, next }) {
+    const c = request.ctx || {};
+    if (kv.get("_dispatch/owed/" + c.did) !== null) return next(c);
+    return releaseFlipAnswer(c);
 }
 
 // ── OIDC relying-party surface (auth-domain-plan §4.7 "3-6 part 2")
