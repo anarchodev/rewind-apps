@@ -62,7 +62,7 @@ const M2M_PREFIXES = ["/v1/cp/", "/v1/instances/", "/v1/domains/", "/v1/sources/
 const isM2MPath = (p) =>
     M2M_PATHS.indexOf(p) !== -1 || M2M_PREFIXES.some((q) => p.indexOf(q) === 0);
 
-export function before() {
+export function before({ kv, config }) {
     // `request.path` is already query-free (handler-shape.md) — the split it
     // used to do here was a no-op that only obscured that.
     const path = request.path;
@@ -84,7 +84,7 @@ export function before() {
         // logged-in customer can deploy their own tenant via session.
     }
 
-    const auth = oidc.rp("default").guard();
+    const auth = oidc.rp({ kv, config }, "default").guard();
     if (!auth) {
         response.status = 401;
         return { error: "unauthenticated" };

@@ -40,13 +40,13 @@ function ownsTenant(kv, sub, tenant) {
 // Returns the authorized actor ({ is_root } / { sub }) for `tenant`, or null
 // after stamping the error response. Root token → operator; else an OIDC
 // session that owns `tenant`.
-function authFor(kv, tenant) {
+function authFor(kv, config, tenant) {
   // Operator root: the engine-computed verdict. `authorization` is stripped on
   // a platform-bound handler, because a header the handler reads is a header
   // the replay tape records (rove docs/architecture/privileged-surface.md).
   if (request.rewind.isRoot) return { is_root: true };
   let sess = null;
-  try { sess = oidc.rp("default").guard(); } catch (_) { sess = null; }
+  try { sess = oidc.rp({ kv, config }, "default").guard(); } catch (_) { sess = null; }
   if (sess && sess.sub) {
     if (sess.is_root || ownsTenant(kv, sess.sub, tenant)) return sess;
     response.status = 403; return null;
@@ -54,13 +54,13 @@ function authFor(kv, tenant) {
   response.status = 401; return null;
 }
 
-export function onHeaders({ kv, next, platform }) {
+export function onHeaders({ kv, config, next, platform }) {
   const q = new URLSearchParams(request.query || "");
   const tenant = q.get("tenant");
   const path = q.get("path");
   const ct = q.get("content_type") || "";
   if (!tenant || !path) { response.status = 400; return "tenant + path required\n"; }
-  if (!authFor(kv, tenant)) return ""; // status already stamped (401/403)
+  if (!authFor(kv, config, tenant)) return ""; // status already stamped (401/403)
   // Stream the body → target's file-blobs; onStored records the entry.
   platform.scope(tenant).blob.receive({
     on: "onStored",
