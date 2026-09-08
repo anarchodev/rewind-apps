@@ -826,29 +826,33 @@
 // customer code must never reference it directly. The bundled
 // jwt/oauth/oidc/sessions libraries compose on this shim.
 //
-// Evaluated as a global script (no module/exports) into every
-// dispatcher context after the native bindings install.
+// A FACTORY (`docs/architecture/package-isolation.md`, the
+// received-not-ambient model): the engine invokes it once per context
+// with its capability slice as the one argument (`_factories_invoke.js`)
+// and installs the returned surface at the public name. The factory has
+// no module-scope bindings for a handler to resolve; its capabilities
+// exist only inside this closure.
 
-(function () {
-  const sys = _system.crypto;
+/**
+ * Cryptographic primitives. Random sources (`getRandomValues`,
+ * `randomUUID`, `randomBytes`) are replay-deterministic — captured
+ * to the request tape and re-issued identically on replay. Hash and
+ * signature-verify operations are pure functions of their inputs and
+ * are not taped.
+ *
+ * Two signature families, named by their KEY FORMAT — don't mix
+ * them: `verifyEcdsa` / `verifyRsa` take a JWK (the JOSE world:
+ * JWTs, OIDC id_tokens, JWKS documents); `ecdsaSign` /
+ * `ecdsaVerify` / `ecdsaGenerateKey` take raw key bytes (the
+ * protocol-crypto world: your own signing recipes). `oidcSign`
+ * is the JOSE-side signer (PEM private key → compact JWS).
+ *
+ * @namespace crypto
+ */
+__rove_factories.crypto = function (caps) {
+  const sys = caps.crypto;
 
-  /**
-   * Cryptographic primitives. Random sources (`getRandomValues`,
-   * `randomUUID`, `randomBytes`) are replay-deterministic — captured
-   * to the request tape and re-issued identically on replay. Hash and
-   * signature-verify operations are pure functions of their inputs and
-   * are not taped.
-   *
-   * Two signature families, named by their KEY FORMAT — don't mix
-   * them: `verifyEcdsa` / `verifyRsa` take a JWK (the JOSE world:
-   * JWTs, OIDC id_tokens, JWKS documents); `ecdsaSign` /
-   * `ecdsaVerify` / `ecdsaGenerateKey` take raw key bytes (the
-   * protocol-crypto world: your own signing recipes). `oidcSign`
-   * is the JOSE-side signer (PEM private key → compact JWS).
-   *
-   * @namespace crypto
-   */
-  globalThis.crypto = {
+  return {
     /**
      * Fill a typed array with cryptographically random bytes, in
      * place. Web Crypto compatible.
@@ -1042,9 +1046,11 @@
      *   JWKS endpoint; `kid` is the key id.
      *
      * @example
-     * const { priv, jwk, kid } = crypto.oidcGenerateKey();
-     * kv.set("oidc/privkey", priv);
-     * kv.set("oidc/jwks", JSON.stringify({ keys: [jwk] }));
+     * export default ({ kv }) => {
+     *   const { priv, jwk, kid } = crypto.oidcGenerateKey();
+     *   kv.set("oidc/privkey", priv);
+     *   kv.set("oidc/jwks", JSON.stringify({ keys: [jwk] }));
+     * };
      */
     oidcGenerateKey() {
       return sys.oidcGenerateKey();
@@ -1084,8 +1090,10 @@
      *   33-byte compressed SEC1 point (`0x02`/`0x03 ‖ X`).
      *
      * @example
-     * const { privateKey, publicKey } = crypto.ecdsaGenerateKey("secp256k1");
-     * kv.set("repo/signing-key", base64url.encode(privateKey));
+     * export default ({ kv }) => {
+     *   const { privateKey, publicKey } = crypto.ecdsaGenerateKey("secp256k1");
+     *   kv.set("repo/signing-key", base64url.encode(privateKey));
+     * };
      */
     ecdsaGenerateKey(curve) {
       return sys.ecdsaGenerateKey(curve);
@@ -1130,7 +1138,7 @@
       return sys.ecdsaVerify(curve, publicKey, data, sig);
     },
   };
-})();
+};
 
 // ── src/js/globals/http.js ──
 ;// SPDX-FileCopyrightText: 2026 Loop46, Inc.
@@ -1145,22 +1153,26 @@
 // `_system.*` is the internal ABI and customer code must never
 // reference it directly.
 //
-// Evaluated as a global script (no module/exports) into every
-// dispatcher context after the native bindings install.
+// A FACTORY (`docs/architecture/package-isolation.md`, the
+// received-not-ambient model): the engine invokes it once per context
+// with its capability slice as the one argument (`_factories_invoke.js`)
+// and installs the returned surface at the public name. The factory has
+// no module-scope bindings for a handler to resolve; its capabilities
+// exist only inside this closure.
 
-(function () {
-  const sys = _system.http;
+/**
+ * Long-lived held outbound subscriptions. The one-shot outbound
+ * primitives are {@link after.fetch} (connection-scoped; cancel via
+ * {@link after.cancel}) and {@link webhook.send} (durable,
+ * connectionless); `http.subscribe` holds an upstream that pushes to
+ * YOU.
+ *
+ * @namespace http
+ */
+__rove_factories.http = function (caps) {
+  const sys = caps.http;
 
-  /**
-   * Long-lived held outbound subscriptions. The one-shot outbound
-   * primitives are {@link after.fetch} (connection-scoped; cancel via
-   * {@link after.cancel}) and {@link webhook.send} (durable,
-   * connectionless); `http.subscribe` holds an upstream that pushes to
-   * YOU.
-   *
-   * @namespace http
-   */
-  globalThis.http = {
+  return {
     /**
      * Open a held outbound subscription — `after.fetch`'s held
      * symmetric twin for long-lived upstreams (atproto firehose, Pub/Sub
@@ -1206,12 +1218,14 @@
      *   directly. Pass to {@link http.cancelSubscription}.
      *
      * @example
-     * const id = http.subscribe({
-     *   url: "https://bsky.network/xrpc/com.atproto.sync.subscribeRepos",
-     *   on: "ingest_firehose",
-     *   ctx: { cursor: kv.get("firehose/cursor") },
-     * });
-     * kv.set("firehose/subscription_id", id);
+     * export default ({ http, kv }) => {
+     *   const id = http.subscribe({
+     *     url: "https://bsky.network/xrpc/com.atproto.sync.subscribeRepos",
+     *     on: "ingest_firehose",
+     *     ctx: { cursor: kv.get("firehose/cursor") },
+     *   });
+     *   kv.set("firehose/subscription_id", id);
+     * };
      */
     subscribe(opts) {
       opts = opts || {};
@@ -1241,7 +1255,7 @@
       return sys.cancelSubscription({ id: id });
     },
   };
-})();
+};
 
 // ── src/js/globals/base64.js ──
 ;// SPDX-FileCopyrightText: 2026 Loop46, Inc.
@@ -1392,7 +1406,7 @@
    * @example
    * btoa("hello"); // "aGVsbG8="
    */
-  globalThis.btoa = function (s) {
+  __rove_factories.btoa = () => function (s) {
     if (typeof s !== "string") s = String(s);
     return _encodeBase(_stringToBytes(s), STD_ALPHABET, true);
   };
@@ -1408,7 +1422,7 @@
    * @example
    * atob("aGVsbG8="); // "hello"
    */
-  globalThis.atob = function (s) {
+  __rove_factories.atob = () => function (s) {
     if (typeof s !== "string") s = String(s);
     return _bytesToString(_decodeBase(s, STD_LOOKUP));
   };
@@ -1419,7 +1433,7 @@
    *
    * @namespace base64url
    */
-  globalThis.base64url = {
+  __rove_factories.base64url = () => ({
     /**
      * Encode bytes as URL-safe base64, no padding.
      *
@@ -1455,7 +1469,7 @@
       if (typeof s !== "string") s = String(s);
       return _decodeBase(s, ANY_LOOKUP);
     },
-  };
+  });
 
   /**
    * Hex string ⇄ bytes. Bridges the platform's hex-returning crypto
@@ -1465,7 +1479,7 @@
    *
    * @namespace hex
    */
-  globalThis.hex = {
+  __rove_factories.hex = () => ({
     /**
      * Encode bytes as a lowercase hex string.
      *
@@ -1506,7 +1520,7 @@
       }
       return out;
     },
-  };
+  });
 
   function _hexNibble(code) {
     if (code >= 0x30 && code <= 0x39) return code - 0x30;
@@ -1825,7 +1839,7 @@
     return -1;
   }
 
-  globalThis.URLSearchParams = URLSearchParams;
+  __rove_factories.URLSearchParams = () => URLSearchParams;
 })();
 
 // ── src/js/globals/after.js ──
@@ -1848,13 +1862,36 @@
 // The callback-target option is `{on: "module.method"}` — the universal
 // spelling across every effect.
 //
-// Evaluated as a global script (no module/exports) after the native
-// bindings install. (The pre-rename `on.*` alias existed for one deploy
-// cycle and closed 2026-07-06.)
+// A FACTORY (`docs/architecture/package-isolation.md`, the
+// received-not-ambient model): the engine invokes it once per context
+// with the native after + http slices (`_factories_invoke.js`) and
+// installs the returned surface at the public name.
 
-(function () {
-  const sys = _system.after;
-  const sysHttp = _system.http;
+/**
+ * Connection wake triggers — re-invoke a held handler when something
+ * happens, while it still holds the socket. Register them in the body
+ * before returning `next()` (or while streaming). The runtime arms
+ * every `after.*` wake before firing any connectionless effect of the
+ * same activation, so a wake is never missed even when a callback
+ * writes the key it watches.
+ *
+ * Wakes are one-shot and cannot be cancelled — they're ephemeral
+ * and node-local, so an unwanted wake is simply ignored (or the
+ * handler re-arms a different set). The exception is a fetch:
+ * cancel an in-flight `after.fetch` by its returned id.
+ *
+ * @namespace after
+ * @example
+ * export default ({ stream, after, next }) => {
+ *   // SSE-style: stream rows, then wait for more under a prefix.
+ *   stream.start();
+ *   after.kv(`notif/${user}/`, { on: "onNotify" });
+ *   return next({ user });
+ * };
+ */
+__rove_factories.after = function (caps) {
+  const sys = caps.after;
+  const sysHttp = caps.http;
 
 // Fail-loud on retired option spellings (audit batch 3): silence would
 // mean a silently-ignored option — worse than a break, pre-launch.
@@ -1869,27 +1906,7 @@ function _rejectRenamed(verb, opts, renames) {
   // The callback-target key is `on` at the native layer too — the bindings
   // read `opts.on` directly, so opts pass through with no respelling.
 
-  /**
-   * Connection wake triggers — re-invoke a held handler when something
-   * happens, while it still holds the socket. Register them in the body
-   * before returning `next()` (or while streaming). The runtime arms
-   * every `after.*` wake before firing any connectionless effect of the
-   * same activation, so a wake is never missed even when a callback
-   * writes the key it watches.
-   *
-   * Wakes are one-shot and cannot be cancelled — they're ephemeral
-   * and node-local, so an unwanted wake is simply ignored (or the
-   * handler re-arms a different set). The exception is a fetch:
-   * cancel an in-flight `after.fetch` by its returned id.
-   *
-   * @namespace after
-   * @example
-   * // SSE-style: stream rows, then wait for more under a prefix.
-   * stream.start();
-   * after.kv(`notif/${user}/`, { on: "onNotify" });
-   * return next({ user });
-   */
-  globalThis.after = {
+  return {
     /**
      * Wake the held connection after `ms` milliseconds. Named for its
      * unit — durations are milliseconds; there is deliberately no
@@ -1902,7 +1919,9 @@ function _rejectRenamed(verb, opts, renames) {
      *   (`"module.method"` or a bare `"method"`); defaults to `onWake`.
      * @returns {void}
      * @example
-     * after.ms(30_000, { on: "onTimeout" }); // deadline for a join
+     * export default ({ after }) => {
+     *   after.ms(30_000, { on: "onTimeout" }); // deadline for a join
+     * };
      */
     ms(ms, opts) {
       return sys.timer(ms, opts);
@@ -1920,8 +1939,10 @@ function _rejectRenamed(verb, opts, renames) {
      *   `onWake`.
      * @returns {void}
      * @example
-     * after.kv(`rooms/${roomId}/`);             // default onWake
-     * after.kv(`jobs/${id}/`, { on: "onJob" }); // explicit target
+     * export default ({ after }) => {
+     *   after.kv(`rooms/${roomId}/`);             // default onWake
+     *   after.kv(`jobs/${id}/`, { on: "onJob" }); // explicit target
+     * };
      */
     kv(prefix, opts) {
       return sys.kv(prefix, opts);
@@ -1962,9 +1983,11 @@ function _rejectRenamed(verb, opts, renames) {
      * @throws {Error} `code:"rate_limited"` when the per-tenant outbound
      *   rate limit is exhausted (shared with `webhook.send`/`email.send`).
      * @example
-     * after.fetch('https://api.example.com/stream',
-     *             { stream: true, on: 'onUpstream' });
-     * return next();
+     * export default ({ after, next }) => {
+     *   after.fetch('https://api.example.com/stream',
+     *               { stream: true, on: 'onUpstream' });
+     *   return next();
+     * };
      */
     fetch(url, opts) {
       opts = opts || {};
@@ -1999,14 +2022,16 @@ function _rejectRenamed(verb, opts, renames) {
      * @param {string} id - The `ftch_…` id.
      * @returns {void}
      * @example
-     * const id = after.fetch("https://api.example.test/slow", { on: "onSlow" });
-     * after.cancel(id); // changed our mind before it landed
+     * export default ({ after }) => {
+     *   const id = after.fetch("https://api.example.test/slow", { on: "onSlow" });
+     *   after.cancel(id); // changed our mind before it landed
+     * };
      */
     cancel(id) {
       return sysHttp.cancelFetch({ id: id });
     },
   };
-})();
+};
 
 // ── src/js/globals/stream.js ──
 ;// SPDX-FileCopyrightText: 2026 Loop46, Inc.
@@ -2024,35 +2049,39 @@ function _rejectRenamed(verb, opts, renames) {
 // connectionless activation (a `cron`/`schedule`/`webhook.send`
 // callback) there is no held socket, so these calls are inert.
 //
-// Evaluated as a global script (no module/exports) after the native
-// bindings install. IIFE-wrapped: a bare top-level definition corrupts
-// the arenajs base-snapshot freeze.
+// A FACTORY (`docs/architecture/package-isolation.md`, the
+// received-not-ambient model): the engine invokes it once per context
+// with the native stream slice (`_factories_invoke.js`) and installs the
+// returned surface at the public name. No module-scope bindings escape
+// into the base snapshot.
 
-(function () {
-  const sys = _system.stream;
+/**
+ * Connection output — produce a streamed response over time. Pair
+ * with `after.*` (to wait for more) and `return next()` (to keep the
+ * socket); close by returning a terminal body. The response head is
+ * the ambient `response.*` global, committed to the wire by the first
+ * `stream.start()` / `stream.write()` (or a terminal return).
+ *
+ * This is the OUTBOUND direction only. Taking a large body IN is
+ * `blob.receive`/`blob.write` (an upload session); an append log you
+ * name and query is `segments.*` — neither involves this namespace.
+ *
+ * @namespace stream
+ * @example
+ * export default ({ request, response, stream, after, kv, next }) => {
+ *   // SSE: open, emit rows, then wait for more under a prefix.
+ *   const rows = kv.prefix(`feed/${id}/`, request.ctx?.cursor);
+ *   response.headers = { 'content-type': 'text/event-stream' };
+ *   stream.start();
+ *   for (const r of rows) stream.write(`data: ${r.value}\n\n`);
+ *   after.kv(`feed/${id}/`, { on: 'onNotify' });
+ *   return next({ cursor: rows.at(-1)?.key ?? request.ctx?.cursor });
+ * };
+ */
+__rove_factories.stream = function (caps) {
+  const sys = caps.stream;
 
-  /**
-   * Connection output — produce a streamed response over time. Pair
-   * with `after.*` (to wait for more) and `return next()` (to keep the
-   * socket); close by returning a terminal body. The response head is
-   * the ambient `response.*` global, committed to the wire by the first
-   * `stream.start()` / `stream.write()` (or a terminal return).
-   *
-   * This is the OUTBOUND direction only. Taking a large body IN is
-   * `blob.receive`/`blob.write` (an upload session); an append log you
-   * name and query is `segments.*` — neither involves this namespace.
-   *
-   * @namespace stream
-   * @example
-   * // SSE: open, emit rows, then wait for more under a prefix.
-   * const rows = kv.prefix(`feed/${id}/`, request.ctx?.cursor);
-   * response.headers = { 'content-type': 'text/event-stream' };
-   * stream.start();
-   * for (const r of rows) stream.write(`data: ${r.value}\n\n`);
-   * after.kv(`feed/${id}/`, { on: 'onNotify' });
-   * return next({ cursor: rows.at(-1)?.key ?? request.ctx?.cursor });
-   */
-  globalThis.stream = {
+  return {
     /**
      * Open the streamed response: commit the ambient `response.*` head
      * and begin the stream so the client's `onopen` fires before any
@@ -2077,18 +2106,16 @@ function _rejectRenamed(verb, opts, renames) {
       return sys.write(chunk);
     },
   };
-})();
+};
 
 // ── src/js/globals/next.js ──
 ;// SPDX-FileCopyrightText: 2026 Loop46, Inc.
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Public `next` disposition verb (docs/handler-shape.md §2.1). Thin shim
-// over the `_system.continuation.next` native, captured once at
-// base-eval (before `delete globalThis._system`) — the same closure-
-// capture pattern as kv.js/webhook.js. Baked `__system/` modules that
-// need cross-module dispatch call this public shim (they have the
-// ambient globals + it holds the captured ref), so there is no bare
-// `__rove_next` native.
+// over the `_system.continuation.next` native, received as its one
+// capability. Baked `__system/` modules that need cross-module dispatch
+// call this public shim (they have the ambient globals + it holds the
+// received ref), so there is no bare `__rove_next` native.
 //
 // `next` parks the held connection: it keeps the socket open and asks
 // the runtime to re-invoke this handler on its next activation (a
@@ -2096,46 +2123,50 @@ function _rejectRenamed(verb, opts, renames) {
 // conventional named export (onWake / onFetchChunk / onDisconnect / …).
 // You close instead by returning a terminal body.
 //
-// Evaluated as a global script after the native bindings install.
-// IIFE-wrapped (a bare top-level def corrupts the arenajs base-snapshot).
+// A FACTORY (`docs/architecture/package-isolation.md`, the
+// received-not-ambient model): the engine invokes it once per context
+// (`_factories_invoke.js`) and installs the returned function at the
+// public name. No module-scope bindings escape into the base snapshot.
 
-(function () {
-  const sysNext = _system.continuation.next;
+/**
+ * Park the held connection and continue on the next activation. `ctx`
+ * threads small per-connection state forward as `request.ctx` (a stream
+ * cursor, a fan-in accumulator) — it is NOT heap state across
+ * activations (the arena resets); durable state lives in `kv`. The
+ * runtime resumes THIS module's conventional export for the activation
+ * kind. Close the connection by returning a terminal body instead.
+ *
+ * Called with two arguments, it continues into a DIFFERENT module:
+ * `next(targetModule, ctx)` re-aims the held chain to `targetModule`,
+ * so EVERY later resume — timer/kv wake, bound fetch chunk, the next
+ * WebSocket frame, disconnect — dispatches at the target's
+ * conventional export instead of this one. One semantic on every held
+ * chain (plain hold, streaming, WebSocket); the same "name a target
+ * module" shape as `schedule(when, target)` / `webhook.send({ on })`.
+ *
+ * A park must be resumable: at park time the chain needs ≥1 possible
+ * resume source (an `after.*` arm — this hop's or riding from an
+ * earlier one — an in-flight bound fetch / `blob.receive`, a lone owed
+ * send, or the connection's own inbound traffic). A `next()` with
+ * none is a defined `500 held with no wake source` at the park site.
+ *
+ * @param {*} [ctx] - Per-connection state for the next activation.
+ *   (When two args are given, this first argument is the target
+ *   module path string instead — see below.)
+ * @param {*} [crossCtx] - Only with a target: the ctx to thread into
+ *   `targetModule`.
+ * @returns {object} The opaque park descriptor — return it.
+ * @example
+ * export default ({ stream, after, next }) => {
+ *   stream.write(`data: ${row.value}\n\n`);
+ *   after.kv(`feed/${id}/`);
+ *   return next({ since: row.seq });
+ * };
+ */
+__rove_factories.next = function (caps) {
+  const sysNext = caps.next;
 
-  /**
-   * Park the held connection and continue on the next activation. `ctx`
-   * threads small per-connection state forward as `request.ctx` (a stream
-   * cursor, a fan-in accumulator) — it is NOT heap state across
-   * activations (the arena resets); durable state lives in `kv`. The
-   * runtime resumes THIS module's conventional export for the activation
-   * kind. Close the connection by returning a terminal body instead.
-   *
-   * Called with two arguments, it continues into a DIFFERENT module:
-   * `next(targetModule, ctx)` re-aims the held chain to `targetModule`,
-   * so EVERY later resume — timer/kv wake, bound fetch chunk, the next
-   * WebSocket frame, disconnect — dispatches at the target's
-   * conventional export instead of this one. One semantic on every held
-   * chain (plain hold, streaming, WebSocket); the same "name a target
-   * module" shape as `schedule(when, target)` / `webhook.send({ on })`.
-   *
-   * A park must be resumable: at park time the chain needs ≥1 possible
-   * resume source (an `after.*` arm — this hop's or riding from an
-   * earlier one — an in-flight bound fetch / `blob.receive`, a lone owed
-   * send, or the connection's own inbound traffic). A `next()` with
-   * none is a defined `500 held with no wake source` at the park site.
-   *
-   * @param {*} [ctx] - Per-connection state for the next activation.
-   *   (When two args are given, this first argument is the target
-   *   module path string instead — see below.)
-   * @param {*} [crossCtx] - Only with a target: the ctx to thread into
-   *   `targetModule`.
-   * @returns {object} The opaque park descriptor — return it.
-   * @example
-   * stream.write(`data: ${row.value}\n\n`);
-   * after.kv(`feed/${id}/`);
-   * return next({ since: row.seq });
-   */
-  globalThis.next = function (ctx, crossCtx) {
+  return function (ctx, crossCtx) {
     // Two args ⇒ cross-module: next(targetModule, ctx). One/zero args is
     // ALWAYS same-module (ctx may itself be a string cursor, so we key on
     // arg count, never on arg type — keeps `next("cursor")` same-module).
@@ -2147,7 +2178,7 @@ function _rejectRenamed(verb, opts, renames) {
     }
     return sysNext("", arguments.length === 0 ? {} : { ctx: ctx });
   };
-})();
+};
 
 // ── src/js/globals/time.js ──
 ;// SPDX-FileCopyrightText: 2026 Loop46, Inc.
@@ -2172,11 +2203,20 @@ function _rejectRenamed(verb, opts, renames) {
 //                      delay.) `Date.now()` is replay-deterministic
 //                      (pinned per activation).
 //
-// IIFE-wrapped (like every globals/ shim): a bare top-level declaration
-// left in the script's global lexical scope corrupts the arenajs
-// base-snapshot freeze — scope it.
+// A FACTORY (`docs/architecture/package-isolation.md`, the
+// received-not-ambient model): pure computation, so it takes no
+// capabilities — the factory shape still keeps its helpers out of the
+// base context's global lexical scope (a bare top-level declaration
+// corrupts the arenajs base-snapshot freeze).
 
-(function () {
+/**
+ * Time-coercion helpers shared by `cron` / `schedule` / `webhook.send`:
+ * one place to turn human time inputs into the BigInt nanoseconds-since-
+ * epoch the scheduler verbs use.
+ *
+ * @namespace time
+ */
+__rove_factories.time = function () {
 const NS_PER_MS = 1_000_000n;
 
 function _parseDuration(s) {
@@ -2194,14 +2234,7 @@ function _parseDuration(s) {
   return null;
 }
 
-/**
- * Time-coercion helpers shared by `cron` / `schedule` / `webhook.send`:
- * one place to turn human time inputs into the BigInt nanoseconds-since-
- * epoch the scheduler verbs use.
- *
- * @namespace time
- */
-globalThis.time = {
+return {
   /**
    * Coerce an ABSOLUTE time input to BigInt nanoseconds-since-epoch.
    *
@@ -2275,20 +2308,20 @@ globalThis.time = {
     return BigInt(Date.now() + ms) * NS_PER_MS;
   },
 };
-})();
+};
 
 // ── src/js/globals/schedule.js ──
 ;// SPDX-FileCopyrightText: 2026 Loop46, Inc.
 // SPDX-License-Identifier: AGPL-3.0-or-later
-// The durable one-shot scheduler core — installed as the PRIVATE
-// `_system.sched` (deleted from customer scope by `_harden.js`, like
-// every other `_system.*` capability). The customer-facing verb is the
-// `@rewind/schedule` package; this ambient core exists only so the
-// engine's own primitives can compose durable wakes: the `webhook.js`
-// shim captures `_system.sched` at eval time (durable send re-arm), and
-// the baked `__system/*` modules that need it (cron_tick, webhook_fire,
-// webhook_onresult) write the same `_sched/` rows directly over kv (they
-// run post-harden and can't see this closure — see those files).
+// The durable one-shot scheduler core — a FACTORY registered as `sched`,
+// never a customer global. The engine invokes it once per context
+// (`_factories_invoke.js`) and hands the returned core to the shims that
+// compose durable wakes (`webhook.send`'s re-arm, `platform.dispatch`'s
+// watchdog) as their `sched` capability. The customer-facing verb is the
+// `@rewind/schedule` package; the baked `__system/*` modules that need
+// wakes (cron_tick, webhook_fire, webhook_onresult) write the same
+// `_sched/` rows directly over kv (they run post-harden and can't see
+// this closure — see those files).
 // `schedule`/`cron`/`webhook.send` are the three connectionless verbs.
 //
 // `_arm`/`cancel`/`get` and the `{at}`/`{in}` coercions + `opts.key`
@@ -2309,12 +2342,18 @@ globalThis.time = {
 // tenant):
 //   _sched/by_id/{id}                    -> {when_ns, target, msg, key?}
 //   _sched/by_time/{when_ns_padded}/{id} -> ""   (time-ordered index)
-//
-// Evaluated as a global script after `time.js` (it coerces `{ at }` /
-// `{ in }` through the shared `time` library; `cron.*` fire-time helpers
-// are still handy inputs to `{ at }`).
+// The received kv is namespace-rooted at `_sched/` — the keys this core
+// spells are relative to that root, and the narrowing means the core
+// structurally cannot write outside its namespace. `{at}`/`{in}` coerce
+// through the shared ambient `time` library.
 
-(function () {
+/**
+ * The durable one-shot scheduler core (`sched`) — received by the
+ * durable-effect shims, never installed as a customer global.
+ * @internal
+ */
+__rove_factories.sched = function (caps) {
+  const kv = caps.kv;
 
   // 1 s tick resolution (SCHED_TICK_RESOLUTION). Fire times round UP to
   // the next tick; sub-second scheduling is unsupported (matches the
@@ -2340,10 +2379,10 @@ globalThis.time = {
   // unparseable record: this is a shim-writable namespace, so a value
   // this reader does not understand is as likely a customer's write as
   // an engine skew, and dropping the entry answers both.
-  const SCHED_REC_V = __rove.formats.sched;
+  const SCHED_REC_V = caps.formats.sched;
 
-  const BY_ID_PREFIX = "_sched/by_id/";
-  const BY_TIME_PREFIX = "_sched/by_time/";
+  const BY_ID_PREFIX = "by_id/";
+  const BY_TIME_PREFIX = "by_time/";
 
   function _byIdKey(id) {
     return BY_ID_PREFIX + id;
@@ -2505,7 +2544,7 @@ globalThis.time = {
    * const id = schedule({ in: 5000 }, "jobs/poll");
    * schedule({ in: "1h" }, "jobs/expire", { leaseId: "l-7" });
    */
-  _system.sched = Object.assign(function schedule(when, target, ctx, opts) {
+  return Object.assign(function schedule(when, target, ctx, opts) {
     let whenNs;
     if (when && when.at !== undefined) whenNs = _coerceAt(when.at);
     else if (when && when.in !== undefined) whenNs = _coerceIn(when.in);
@@ -2574,7 +2613,7 @@ globalThis.time = {
       };
     },
   });
-})();
+};
 
 // ── src/js/globals/platform.js ──
 ;// SPDX-FileCopyrightText: 2026 Loop46, Inc.
@@ -2590,29 +2629,43 @@ globalThis.time = {
 // Every method is admin-only: it throws `TypeError` ("platform is
 // only available on the admin handler") when reached from a normal
 // tenant handler — the gate is enforced natively, the shim only
-// forwards. Evaluated as a global script into every dispatcher
-// context after the native bindings install.
+// forwards.
+//
+// A FACTORY (`docs/architecture/package-isolation.md`, the
+// received-not-ambient model): the engine invokes it once per context
+// (`_factories_invoke.js`) with the native platform/after slices, the
+// two blob natives its scope surface lowers to, the durable scheduler
+// core, and a marker kv namespace-rooted at `_dispatch/`.
 
-(function () {
-  const sys = _system.platform;
-  // `after.fetch` native (captured before `_harden.js` deletes `_system`) —
-  // `platform.compile` lowers to a bound fetch to a trusted compile door.
+/**
+ * Admin control plane: cross-tenant kv access, the platform root
+ * store, instance lifecycle, and root-token auth. Only
+ * usable from the `__admin__` handler.
+ *
+ * @namespace platform
+ */
+__rove_factories.platform = function (caps) {
+  const sys = caps.platform;
   // `_dispatch/owed/{id}` record version (`format-versioning.md` §1f).
   // Read by `__system/dispatch_fire`; `__system/dispatch_result` keys on
   // the marker's PRESENCE, not its contents, so it needs no version of
   // its own.
-  const DISPATCH_OWED_V = __rove.formats.dispatchOwed;
+  const DISPATCH_OWED_V = caps.formats.dispatchOwed;
 
-  const sysOn = _system.after;
+  // `after.fetch` native — `platform.compile` lowers to a bound fetch to
+  // a trusted compile door.
+  const sysOn = caps.after;
   // `blob.receive` native — `platform.scope(t).blob.receive` lowers to a
   // cross-tenant streamed upload (extra target + ctx args, admin-gated).
-  const sysBlobReceive = _system.blob.receive;
-  const sysBlobPresign = _system.blob.presign;
-  // The durable scheduler core (globals/schedule.js) installs the private
-  // `_system.sched`; capture it before `_harden.js` deletes `_system`, the
-  // same way webhook.js does, so `platform.dispatch`'s watchdog keeps working
-  // post-harden without exposing an ambient `schedule` to customers.
-  const sysSched = _system.sched;
+  const sysBlobReceive = caps.blobReceive;
+  const sysBlobPresign = caps.blobPresign;
+  // The durable scheduler core (globals/schedule.js) — received, so
+  // `platform.dispatch`'s watchdog arms without an ambient `schedule`
+  // ever existing in customer scope.
+  const sysSched = caps.sched;
+  // Namespace-rooted at `_dispatch/`: the marker writes below spell keys
+  // relative to that root and cannot land outside it.
+  const kv = caps.kv;
 
   // One dispatch attempt's outside bound plus grace. Mirrored in
   // `__system/dispatch_fire.mjs` (its per-attempt re-arm) — keep in sync.
@@ -2629,14 +2682,7 @@ globalThis.time = {
     }
   }
 
-  /**
-   * Admin control plane: cross-tenant kv access, the platform root
-   * store, instance lifecycle, and root-token auth. Only
-   * usable from the `__admin__` handler.
-   *
-   * @namespace platform
-   */
-  globalThis.platform = {
+  return {
     /**
      * Get accessors scoped to another instance — the explicit
      * cross-tenant grant (replaces the old X-Rove-Scope global-kv rebind).
@@ -2662,8 +2708,10 @@ globalThis.time = {
      *   Unknown id throws `Error{code:"InstanceNotFound"}`.
      *
      * @example
-     * const { kv: tenantKv } = platform.scope(req.instanceId);
-     * const profile = tenantKv.get("profile");
+     * export default ({ platform }) => {
+     *   const { kv: tenantKv } = platform.scope(req.instanceId);
+     *   const profile = tenantKv.get("profile");
+     * };
      */
     scope(id) {
       const s = sys.scope(id);
@@ -2777,8 +2825,10 @@ globalThis.time = {
      * @returns {string} The bound fetch id (`ftch_…`).
      *
      * @example
-     * platform.stage([{ path, source }], { scope: tenant, on: "onStaged" });
-     * return next();
+     * export default ({ platform, next }) => {
+     *   platform.stage([{ path, source }], { scope: tenant, on: "onStaged" });
+     *   return next();
+     * };
      */
     stage(files, opts) {
       opts = opts || {};
@@ -2820,11 +2870,13 @@ globalThis.time = {
      * @returns {string} The bound fetch id (`ftch_…`).
      *
      * @example
-     * platform.compile(handlers, { scope: tenant, on: "onCompiled" });
-     * return next();
-     * // export function onCompiled(request) {
-     * //   const { results } = request.ctx; ...stamp manifest...
-     * // }
+     * export default ({ platform, next }) => {
+     *   platform.compile(handlers, { scope: tenant, on: "onCompiled" });
+     *   return next();
+     *   // export function onCompiled(request) {
+     *   //   const { results } = request.ctx; ...stamp manifest...
+     *   // }
+     * };
      */
     compile(files, opts) {
       opts = opts || {};
@@ -2948,9 +3000,11 @@ globalThis.time = {
      *   Never the individual operator.
      * @returns {string} The dispatch id — the `_dispatch/owed/{id}` marker.
      * @example
-     * platform.dispatch("acme", "__system/release", {
-     *   ctx: { dep_id: depId }, actor: "tenant_user",
-     * });
+     * export default ({ platform }) => {
+     *   platform.dispatch("acme", "__system/release", {
+     *     ctx: { dep_id: depId }, actor: "tenant_user",
+     *   });
+     * };
      */
     dispatch(tenant, module, opts) {
       opts = opts || {};
@@ -3002,7 +3056,7 @@ globalThis.time = {
       // before the attempt for the same reason `webhook.send` writes its
       // marker before firing: an attempt that escaped a rolled-back
       // activation would be an effect the cluster never agreed to.
-      kv.set("_dispatch/owed/" + id, JSON.stringify(marker));
+      kv.set("owed/" + id, JSON.stringify(marker));
       // The FIRST fire arms at now — the durable wake IS the fire path, so
       // an initial arm at the watchdog distance would make every dispatch
       // wait out the recovery interval (measured: a caller parked on the
@@ -3035,7 +3089,7 @@ globalThis.time = {
     //
     //   if (!request.rewind.isRoot) { response.status = 403; return { error: "forbidden" }; }
   };
-})();
+};
 
 // ── src/js/globals/webhook.js ──
 ;// SPDX-FileCopyrightText: 2026 Loop46, Inc.
@@ -3116,7 +3170,9 @@ globalThis.time = {
 // installs the returned object. webhook.send composes durability over the
 // internal fetch PRIMITIVE (`caps.http.fetch` — the retired customer
 // `http.fetch` spelling stays retired), the durable scheduler core
-// (`caps.sched`), and ordinary rooted kv markers (`caps.kv`).
+// (`caps.sched`), and marker kv writes through a kv namespace-rooted at
+// `_send/` (`caps.kv` — the shim structurally cannot write outside its
+// namespace).
 //
 // A parameter is scoped by the language — the reason this shape replaces
 // the IIFE + capture convention: an unwrapped shim's top-level `const`s
@@ -3215,19 +3271,23 @@ __rove_factories.webhook = function (caps) {
      * atomic. An already-fired send cannot be recalled.
      *
      * @example
-     * webhook.send("https://hooks.example.com/x", {
-     *   body: JSON.stringify({ event: "order.paid", id }),
-     *   on: "hooks/onDelivered",
-     *   ctx: { order_id: id },
-     * });
+     * export default ({ webhook }) => {
+     *   webhook.send("https://hooks.example.com/x", {
+     *     body: JSON.stringify({ event: "order.paid", id }),
+     *     on: "hooks/onDelivered",
+     *     ctx: { order_id: id },
+     *   });
      *
+     * };
      * @example
-     * // Scheduled fire — write the marker now, fire in 5 minutes.
-     * webhook.send("https://example.test/reminder", {
-     *   body: "ping",
-     *   key: "reminder/" + userId,        // idempotent
-     *   in: "5m",
-     * });
+     * export default ({ webhook }) => {
+     *   // Scheduled fire — write the marker now, fire in 5 minutes.
+     *   webhook.send("https://example.test/reminder", {
+     *     body: "ping",
+     *     key: "reminder/" + userId,        // idempotent
+     *     in: "5m",
+     *   });
+     * };
      */
     send(url, maybeOpts) {
       // webhook.send(url, opts) — positional url, matching after.fetch.
@@ -3352,7 +3412,9 @@ __rove_factories.webhook = function (caps) {
         });
       }
 
-      kv.set("_send/owed/" + id, JSON.stringify(marker));
+      // The received kv is namespace-rooted at `_send/` — this spells
+      // the stored `_send/owed/{id}` marker.
+      kv.set("owed/" + id, JSON.stringify(marker));
 
       // The durable next-fire entry (one per send, idempotency key
       // `_send/{id}` — re-sends with the same handle MOVE it, mirroring
@@ -3391,16 +3453,33 @@ __rove_factories.webhook = function (caps) {
 // GET URL from the activation's taped clock, so replay reproduces
 // it bit-for-bit.
 
-// IIFE-wrapped (like on.js): bare top-level function declarations
-// corrupt the arenajs base-snapshot freeze — green unit tests,
-// segfault on the first live request. Everything below stays in the
-// closure; only `globalThis.blob` escapes.
-(() => {
-
-// Capture the natives at eval time (before `_harden.js` deletes
-// `globalThis._system`) — same closure posture as webhook.js/on.js.
-const sysHttp = _system.http;
-const sysBlob = _system.blob;
+// A FACTORY (`docs/architecture/package-isolation.md`, the
+// received-not-ambient model): the engine invokes it once per context
+// (`_factories_invoke.js`) with the http + blob natives, the public
+// `after` surface (`blob.get` composes on `after.fetch`), and a marker
+// kv namespace-rooted at `_blob/` — the recipe/pending/owed rows below
+// spell keys relative to that root and cannot land outside it. Nothing
+// here has module-scope bindings for a handler to resolve (a bare
+// top-level declaration corrupts the arenajs base-snapshot freeze —
+// green unit tests, segfault on the first live request).
+/**
+ * Content-addressed tenant object storage.
+ *
+ * Two shapes: one-shot (`put`/`get`) for values you hold in hand, and
+ * the upload session (`receive` → `write` → `seal`) for large inbound
+ * bodies that stream in chunk by chunk. "Seal" = freeze the bytes into
+ * an immutable blob and get back its hash (`segments.seal` is the same
+ * metaphor applied to a log tail). `blob.write` appends INTO an upload
+ * session — the opposite direction from `stream.write`, which emits
+ * response bytes OUT over the held connection.
+ *
+ * @namespace blob
+ */
+__rove_factories.blob = function (caps) {
+const sysHttp = caps.http;
+const sysBlob = caps.blob;
+const kv = caps.kv;
+const after = caps.after;
 
 function _rejectRenamedBlob(verb, opts) {
   if (!opts || typeof opts !== "object") return;
@@ -3412,7 +3491,7 @@ function _rejectRenamedBlob(verb, opts) {
 // `_blob/owed/{hash}` record version (`format-versioning.md` §1f).
 // Read by `__system/blob_onresult`, which ships in the worker binary
 // while this shim ships in the tenant's deployment.
-const BLOB_OWED_V = __rove.formats.blobOwed;
+const BLOB_OWED_V = caps.formats.blobOwed;
 
 const BLOB_ORIGIN = "http://rove-blob.internal/";
 const COMPOSE_ORIGIN = "http://rove-compose.internal/";
@@ -3445,10 +3524,10 @@ function _recipeSid() {
   return request.sagaId || "local";
 }
 
-function _recipeMetaKey(sid) { return "_blob/recipe/" + sid + "/meta"; }
+function _recipeMetaKey(sid) { return "recipe/" + sid + "/meta"; }
 
 function _recipeRowKey(sid, seq) {
-  return "_blob/recipe/" + sid + "/r/" + String(seq).padStart(4, "0");
+  return "recipe/" + sid + "/r/" + String(seq).padStart(4, "0");
 }
 
 function _recipeMeta(sid) {
@@ -3460,24 +3539,11 @@ function _recipeMeta(sid) {
 // readiness is announced by the seal's `on` activation, never
 // inferred (the row is deleted by the compose flip).
 function _assertMaterialized(hash, verb) {
-  if (kv.get("_blob/pending/" + hash) != null)
+  if (kv.get("pending/" + hash) != null)
     throw new Error(verb + ": " + hash + " is sealed but not yet materialized — wait for your seal `on` activation");
 }
 
-/**
- * Content-addressed tenant object storage.
- *
- * Two shapes: one-shot (`put`/`get`) for values you hold in hand, and
- * the upload session (`receive` → `write` → `seal`) for large inbound
- * bodies that stream in chunk by chunk. "Seal" = freeze the bytes into
- * an immutable blob and get back its hash (`segments.seal` is the same
- * metaphor applied to a log tail). `blob.write` appends INTO an upload
- * session — the opposite direction from `stream.write`, which emits
- * response bytes OUT over the held connection.
- *
- * @namespace blob
- */
-globalThis.blob = {
+return {
   /**
    * Store bytes content-addressed. Returns the sha256 hash (the
    * object's permanent key) synchronously — index it in kv in the
@@ -3511,8 +3577,10 @@ globalThis.blob = {
    * @returns {string} The object's sha256 hash (64 hex chars).
    *
    * @example
-   * const hash = blob.put(JSON.stringify(event));
-   * kv.set(`timeline/${room}/${seq}`, JSON.stringify({ hash }));
+   * export default ({ blob, kv }) => {
+   *   const hash = blob.put(JSON.stringify(event));
+   *   kv.set(`timeline/${room}/${seq}`, JSON.stringify({ hash }));
+   * };
    */
   put(bytes, opts) {
     opts = opts || {};
@@ -3532,7 +3600,7 @@ globalThis.blob = {
       context: context,
       created_at_ns: String(BigInt(Date.now()) * 1_000_000n),
     };
-    kv.set("_blob/owed/" + hash, JSON.stringify(marker));
+    kv.set("owed/" + hash, JSON.stringify(marker));
 
     sysHttp.fetch({
       url: BLOB_ORIGIN + hash,
@@ -3567,12 +3635,12 @@ globalThis.blob = {
    * @returns {string} The fetch id.
    *
    * @example
-   * export default function () {
+   * export default function ({ request, kv, blob, next }) {
    *   const rec = JSON.parse(kv.get(`media/${id}`) ?? "{}");
    *   if (rec.hash) { blob.get(rec.hash, { on: "onBlob" }); return next(); }
    *   return next();
    * }
-   * export function onBlob() { return request.bytes; } // flattened payload accessors; request.status top-level
+   * export function onBlob({ request }) { return request.bytes; } // flattened payload accessors; request.status top-level
    */
   get(hash, opts) {
     opts = opts || {};
@@ -3696,7 +3764,7 @@ globalThis.blob = {
    * @returns {number} Total recipe bytes after the append.
    *
    * @example
-   * export function onMirrorChunk() {
+   * export function onMirrorChunk({ request, blob, next }) {
    *   if (!request.done) { blob.write(request.bytes); return next(); }
    *   const hash = blob.seal({ on: "stored", contentType: "image/png" });
    *   return JSON.stringify({ hash });
@@ -3773,7 +3841,7 @@ globalThis.blob = {
    * @example
    * // doc-only
    * // upload.mjs — respond at seal; readiness arrives at `stored`.
-   * export function onChunk() {
+   * export function onChunk({ request, response, blob, kv, next }) {
    *   blob.write(request.bytes);
    *   if (!request.done) return next();
    *   const hash = blob.seal({ on: "stored", ctx: { id: request.ctx.id } });
@@ -3782,7 +3850,7 @@ globalThis.blob = {
    *   return JSON.stringify({ hash });
    * }
    * // stored.mjs — the completion activation.
-   * export default function () {
+   * export default function ({ request, kv }) {
    *   const rec = JSON.parse(kv.get(`media/${request.ctx.id}`));
    *   kv.set(`media/${request.ctx.id}`, JSON.stringify({ ...rec, status: "ready" }));
    *   return "";
@@ -3818,7 +3886,7 @@ globalThis.blob = {
     }));
     // Deleted by the compose flip; blob.url/get check it so an early
     // dereference fails loud instead of racing storage.
-    kv.set("_blob/pending/" + hash, sid);
+    kv.set("pending/" + hash, sid);
 
     // The prompt compose trigger — leader-local, moot-on-loss; the
     // sealed marker above is what guarantees materialization (the
@@ -3861,12 +3929,12 @@ globalThis.blob = {
    *   when the object is durable (required).
    *
    * @example
-   * export function onHeaders() {
+   * export function onHeaders({ request, response, blob, next }) {
    *   if (!authed(request.headers)) { response.status = 401; return "no"; }
    *   blob.receive({ on: "onStored" });
    *   return next();
    * }
-   * export function onStored() {
+   * export function onStored({ request, response, kv }) {
    *   if (request.status !== 200) { response.status = 502; return "store failed"; }
    *   kv.set(`media/${request.ctx.hash}`, JSON.stringify({ len: request.ctx.len }));
    *   return JSON.stringify({ hash: request.ctx.hash });
@@ -3882,24 +3950,53 @@ globalThis.blob = {
   },
 };
 
-})();
+};
 
 ;(function () {
   const reg = globalThis.__rove_factories;
-  const caps = {
-    http: _system.http,
-    sched: _system.sched,
-    kv: {
-      get: (k) => globalThis.kv.get(k),
-      set: (k, v) => globalThis.kv.set(k, v),
-      delete: (k) => globalThis.kv.delete(k),
-      prefix: (p, c, l) => globalThis.kv.prefix(p, c, l),
-    },
-    formats: __rove.formats,
+  const pending = new Set(Object.keys(reg));
+  const invoke = (name, caps) => {
+    if (!pending.delete(name))
+      throw new Error("factory not registered: " + name);
+    return reg[name](caps);
   };
-  for (const name of Object.keys(reg)) {
-    globalThis[name] = reg[name](caps);
-  }
+  const rooted = (root) => ({
+    get: (k) => globalThis.kv.get(root + k),
+    set: (k, v) => globalThis.kv.set(root + k, v),
+    delete: (k) => globalThis.kv.delete(root + k),
+    prefix: (p, c, l) =>
+      (globalThis.kv.prefix(root + p, c == null || c === "" ? c : root + c, l) || [])
+        .map((e) => ({ key: e.key.slice(root.length), value: e.value })),
+  });
+  globalThis.crypto = invoke("crypto", { crypto: _system.crypto });
+  globalThis.http = invoke("http", { http: _system.http });
+  globalThis.stream = invoke("stream", { stream: _system.stream });
+  globalThis.next = invoke("next", { next: _system.continuation.next });
+  globalThis.after = invoke("after", { after: _system.after, http: _system.http });
+  globalThis.btoa = invoke("btoa", {});
+  globalThis.atob = invoke("atob", {});
+  globalThis.base64url = invoke("base64url", {});
+  globalThis.hex = invoke("hex", {});
+  globalThis.URLSearchParams = invoke("URLSearchParams", {});
+  globalThis.time = invoke("time", {});
+  const sched = invoke("sched", {
+    kv: rooted("_sched/"), formats: __rove.formats,
+  });
+  globalThis.platform = invoke("platform", {
+    platform: _system.platform, after: _system.after,
+    blobReceive: _system.blob.receive, blobPresign: _system.blob.presign,
+    sched: sched, kv: rooted("_dispatch/"), formats: __rove.formats,
+  });
+  globalThis.webhook = invoke("webhook", {
+    http: _system.http, sched: sched, kv: rooted("_send/"),
+    formats: __rove.formats,
+  });
+  globalThis.blob = invoke("blob", {
+    http: _system.http, blob: _system.blob, kv: rooted("_blob/"),
+    after: globalThis.after, formats: __rove.formats,
+  });
+  if (pending.size > 0)
+    throw new Error("unconsumed factories: " + Array.from(pending).join(", "));
 })();
 
 // ── the capability names (rove-reserved CAPABILITY_NAMES) ──
