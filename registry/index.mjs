@@ -304,7 +304,7 @@ function parseQuery(qs) {
 // answer `fallback`, so no caller repeats the try/catch and there is a single
 // place to receive `kv` from the activation when the ambient surface retires
 // (docs/architecture/package-isolation.md §3.2).
-function readJson(key, fallback) {
+function readJson(kv, key, fallback) {
     const raw = kv.get(key);
     if (raw == null) return fallback;
     try {
@@ -312,30 +312,30 @@ function readJson(key, fallback) {
         return v == null ? fallback : v;
     } catch (_) { return fallback; }
 }
-function readIndex(spec) {
-    return readJson("pkg/idx/" + spec, []);
+function readIndex(kv, spec) {
+    return readJson(kv, "pkg/idx/" + spec, []);
 }
-function readLabels(hash) {
-    return readJson("pkg/lbl/" + hash, []);
+function readLabels(kv, hash) {
+    return readJson(kv, "pkg/lbl/" + hash, []);
 }
 // The content record, with its CANONICAL label (first published) spliced on so
 // callers that need a name for a bare hash have a STABLE one. Deriving the name
 // from the label list rather than storing it in the record is what lets several
 // versions name one content identity without one publish overwriting another's.
-function readRecordByHash(hash) {
-    const rec = readJson("pkg/hash/" + hash, null);
+function readRecordByHash(kv, hash) {
+    const rec = readJson(kv, "pkg/hash/" + hash, null);
     if (!rec) return null;
-    const canonical = readLabels(hash)[0] || null;
+    const canonical = readLabels(kv, hash)[0] || null;
     rec.spec = canonical ? canonical.spec : null;
     rec.version = canonical ? canonical.version : null;
     return rec;
 }
-function readRecord(spec, version) {
-    return readJson("pkg/ver/" + spec + "/" + version, null);
+function readRecord(kv, spec, version) {
+    return readJson(kv, "pkg/ver/" + spec + "/" + version, null);
 }
 
 // ── publish (operator-only): source in, gated, immutable ──────────────────
-function publish(body) {
+function publish(kv, body) {
     const spec = body.spec, version = body.version;
     if (!SPEC_RE.test(String(spec || ""))) return jsonError(400, "invalid spec");
     if (!parseVer(version)) return jsonError(400, "invalid version (want x.y.z)");
@@ -362,7 +362,7 @@ function publish(body) {
     const deps = body.dependencies || {};
     const imports = {};
     for (const dspec of Object.keys(deps)) {
-        const chosen = pickVersion(readIndex(dspec), deps[dspec]);
+        const chosen = pickVersion(readIndex(kv, dspec), deps[dspec]);
         if (!chosen) return jsonError(400, "unresolved dependency", { dependency: dspec, range: deps[dspec] });
         imports[dspec] = chosen.pkg_hash;
     }
@@ -374,7 +374,7 @@ function publish(body) {
     const caps = {};
     for (const c of extractCapabilities(files)) caps[c] = true;
     for (const dh of Object.values(imports)) {
-        const drec = readRecordByHash(dh);
+        const drec = readRecordByHash(kv, dh);
         for (const c of (drec && drec.capabilities) || []) caps[c] = true;
     }
     const capabilities = Object.keys(caps).sort();
@@ -383,7 +383,7 @@ function publish(body) {
 
     // Immutability: a published spec@version is frozen. Re-publishing identical
     // content is idempotent; different content is a conflict.
-    const existing = readRecord(spec, version);
+    const existing = readRecord(kv, spec, version);
     if (existing) {
         if (existing.pkg_hash === pkg_hash) {
             response.status = 200;
@@ -412,7 +412,7 @@ function publish(body) {
     // the index.
     for (let i = 0; i < files.length; i++) kv.set("pkg/src/" + recFiles[i].source_hash, files[i].source);
     kv.set("pkg/ver/" + spec + "/" + version, JSON.stringify(record));
-    const labels = readLabels(pkg_hash);
+    const labels = readLabels(kv, pkg_hash);
     // Write-once, gated on the LABEL list because the two rows are written
     // together — an empty list means this content has never been stored. That
     // is one read rather than two, and it cannot report the rows as disagreeing
@@ -425,7 +425,7 @@ function publish(body) {
         kv.set("pkg/lbl/" + pkg_hash, JSON.stringify(labels));
     }
 
-    const idx = readIndex(spec);
+    const idx = readIndex(kv, spec);
     if (!idx.some((e) => e.version === version)) idx.push({ version: version, pkg_hash: pkg_hash });
     kv.set("pkg/idx/" + spec, JSON.stringify(idx));
 
@@ -444,7 +444,7 @@ function resolve(body) {
 }
 
 // ── discovery (public) ────────────────────────────────────────────────────
-function listPackages() {
+function listPackages(kv) {
     const rows = kv.prefix("pkg/idx/", "", 1000);
     const packages = rows.map((row) => {
         const spec = row.key.slice("pkg/idx/".length);
@@ -456,23 +456,23 @@ function listPackages() {
     response.status = 200;
     return { packages: packages };
 }
-function getPackage(spec) {
-    const idx = readIndex(spec);
+function getPackage(kv, spec) {
+    const idx = readIndex(kv, spec);
     if (!idx.length) return jsonError(404, "package not found", { spec: spec });
     const versions = idx.map((e) => {
         // capabilities are CONTENT (same bytes, same caps); published_at is a
         // property of this LABEL, so it comes from the version record — reading
         // it off the content record would report the first publisher's clock
         // for every later version naming the same bytes.
-        const content = readRecordByHash(e.pkg_hash) || {};
-        const label = readRecord(spec, e.version) || {};
+        const content = readRecordByHash(kv, e.pkg_hash) || {};
+        const label = readRecord(kv, spec, e.version) || {};
         return { version: e.version, pkg_hash: e.pkg_hash, capabilities: content.capabilities || [], published_at: label.published_at || null };
     }).sort((a, b) => cmpVer(parseVer(a.version), parseVer(b.version)));
     response.status = 200;
     return { spec: spec, versions: versions, latest: versions[versions.length - 1] || null };
 }
-function getVersion(spec, version) {
-    const rec = readRecord(spec, version);
+function getVersion(kv, spec, version) {
+    const rec = readRecord(kv, spec, version);
     if (!rec) return jsonError(404, "version not found", { spec: spec, version: version });
     response.status = 200;
     // `aliases` is every OTHER label naming the same bytes — a republish at a
@@ -481,12 +481,12 @@ function getVersion(spec, version) {
     // version is distinct content. Additive, and read-only: the resolve wire
     // the CLI consumes is untouched.
     return Object.assign({}, rec, {
-        aliases: readLabels(rec.pkg_hash).filter(
+        aliases: readLabels(kv, rec.pkg_hash).filter(
             (l) => !(l.spec === spec && l.version === version),
         ),
     });
 }
-function getBlob(hash) {
+function getBlob(kv, hash) {
     const src = kv.get("pkg/src/" + hash);
     if (src == null) return jsonError(404, "blob not found", { source_hash: hash });
     response.status = 200;
@@ -497,12 +497,12 @@ function getBlob(hash) {
 // ── route table + dispatch ────────────────────────────────────────────────
 // authz: "open" = public; "publish" = operator (is_root) only.
 const ROUTES = [
-    ["POST", "/v1/packages",                    "publish", (c) => publish(c.body)],
-    ["GET",  "/v1/packages",                    "open",    () => listPackages()],
-    ["GET",  "/v1/packages/:scope/:name",       "open",    (c) => getPackage(c.params.scope + "/" + c.params.name)],
-    ["GET",  "/v1/packages/:scope/:name/:version", "open", (c) => getVersion(c.params.scope + "/" + c.params.name, c.params.version)],
+    ["POST", "/v1/packages",                    "publish", (c) => publish(c.caps.kv, c.body)],
+    ["GET",  "/v1/packages",                    "open",    (c) => listPackages(c.caps.kv)],
+    ["GET",  "/v1/packages/:scope/:name",       "open",    (c) => getPackage(c.caps.kv, c.params.scope + "/" + c.params.name)],
+    ["GET",  "/v1/packages/:scope/:name/:version", "open", (c) => getVersion(c.caps.kv, c.params.scope + "/" + c.params.name, c.params.version)],
     ["POST", "/v1/resolve",                     "open",    (c) => resolve(c.body)],
-    ["GET",  "/v1/blobs/:hash",                 "open",    (c) => getBlob(c.params.hash)],
+    ["GET",  "/v1/blobs/:hash",                 "open",    (c) => getBlob(c.caps.kv, c.params.hash)],
 ];
 
 function matchRoute(method, path) {
