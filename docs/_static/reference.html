@@ -53,9 +53,11 @@
 <tr><td><code>key</code></td><td><code>string</code></td><td><p>The key to look up.</p></td></tr>
 </table>
 <p><b>Returns</b> <code>string|null</code> — The stored string, or <code>null</code> if the key does not exist.</p>
-<pre><code>const raw = kv.get(`user/${id}`);
+<pre><code>export default ({ kv, response }) =&gt; {
+const raw = kv.get(`user/${id}`);
 if (raw === null) { response.status = 404; return "not found"; }
-const user = JSON.parse(raw);</code></pre>
+const user = JSON.parse(raw);
+};</code></pre>
 <h4 id="kv-set"><code>kv.set(key, value)</code></h4>
 <p>Write <code>value</code> under <code>key</code>, overwriting any existing value. The write is staged in the request transaction and commits when the handler returns successfully.</p><p>Throws if <code>key</code> falls in a platform-reserved prefix (<code>err.code === "reserved_key"</code>) or if a registered trigger rejects the write (<code>err.code === "trigger_rejected"</code>).</p>
 <table><tr><th>Param</th><th>Type</th><th></th></tr>
@@ -63,14 +65,18 @@ const user = JSON.parse(raw);</code></pre>
 <tr><td><code>value</code></td><td><code>string</code></td><td><p>The string value to store. Serialize structured data yourself (e.g. <code>JSON.stringify</code>).</p></td></tr>
 </table>
 <p><b>Returns</b> <code>void</code></p>
-<pre><code>kv.set(`user/${user.id}`, JSON.stringify(user));</code></pre>
+<pre><code>export default ({ kv }) =&gt; {
+kv.set(`user/${user.id}`, JSON.stringify(user));
+};</code></pre>
 <h4 id="kv-delete"><code>kv.delete(key)</code></h4>
 <p>Delete <code>key</code>. A no-op if the key does not exist. Staged in the request transaction like <code>set</code>.</p>
 <table><tr><th>Param</th><th>Type</th><th></th></tr>
 <tr><td><code>key</code></td><td><code>string</code></td><td><p>The key to delete.</p></td></tr>
 </table>
 <p><b>Returns</b> <code>void</code></p>
-<pre><code>kv.delete(`session/${sid}`);</code></pre>
+<pre><code>export default ({ kv }) =&gt; {
+kv.delete(`session/${sid}`);
+};</code></pre>
 <h4 id="kv-prefix"><code>kv.prefix(prefix, cursor?, limit?)</code></h4>
 <p>Scan keys sharing a common prefix, in key order. Paginated: pass the last key of one page back as <code>cursor</code> to fetch the next.</p>
 <table><tr><th>Param</th><th>Type</th><th></th></tr>
@@ -79,14 +85,16 @@ const user = JSON.parse(raw);</code></pre>
 <tr><td><code>limit <em>(optional)</em></code></td><td><code>number</code></td><td><p>Max entries to return. Clamped to the range 1–1000; non-positive values fall back to 100.</p></td></tr>
 </table>
 <p><b>Returns</b> <code>Array&lt;{key: string, value: string</code> — &gt;} Matching entries in ascending key order. An empty array ends the scan.</p>
-<pre><code>let cursor;
+<pre><code>export default ({ kv }) =&gt; {
+let cursor;
 const all = [];
 for (;;) {
 const page = kv.prefix("user/", cursor, 1000);
 if (page.length === 0) break;
 all.push(...page);
 cursor = page[page.length - 1].key;
-}</code></pre>
+}
+};</code></pre>
 <h3 id="config"><code>config</code></h3>
 <p>Deploy-time configuration, read-only. A config file deployed at <code>_config/&lt;name&gt;.json</code> is readable here as <code>&lt;name&gt;</code> — and only here: config is not part of the kv keyspace a handler can name.</p><p>Values are scoped to the deployment the activation runs under, so code and its config switch atomically on release — including a rollback, and a deploy that removes a file (the read then returns <code>null</code>).</p>
 <h4 id="config-get"><code>config.get(name)</code></h4>
@@ -95,9 +103,11 @@ cursor = page[page.length - 1].key;
 <tr><td><code>name</code></td><td><code>string</code></td><td><p>The config path without the <code>_config/</code> prefix or the <code>.json</code> suffix (e.g. <code>"oauth/google"</code> for a deployed <code>_config/oauth/google.json</code>).</p></td></tr>
 </table>
 <p><b>Returns</b> <code>string|null</code> — The file's bytes as a string — parse JSON yourself — or <code>null</code> if this deployment carries no such config.</p>
-<pre><code>const raw = config.get("oauth/google");
+<pre><code>export default ({ config, response }) =&gt; {
+const raw = config.get("oauth/google");
 if (raw === null) { response.status = 500; return "missing config: oauth/google"; }
-const cfg = JSON.parse(raw);</code></pre>
+const cfg = JSON.parse(raw);
+};</code></pre>
 <h3 id="blob"><code>blob</code></h3>
 <p>Content-addressed tenant object storage.</p><p>Two shapes: one-shot (<code>put</code>/<code>get</code>) for values you hold in hand, and the upload session (<code>receive</code> → <code>write</code> → <code>seal</code>) for large inbound bodies that stream in chunk by chunk. "Seal" = freeze the bytes into an immutable blob and get back its hash (<code>segments.seal</code> is the same metaphor applied to a log tail). <code>blob.write</code> appends INTO an upload session — the opposite direction from <code>stream.write</code>, which emits response bytes OUT over the held connection.</p>
 <h4 id="blob-put"><code>blob.put(bytes, opts?)</code></h4>
@@ -110,8 +120,10 @@ const cfg = JSON.parse(raw);</code></pre>
 <tr><td><code>opts.ctx <em>(optional)</em></code></td><td><code>*</code></td><td><p>Opaque payload echoed to the <code>on</code> module as <code>request.ctx</code>.</p></td></tr>
 </table>
 <p><b>Returns</b> <code>string</code> — The object's sha256 hash (64 hex chars).</p>
-<pre><code>const hash = blob.put(JSON.stringify(event));
-kv.set(`timeline/${room}/${seq}`, JSON.stringify({ hash }));</code></pre>
+<pre><code>export default ({ blob, kv }) =&gt; {
+const hash = blob.put(JSON.stringify(event));
+kv.set(`timeline/${room}/${seq}`, JSON.stringify({ hash }));
+};</code></pre>
 <h4 id="blob-get"><code>blob.get(hash, opts?)</code></h4>
 <p>Read an object. Connection-scoped (<code>after.fetch</code> semantics): the result resumes THIS held connection — by default in <code>onFetchResult</code>, or the export named by <code>to</code>. Inert in a connectionless activation. A missing object surfaces as a non-2xx result; reads carry no marker — the caller retries.</p>
 <table><tr><th>Param</th><th>Type</th><th></th></tr>
@@ -123,12 +135,12 @@ kv.set(`timeline/${room}/${seq}`, JSON.stringify({ hash }));</code></pre>
 <tr><td><code>opts.maxBytes <em>(optional)</em></code></td><td><code>number</code></td><td><p>Whole-body transport cap (default 8 MB). The per-request arena (100 MiB allocation volume) comfortably covers decoding bodies this size; for serving bytes your handler doesn't execute on, prefer the <code>blob.url</code> redirect — the bytes then never touch the worker.</p></td></tr>
 </table>
 <p><b>Returns</b> <code>string</code> — The fetch id.</p>
-<pre><code>export default function () {
+<pre><code>export default function ({ request, kv, blob, next }) {
 const rec = JSON.parse(kv.get(`media/${id}`) ?? "{}");
 if (rec.hash) { blob.get(rec.hash, { on: "onBlob" }); return next(); }
 return next();
 }
-export function onBlob() { return request.bytes; } // flattened payload accessors; request.status top-level</code></pre>
+export function onBlob({ request }) { return request.bytes; } // flattened payload accessors; request.status top-level</code></pre>
 <h4 id="blob-url"><code>blob.url(hash, opts?)</code></h4>
 <p>Mint a presigned download URL for an object — the zero-copy read path. Answer a download request with a redirect and the bytes flow storage→client without touching the worker:</p><p>response.status = 307; response.headers = { location: blob.url(hash, { ttl: 300 }) }; return "";</p><p>The URL's timestamp derives from the activation's taped clock, so replay reproduces it exactly.</p>
 <table><tr><th>Param</th><th>Type</th><th></th></tr>
@@ -161,7 +173,7 @@ export function onBlob() { return request.bytes; } // flattened payload accessor
 <tr><td><code>bytes</code></td><td><code>string|Uint8Array</code></td><td><p>Chunk to append. Strings append their UTF-8 bytes; use Uint8Array for binary.</p></td></tr>
 </table>
 <p><b>Returns</b> <code>number</code> — Total recipe bytes after the append.</p>
-<pre><code>export function onMirrorChunk() {
+<pre><code>export function onMirrorChunk({ request, blob, next }) {
 if (!request.done) { blob.write(request.bytes); return next(); }
 const hash = blob.seal({ on: "stored", contentType: "image/png" });
 return JSON.stringify({ hash });
@@ -177,7 +189,7 @@ return JSON.stringify({ hash });
 <p><b>Returns</b> <code>string</code> — The object's sha256 hash (64 hex chars).</p>
 <pre><code>// doc-only
 // upload.mjs — respond at seal; readiness arrives at `stored`.
-export function onChunk() {
+export function onChunk({ request, response, blob, kv, next }) {
 blob.write(request.bytes);
 if (!request.done) return next();
 const hash = blob.seal({ on: "stored", ctx: { id: request.ctx.id } });
@@ -186,7 +198,7 @@ response.status = 202;
 return JSON.stringify({ hash });
 }
 // stored.mjs — the completion activation.
-export default function () {
+export default function ({ request, kv }) {
 const rec = JSON.parse(kv.get(`media/${request.ctx.id}`));
 kv.set(`media/${request.ctx.id}`, JSON.stringify({ ...rec, status: "ready" }));
 return "";
@@ -197,12 +209,12 @@ return "";
 <tr><td><code>opts</code></td><td><code>object</code></td><td></td></tr>
 <tr><td><code>opts.on</code></td><td><code>string</code></td><td><p>Export resumed with <code>{hash, len}</code> when the object is durable (required).</p></td></tr>
 </table>
-<pre><code>export function onHeaders() {
+<pre><code>export function onHeaders({ request, response, blob, next }) {
 if (!authed(request.headers)) { response.status = 401; return "no"; }
 blob.receive({ on: "onStored" });
 return next();
 }
-export function onStored() {
+export function onStored({ request, response, kv }) {
 if (request.status !== 200) { response.status = 502; return "store failed"; }
 kv.set(`media/${request.ctx.hash}`, JSON.stringify({ len: request.ctx.len }));
 return JSON.stringify({ hash: request.ctx.hash });
@@ -261,10 +273,12 @@ segments.seal(`room-${s}`);
 <p>The held socket. <code>stream</code> pushes response bytes out over time; <code>after.*</code> arms one-shot wakes; <code>next()</code> keeps the connection held between activations; <code>http.subscribe</code> holds a long-lived OUTBOUND stream (firehoses, SSE consumers). All ephemeral — they die with the caller.</p>
 <h3 id="after"><code>after</code></h3>
 <p>Connection wake triggers — re-invoke a held handler when something happens, while it still holds the socket. Register them in the body before returning <code>next()</code> (or while streaming). The runtime arms every <code>after.*</code> wake before firing any connectionless effect of the same activation, so a wake is never missed even when a callback writes the key it watches.</p><p>Wakes are one-shot and cannot be cancelled — they're ephemeral and node-local, so an unwanted wake is simply ignored (or the handler re-arms a different set). The exception is a fetch: cancel an in-flight <code>after.fetch</code> by its returned id.</p>
-<pre><code>// SSE-style: stream rows, then wait for more under a prefix.
+<pre><code>export default ({ stream, after, next }) =&gt; {
+// SSE-style: stream rows, then wait for more under a prefix.
 stream.start();
 after.kv(`notif/${user}/`, { on: "onNotify" });
-return next({ user });</code></pre>
+return next({ user });
+};</code></pre>
 <h4 id="after-ms"><code>after.ms(ms, opts?)</code></h4>
 <p>Wake the held connection after <code>ms</code> milliseconds. Named for its unit — durations are milliseconds; there is deliberately no <code>after.seconds</code> family (write <code>after.ms(5 * 60_000)</code>). Without <code>on</code>, the wake lands in the <code>onWake</code> export.</p>
 <table><tr><th>Param</th><th>Type</th><th></th></tr>
@@ -273,7 +287,9 @@ return next({ user });</code></pre>
 <tr><td><code>opts.on <em>(optional)</em></code></td><td><code>string</code></td><td><p>Export to resume into (<code>"module.method"</code> or a bare <code>"method"</code>); defaults to <code>onWake</code>.</p></td></tr>
 </table>
 <p><b>Returns</b> <code>void</code></p>
-<pre><code>after.ms(30_000, { on: "onTimeout" }); // deadline for a join</code></pre>
+<pre><code>export default ({ after }) =&gt; {
+after.ms(30_000, { on: "onTimeout" }); // deadline for a join
+};</code></pre>
 <h4 id="after-kv"><code>after.kv(prefix, opts?)</code></h4>
 <p>Wake the held connection after any key under <code>prefix</code> changes — anchored to the version this activation read, so a write between "you read" and "you parked" still fires it. Without <code>on</code>, the wake lands in the <code>onWake</code> export.</p>
 <table><tr><th>Param</th><th>Type</th><th></th></tr>
@@ -282,8 +298,10 @@ return next({ user });</code></pre>
 <tr><td><code>opts.on <em>(optional)</em></code></td><td><code>string</code></td><td><p>Export to resume into; defaults to <code>onWake</code>.</p></td></tr>
 </table>
 <p><b>Returns</b> <code>void</code></p>
-<pre><code>after.kv(`rooms/${roomId}/`);             // default onWake
-after.kv(`jobs/${id}/`, { on: "onJob" }); // explicit target</code></pre>
+<pre><code>export default ({ after }) =&gt; {
+after.kv(`rooms/${roomId}/`);             // default onWake
+after.kv(`jobs/${id}/`, { on: "onJob" }); // explicit target
+};</code></pre>
 <h4 id="after-fetch"><code>after.fetch(url, opts?)</code></h4>
 <p>Perform an outbound HTTP request and wake the held connection on its result. Connection-scoped: the result resumes THIS chain's <code>{on}</code> export (defaults: <code>onFetchResult</code> for a non-streamed whole body, <code>onFetchChunk</code>/<code>onFetchDone</code> for a streamed one) while it still holds the socket; if the activation doesn't hold the socket the fetch is inert (its durable twin is <code>webhook.send</code>). With <code>opts.stream</code> each upstream writeback wakes the handler as it arrives.</p>
 <table><tr><th>Param</th><th>Type</th><th></th></tr>
@@ -301,17 +319,21 @@ after.kv(`jobs/${id}/`, { on: "onJob" }); // explicit target</code></pre>
 <tr><td><code>opts.relay <em>(optional)</em></code></td><td><code>boolean</code></td><td><p>CAS→connection relay (platform-internal; today only the <code>__system/static</code> streamer's door engages it): intermediate chunks are spliced straight onto the held stream — <code>{on}</code> fires only for the first event and the terminal. Inert on any other fetch.</p></td></tr>
 </table>
 <p><b>Returns</b> <code>string</code> — The fetch id (<code>ftch_…</code>, opaque — compare to <code>request.fetchId</code>).</p>
-<pre><code>after.fetch('https://api.example.com/stream',
+<pre><code>export default ({ after, next }) =&gt; {
+after.fetch('https://api.example.com/stream',
 { stream: true, on: 'onUpstream' });
-return next();</code></pre>
+return next();
+};</code></pre>
 <h4 id="after-cancel"><code>after.cancel(id)</code></h4>
 <p>Cancel an in-flight <code>after.fetch</code> by the id it returned (also on <code>request.fetchId</code> in its wake events). No-op if it already completed. Cooperative: a chunk already in flight at the engine may still land after the cancel returns — track "we moved on" in your chain ctx.</p>
 <table><tr><th>Param</th><th>Type</th><th></th></tr>
 <tr><td><code>id</code></td><td><code>string</code></td><td><p>The <code>ftch_…</code> id.</p></td></tr>
 </table>
 <p><b>Returns</b> <code>void</code></p>
-<pre><code>const id = after.fetch("https://api.example.test/slow", { on: "onSlow" });
-after.cancel(id); // changed our mind before it landed</code></pre>
+<pre><code>export default ({ after }) =&gt; {
+const id = after.fetch("https://api.example.test/slow", { on: "onSlow" });
+after.cancel(id); // changed our mind before it landed
+};</code></pre>
 <h3 id="next"><code>next</code></h3>
 <p>The held-connection disposition.</p>
 <h4 id="next-next"><code>next(ctx?, crossCtx?)</code></h4>
@@ -321,18 +343,22 @@ after.cancel(id); // changed our mind before it landed</code></pre>
 <tr><td><code>crossCtx <em>(optional)</em></code></td><td><code>*</code></td><td><p>Only with a target: the ctx to thread into <code>targetModule</code>.</p></td></tr>
 </table>
 <p><b>Returns</b> <code>object</code> — The opaque park descriptor — return it.</p>
-<pre><code>stream.write(`data: ${row.value}\n\n`);
+<pre><code>export default ({ stream, after, next }) =&gt; {
+stream.write(`data: ${row.value}\n\n`);
 after.kv(`feed/${id}/`);
-return next({ since: row.seq });</code></pre>
+return next({ since: row.seq });
+};</code></pre>
 <h3 id="stream"><code>stream</code></h3>
 <p>Connection output — produce a streamed response over time. Pair with <code>after.*</code> (to wait for more) and <code>return next()</code> (to keep the socket); close by returning a terminal body. The response head is the ambient <code>response.*</code> global, committed to the wire by the first <code>stream.start()</code> / <code>stream.write()</code> (or a terminal return).</p><p>This is the OUTBOUND direction only. Taking a large body IN is <code>blob.receive</code>/<code>blob.write</code> (an upload session); an append log you name and query is <code>segments.*</code> — neither involves this namespace.</p>
-<pre><code>// SSE: open, emit rows, then wait for more under a prefix.
+<pre><code>export default ({ request, response, stream, after, kv, next }) =&gt; {
+// SSE: open, emit rows, then wait for more under a prefix.
 const rows = kv.prefix(`feed/${id}/`, request.ctx?.cursor);
 response.headers = { 'content-type': 'text/event-stream' };
 stream.start();
 for (const r of rows) stream.write(`data: ${r.value}\n\n`);
 after.kv(`feed/${id}/`, { on: 'onNotify' });
-return next({ cursor: rows.at(-1)?.key ?? request.ctx?.cursor });</code></pre>
+return next({ cursor: rows.at(-1)?.key ?? request.ctx?.cursor });
+};</code></pre>
 <h4 id="stream-start"><code>stream.start()</code></h4>
 <p>Open the streamed response: commit the ambient <code>response.*</code> head and begin the stream so the client's <code>onopen</code> fires before any data. Optional — the first <code>stream.write()</code> opens it implicitly.</p>
 <p><b>Returns</b> <code>void</code></p>
@@ -358,12 +384,14 @@ return next({ cursor: rows.at(-1)?.key ?? request.ctx?.cursor });</code></pre>
 <tr><td><code>opts.ctx <em>(optional)</em></code></td><td><code>*</code></td><td><p>Threaded forward to each activation as <code>request.ctx</code>.</p></td></tr>
 </table>
 <p><b>Returns</b> <code>string</code> — The subscription id — the same <code>ftch_…</code> form as <code>after.fetch</code>'s return and each chunk's <code>request.activation.fetchId</code>, so you can correlate them directly. Pass to {@link http.cancelSubscription}.</p>
-<pre><code>const id = http.subscribe({
+<pre><code>export default ({ http, kv }) =&gt; {
+const id = http.subscribe({
 url: "https://bsky.network/xrpc/com.atproto.sync.subscribeRepos",
 on: "ingest_firehose",
 ctx: { cursor: kv.get("firehose/cursor") },
 });
-kv.set("firehose/subscription_id", id);</code></pre>
+kv.set("firehose/subscription_id", id);
+};</code></pre>
 <h4 id="http-cancelsubscription"><code>http.cancelSubscription(id)</code></h4>
 <p>Cancel a held subscription. No-op if the subscription already ended or was never issued. Cooperative: a chunk already in flight may still land in <code>on_chunk</code> after the cancel returns.</p>
 <table><tr><th>Param</th><th>Type</th><th></th></tr>
@@ -391,17 +419,22 @@ kv.set("firehose/subscription_id", id);</code></pre>
 <tr><td><code>opts.ctx <em>(optional)</em></code></td><td><code>*</code></td><td><p>Opaque customer payload echoed back as <code>request.ctx</code> on the result event.</p></td></tr>
 </table>
 <p><b>Returns</b> <code>string</code> — The marker id — random unless <code>handle</code> was supplied, in which case it is base64url(sha256(handle)) (stable: the same handle always yields the same id).</p>
-<pre><code>webhook.send("https://hooks.example.com/x", {
+<pre><code>export default ({ webhook }) =&gt; {
+webhook.send("https://hooks.example.com/x", {
 body: JSON.stringify({ event: "order.paid", id }),
 on: "hooks/onDelivered",
 ctx: { order_id: id },
-});</code></pre>
-<pre><code>// Scheduled fire — write the marker now, fire in 5 minutes.
+});
+
+};</code></pre>
+<pre><code>export default ({ webhook }) =&gt; {
+// Scheduled fire — write the marker now, fire in 5 minutes.
 webhook.send("https://example.test/reminder", {
 body: "ping",
 key: "reminder/" + userId,        // idempotent
 in: "5m",
-});</code></pre>
+});
+};</code></pre>
 <h3 id="email"><code>email</code></h3>
 <p>Transactional email through Resend.</p>
 <h4 id="email-send"><code>email.send(opts)</code></h4>
@@ -718,9 +751,11 @@ public key; `crv` is `"P-256"` | `"P-384"` | `"P-521"`.</code></td><td><code></c
 <h4 id="crypto-oidcgeneratekey"><code>crypto.oidcGenerateKey()</code></h4>
 <p>Generate an RSA-2048 keypair for an OIDC identity provider. The private key is returned as an opaque PEM the IdP stores and never parses (key custody stays in Zig/OpenSSL).</p>
 <p><b>Returns</b> <code>{priv:string, jwk:{kty:string,n:string,e:string,alg:string,use:string,kid:string</code> — , kid:string}} <code>priv</code> is an opaque PKCS#8 PEM; <code>jwk</code> is publishable at the JWKS endpoint; <code>kid</code> is the key id.</p>
-<pre><code>const { priv, jwk, kid } = crypto.oidcGenerateKey();
+<pre><code>export default ({ kv }) =&gt; {
+const { priv, jwk, kid } = crypto.oidcGenerateKey();
 kv.set("oidc/privkey", priv);
-kv.set("oidc/jwks", JSON.stringify({ keys: [jwk] }));</code></pre>
+kv.set("oidc/jwks", JSON.stringify({ keys: [jwk] }));
+};</code></pre>
 <h4 id="crypto-oidcsign"><code>crypto.oidcSign(privPem, signingInput)</code></h4>
 <p>RS256-sign an OIDC JWS signing input with a private key minted by {@link crypto.oidcGenerateKey}.</p>
 <table><tr><th>Param</th><th>Type</th><th></th></tr>
@@ -735,8 +770,10 @@ kv.set("oidc/jwks", JSON.stringify({ keys: [jwk] }));</code></pre>
 <tr><td><code>curve</code></td><td><code>string</code></td><td><p><code>"secp256k1"</code> | <code>"P-256"</code>.</p></td></tr>
 </table>
 <p><b>Returns</b> <code>{privateKey:Uint8Array, publicKey:Uint8Array</code> — } <code>privateKey</code> is the 32-byte scalar; <code>publicKey</code> is the 33-byte compressed SEC1 point (<code>0x02</code>/<code>0x03 ‖ X</code>).</p>
-<pre><code>const { privateKey, publicKey } = crypto.ecdsaGenerateKey("secp256k1");
-kv.set("repo/signing-key", base64url.encode(privateKey));</code></pre>
+<pre><code>export default ({ kv }) =&gt; {
+const { privateKey, publicKey } = crypto.ecdsaGenerateKey("secp256k1");
+kv.set("repo/signing-key", base64url.encode(privateKey));
+};</code></pre>
 <h4 id="crypto-ecdsasign"><code>crypto.ecdsaSign(curve, privateKey, data)</code></h4>
 <p>ECDSA-sign <code>data</code> (SHA-256 digest) with a raw private scalar from {@link crypto.ecdsaGenerateKey}. The signature is the 64-byte compact <code>R‖S</code> form atproto stores in signed commits, always low-S normalized.</p>
 <table><tr><th>Param</th><th>Type</th><th></th></tr>
@@ -1046,9 +1083,6 @@ const a = sessions.fromConfig("admin");</code></pre>
 <tr><td><code>config</code></td><td><code>object</code></td><td><p>Client registry. <code>clients</code> is an array of <code>{client_id, redirect_uris}</code>; <code>login_path</code> is the IdP's own login UI route. kv-layout / TTL / key-rotation-window keys are optional and default sensibly.</p></td></tr>
 <tr><td><code>name</code></td><td><code>string</code></td><td><p>Config name; namespaces the kv key paths.</p></td></tr>
 </table>
-<h4 id="oidc-handlerotate"><code>oidc.handleRotate()</code></h4>
-<p>Scheduled key-rotation tick (§4.6). Reached only via the in-cluster <code>webhook.send</code> self-fire routed through {@link OIDCProvider#handle}; not a customer entry point. Deadline-gated and last-write-wins, so a double-fire is safe.</p>
-<p><b>Returns</b> <code>string</code> — JSON status body.</p>
 <h4 id="oidc-handle"><code>oidc.handle()</code></h4>
 <p>The IdP front controller. Routes the current request to the standard OIDC endpoints — <code>/.well-known/openid-configuration</code>, <code>/.well-known/jwks.json</code>, <code>/authorize</code>, <code>/token</code> — plus the internal key-rotation tick. Wire it as your IdP handler's default export; sets the response and returns its body.</p>
 <p><b>Returns</b> <code>string|null</code> — The response body (or <code>null</code> for a redirect set on <code>response</code>); 404 text for unknown paths.</p>
@@ -1201,8 +1235,10 @@ return JSON.stringify(activitypub.fromConfig().publishNote(content));
 <tr><td><code>id</code></td><td><code>string</code></td><td><p>Target instance id (non-empty).</p></td></tr>
 </table>
 <p><b>Returns</b> <code>{kv:object, blob:object, deploy:object</code> — } - <code>kv</code> — <code>{get, set, delete, prefix}</code>, the same as the global {@link kv}, bound to instance <code>id</code>. - <code>blob</code> — <code>{get(hash, {on}), receive({on, ctx}), exportUrl(hash, {ttl}), fileUrl(hash, {ttl, contentType})}</code>: cross-tenant blob READ (resumes <code>on</code> with the bytes), STREAMED write (pipe the inbound body straight into <code>id</code>'s file-blobs, no JS buffering), and the sync presign twins of {@link blob.exportUrl} / {@link blob.fileUrl} over <code>id</code>'s pools (export download links + bundle file links — rove#340). There is no sync <code>put</code> — cross-tenant writes stream via <code>receive</code>. - <code>deploy</code> — <code>{stampManifest(entries), readManifest(dep)}</code>: write/read a deployment manifest in <code>id</code>'s deployments/ from composed <code>entries</code> (<code>[{path, kind, source_hex, bytecode_hex?, content_type?}]</code>); stampManifest returns the dep_id (16-hex). Compose deploys with {@link platform.compile} (handlers) + <code>blob.receive</code> (statics) + <code>stampManifest</code>, then activate by dispatching <code>__system/release_flip</code>. Unknown id throws <code>Error{code:"InstanceNotFound"}</code>.</p>
-<pre><code>const { kv: tenantKv } = platform.scope(req.instanceId);
-const profile = tenantKv.get("profile");</code></pre>
+<pre><code>export default ({ platform }) =&gt; {
+const { kv: tenantKv } = platform.scope(req.instanceId);
+const profile = tenantKv.get("profile");
+};</code></pre>
 <h4 id="platform-stage"><code>platform.stage(opts)</code></h4>
 <p>Content-address handler sources into <code>scope</code>'s blobs WITHOUT compiling them, resuming with <code>{ok, results:[{path, source_hex}]}</code>.</p><p>The staging half of a deploy. Compilation resolves every import eagerly, so a module can only be compiled once everything it imports exists — which, for a deploy that uploads files one at a time, is not true until the last file lands. Stage each file as it arrives, then {@link platform.compile} the finished bundle, where a sibling import resolves.</p><p>**Bound, like {@link platform.compile}:** <code>return next()</code> after it.</p>
 <table><tr><th>Param</th><th>Type</th><th></th></tr>
@@ -1213,8 +1249,10 @@ const profile = tenantKv.get("profile");</code></pre>
 <tr><td><code>opts.ctx <em>(optional)</em></code></td><td><code>*</code></td><td><p>Threaded to the resume as <code>request.ctx.app</code>.</p></td></tr>
 </table>
 <p><b>Returns</b> <code>string</code> — The bound fetch id (<code>ftch_…</code>).</p>
-<pre><code>platform.stage([{ path, source }], { scope: tenant, on: "onStaged" });
-return next();</code></pre>
+<pre><code>export default ({ platform, next }) =&gt; {
+platform.stage([{ path, source }], { scope: tenant, on: "onStaged" });
+return next();
+};</code></pre>
 <h4 id="platform-compile"><code>platform.compile(opts)</code></h4>
 <p>Compile handler sources to bytecode + content-address them into <code>scope</code>'s blobs, off the hot path (<code>docs/architecture/cli-and-deploy.md</code> §4.1). Admin-only (the issuing tenant is checked natively). Source → bytecode is the one irreducibly-native deploy step; it's async (compile is slow) but its result is deterministic + idempotent, so it needs no replay tape.</p><p>**Bound, like {@link on.fetch}:** the call binds to the held chain, so you must <code>return next()</code> after it; the result resumes your handler at the <code>on</code> export (default <code>onFetchResult</code>) with <code>request.ctx = {ok, results:[{path, source_hex, bytecode_hex}]}</code> (or <code>{ok:false, status, error}</code>). Compose the manifest from those hashes + your statics and stamp it there. Stage/activate is still a separate release dispatch (<code>__system/release_flip</code>).</p><p>Imports resolve — and are therefore VALIDATED — across the whole batch: a handler may import a sibling in the same call, and a specifier that resolves to nothing fails the compile.</p>
 <table><tr><th>Param</th><th>Type</th><th></th></tr>
@@ -1227,11 +1265,13 @@ Handler sources, inline or by the `source_hex` a prior
 <tr><td><code>opts.on <em>(optional)</em></code></td><td><code>string</code></td><td><p>Resume export.</p></td></tr>
 </table>
 <p><b>Returns</b> <code>string</code> — The bound fetch id (<code>ftch_…</code>).</p>
-<pre><code>platform.compile(handlers, { scope: tenant, on: "onCompiled" });
+<pre><code>export default ({ platform, next }) =&gt; {
+platform.compile(handlers, { scope: tenant, on: "onCompiled" });
 return next();
 // export function onCompiled(request) {
 //   const { results } = request.ctx; ...stamp manifest...
-// }</code></pre>
+// }
+};</code></pre>
 <h3 id="platform-root"><code>platform.root</code></h3>
 <p>The platform root store (<code>__root__.db</code>) — instance / domain / user / account metadata.</p>
 <h4 id="platform-root-get"><code>platform.root.get(key)</code></h4>
@@ -1271,9 +1311,11 @@ return next();
 <tr><td><code>opts.actor <em>(optional)</em></code></td><td><code>"tenant_user"|"operator"|"system"</code></td><td><p>WHO caused this, as the target's log will record it. Three values because "the dashboard did it" hides the split a reader most wants: the tenant's own user acting through the admin app, a platform operator acting on their data, or an automated sweep with no human. Never the individual operator.</p></td></tr>
 </table>
 <p><b>Returns</b> <code>string</code> — The dispatch id — the <code>_dispatch/owed/{id}</code> marker.</p>
-<pre><code>platform.dispatch("acme", "__system/release", {
+<pre><code>export default ({ platform }) =&gt; {
+platform.dispatch("acme", "__system/release", {
 ctx: { dep_id: depId }, actor: "tenant_user",
-});</code></pre>
+});
+};</code></pre>
 
   <footer>© 2026 Loop46, Inc. · rewind.js · generated by scripts/ops/gen_docs_reference.py — do not edit by hand</footer>
 </article>
