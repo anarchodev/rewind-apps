@@ -11,17 +11,17 @@ function validId(id) {
 
 // Operator sees every tenant; a customer sees only the tenants of the accounts
 // they belong to (was: ALL tenants leaked to any authenticated session).
-export function listInstance({ platform }) {
+export function listInstance({ kv, platform }) {
     const a = request.auth || {};
     if (a.is_root) {
         const entries = platform.root.prefix("instance/", "", 1000);
         return { instances: entries.map((e) => ({ id: e.key.slice("instance/".length) })) };
     }
     if (!a.sub) { response.status = 401; return { error: "unauthenticated" }; }
-    return { instances: accessibleInstances(accountHashFor(a.sub)).map((id) => ({ id })) };
+    return { instances: accessibleInstances(kv, accountHashFor(a.sub)).map((id) => ({ id })) };
 }
 
-export function getInstance(id) {
+export function getInstance({ kv, platform }, id) {
     if (!validId(id)) { response.status = 400; return { error: "invalid id" }; }
     const v = platform.root.get("instance/" + id);
     if (v === null) { response.status = 404; return { error: "not found" }; }
@@ -74,7 +74,7 @@ export function onCreateInstanceDone({ kv, platform, next }) {
 //
 // DESTRUCTIVE and not undoable — the caller must confirm by sending the
 // instance's own name (`confirm`), so a stray DELETE cannot destroy a tenant.
-export function deleteInstance(id, confirm) {
+export function deleteInstance({ after, next }, id, confirm) {
     if (!validId(id)) { response.status = 400; return { error: "invalid id" }; }
     if (isPlatformInstance(id)) return jsonError(403, "that instance is part of the platform");
     // Type-the-name: the one guard between a mis-click and a destroyed tenant.
@@ -137,7 +137,7 @@ export function listDomain({ platform }) {
     };
 }
 
-export function assignDomain(c, host, instance_id) {
+export function assignDomain({ platform }, c, host, instance_id) {
     if (!host || !instance_id) {
         response.status = 400;
         return { error: "host and instance_id required" };
@@ -431,7 +431,7 @@ function kvDelete(c, id, key) {
 // a non-operator may release ONLY a tenant they own (`account/{hash}/instances/
 // {id}` via `ownedInstances`). Previously this checked nothing — any
 // authenticated session could release any tenant.
-export function publishRelease(c, instance_id, dep_id) {
+export function publishRelease({ kv }, c, instance_id, dep_id) {
     if (!validId(instance_id)) {
         response.status = 400;
         return { error: "invalid instance_id" };
@@ -452,7 +452,7 @@ export function publishRelease(c, instance_id, dep_id) {
     const dep = dep_id;
     const auth = request.auth || {};
     if (!auth.sub) return jsonError(401, "unauthenticated");
-    if (!auth.is_root && !canAccess(accountHashFor(auth.sub), instance_id)) {
+    if (!auth.is_root && !canAccess(kv, accountHashFor(auth.sub), instance_id)) {
         return jsonError(403, "not your instance");
     }
     // The flip is a dispatched activation in the TARGET's own log (the
@@ -561,7 +561,7 @@ const INVITE_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 function userHashFor(email) { return crypto.sha256(String(email).trim().toLowerCase()); }
 function accountHashFor(email) { return userHashFor(email); }
 
-function planLimitsFor(accountHash) {
+function planLimitsFor(kv, accountHash) {
     const plan = kv.get("account/" + accountHash + "/plan") || "free";
     return PLAN_LIMITS[plan] || PLAN_LIMITS.free;
 }
@@ -569,7 +569,7 @@ function planLimitsFor(accountHash) {
 // Owned-instance count for an account. Works for ANY account id (personal or
 // team): reads `account/{aid}/instances/`. The old "pending reservation" half
 // is gone: provisioning is synchronous behind a proven OIDC session.
-function ownedInstances(accountHash) {
+function ownedInstances(kv, accountHash) {
     return kv.prefix("account/" + accountHash + "/instances/", "", 1000)
         .map((e) => e.key.slice(("account/" + accountHash + "/instances/").length));
 }
@@ -582,7 +582,7 @@ function ownedInstances(accountHash) {
 
 // THE authz primitive — is `userHash` an active member of the account that owns
 // `tenant`? O(1): at most two kv.get on one store, no scans.
-function canAccess(userHash, tenant) {
+function canAccess(kv, userHash, tenant) {
     const aid = kv.get("instance/" + tenant + "/owner");
     if (aid !== null) {
         const role = kv.get("account/" + aid + "/members/" + userHash);
@@ -594,17 +594,17 @@ function canAccess(userHash, tenant) {
     return kv.get("account/" + userHash + "/instances/" + tenant) !== null;
 }
 
-function roleInAccount(aid, userHash) {
+function roleInAccount(kv, aid, userHash) {
     return kv.get("account/" + aid + "/members/" + userHash); // "owner"|"member"|"invited:member"|null
 }
-function isActiveMember(aid, userHash) {
-    const r = roleInAccount(aid, userHash);
+function isActiveMember(kv, aid, userHash) {
+    const r = roleInAccount(kv, aid, userHash);
     return r === "owner" || r === "member";
 }
 
 // The account ids a user actively belongs to (reverse index), personal always
 // included even pre-backfill.
-function accountsForUser(userHash) {
+function accountsForUser(kv, userHash) {
     const accts = kv.prefix("user/" + userHash + "/accounts/", "", 1000)
         .map((e) => e.key.slice(("user/" + userHash + "/accounts/").length));
     if (accts.indexOf(userHash) === -1) accts.push(userHash);
@@ -612,10 +612,10 @@ function accountsForUser(userHash) {
 }
 
 // Union of instances across every account the user can reach (dedup).
-function accessibleInstances(userHash) {
+function accessibleInstances(kv, userHash) {
     const seen = {}, out = [];
-    for (const aid of accountsForUser(userHash))
-        for (const id of ownedInstances(aid))
+    for (const aid of accountsForUser(kv, userHash))
+        for (const id of ownedInstances(kv, aid))
             if (!seen[id]) { seen[id] = 1; out.push(id); }
     return out;
 }
@@ -623,48 +623,48 @@ function accessibleInstances(userHash) {
 // Idempotent lazy migration: materialize this user's personal account + backfill
 // instance→owner pointers for tenants they already own. Set-if-absent, so it's a
 // no-op after the first call. Called from handleSession + provisionInstance.
-function backfillSelf(userHash, email) {
+function backfillSelf(kv, userHash, email) {
     // The deletion tombstone (rove#340): while a deletion is running or
     // frozen-failed, the lazy materialization below would RESURRECT the
     // half-erased account on the caller's next session read. Terminal
     // `done` falls through — that is the re-signup path.
-    if (isDeleting(userHash)) return;
+    if (isDeleting(kv, userHash)) return;
     if (kv.get("account/" + userHash + "/members/" + userHash) === null) {
         kv.set("account/" + userHash + "/members/" + userHash, "owner");
         kv.set("user/" + userHash + "/accounts/" + userHash, "owner");
         if (email) kv.set("account/" + userHash + "/email/" + userHash, email);
     }
-    for (const id of ownedInstances(userHash))
+    for (const id of ownedInstances(kv, userHash))
         if (kv.get("instance/" + id + "/owner") === null)
             kv.set("instance/" + id + "/owner", userHash);
 }
 
 // Active owners of an account (drives the last-owner guard).
-function ownerCount(aid) {
+function ownerCount(kv, aid) {
     return kv.prefix("account/" + aid + "/members/", "", 1000)
         .filter((e) => e.value === "owner").length;
 }
 
 // A personal account's id IS its owner's hash, so it has a member row keyed by
 // the aid itself; a team account (aid = sha256(uuid)) never does.
-function isPersonalAccount(aid) { return roleInAccount(aid, aid) === "owner"; }
+function isPersonalAccount(kv, aid) { return roleInAccount(kv, aid, aid) === "owner"; }
 
 // Backfill instance→owner pointers for an account so a freshly-added member can
 // reach existing tenants even if the owner hasn't logged in since teams shipped.
-function backfillAccountInstances(aid) {
-    for (const id of ownedInstances(aid))
+function backfillAccountInstances(kv, aid) {
+    for (const id of ownedInstances(kv, aid))
         if (kv.get("instance/" + id + "/owner") === null)
             kv.set("instance/" + id + "/owner", aid);
 }
 
 // Team (non-personal) accounts this user owns — counted against the caller's
 // plan-gated max_team_accounts allowance.
-function ownedTeamAccountCount(userHash) {
-    return accountsForUser(userHash)
-        .filter((aid) => aid !== userHash && roleInAccount(aid, userHash) === "owner").length;
+function ownedTeamAccountCount(kv, userHash) {
+    return accountsForUser(kv, userHash)
+        .filter((aid) => aid !== userHash && roleInAccount(kv, aid, userHash) === "owner").length;
 }
 
-function accountName(aid) {
+function accountName(kv, aid) {
     const meta = kv.get("account/" + aid + "/meta");
     if (meta) { try { return JSON.parse(meta).name || null; } catch (_) {} }
     return null;
@@ -705,19 +705,19 @@ function accountName(aid) {
 const ACCTDEL = "acctdel/";
 const ACCTDEL_WATCHDOG_S = 60;
 
-function acctdelMarker(aid) {
+function acctdelMarker(kv, aid) {
     const raw = kv.get(ACCTDEL + aid);
     if (raw === null) return null;
     try { return JSON.parse(raw); } catch (_) { return null; }
 }
 
 // Non-terminal marker = the tombstone. `done` deliberately does not block.
-function isDeleting(aid) {
-    const m = acctdelMarker(aid);
+function isDeleting(kv, aid) {
+    const m = acctdelMarker(kv, aid);
     return m !== null && m.state !== "done";
 }
 
-function acctdelWrite(aid, m) {
+function acctdelWrite(kv, aid, m) {
     m.updated_ms = Date.now();
     kv.set(ACCTDEL + aid, JSON.stringify(m));
 }
@@ -739,12 +739,12 @@ function acctdelCancelWatchdog(aid) {
 // deletion. Cascade-deleting a team destroys other members' instances,
 // which a personal typed-confirm cannot authorize; the established
 // `last_owner` guard semantics (leaveAccount) applied to deletion.
-function soleOwnerTeams(caller) {
+function soleOwnerTeams(kv, caller) {
     const out = [];
-    for (const aid of accountsForUser(caller)) {
+    for (const aid of accountsForUser(kv, caller)) {
         if (aid === caller) continue;
-        if (roleInAccount(aid, caller) === "owner" && ownerCount(aid) <= 1)
-            out.push({ aid: aid, name: accountName(aid) });
+        if (roleInAccount(kv, aid, caller) === "owner" && ownerCount(kv, aid) <= 1)
+            out.push({ aid: aid, name: accountName(kv, aid) });
     }
     return out;
 }
@@ -769,7 +769,7 @@ function soleOwnerTeams(caller) {
 // The org/billing-account fork is already decided: one Account entity is
 // both (splittable later). Nothing here introduces a second entity.
 
-function billingFor(aid) {
+function billingFor(kv, aid) {
     const g = (k) => kv.get("account/" + aid + "/billing/" + k);
     const pe = g("period_end");
     return {
@@ -785,8 +785,8 @@ function billingFor(aid) {
 // GET /v1/accounts/:aid/billing — accountMember (any active member may SEE
 // billing state; mutating it is owner-only and arrives with the checkout
 // flow). No Stripe call: this is a pure read of our own rows.
-function getBilling(aid) {
-    return billingFor(aid);
+function getBilling(kv, aid) {
+    return billingFor(kv, aid);
 }
 
 // GET /v1/accounts/:aid/export — the account-rows slice of the data export
@@ -797,7 +797,7 @@ function getBilling(aid) {
 // token's hash is a credential-shaped secret), and the Stripe `item` si_ id +
 // `last_event_ts` are internal plumbing — while customer/subscription ids
 // appear on the customer's own Stripe receipts.
-function accountExport(aid) {
+function accountExport(kv, aid) {
     const members = kv.prefix("account/" + aid + "/members/", "", 1000).map((e) => ({
         email: kv.get("account/" + aid + "/email/" + e.key.slice(("account/" + aid + "/members/").length)),
         role: e.value,
@@ -807,10 +807,10 @@ function accountExport(aid) {
         return { email: p.email || null, role: p.role || "member",
                  invited_ms: p.invited_ms || null, exp_ms: p.exp_ms || null };
     });
-    const instances = ownedInstances(aid).map((id) => ({
+    const instances = ownedInstances(kv, aid).map((id) => ({
         id: id, host: kv.get("instance/" + id + "/host"),
     }));
-    const b = billingFor(aid);
+    const b = billingFor(kv, aid);
     let meta = null;
     const rawMeta = kv.get("account/" + aid + "/meta");
     if (rawMeta) { try { meta = JSON.parse(rawMeta); } catch (_) {} }
@@ -821,7 +821,7 @@ function accountExport(aid) {
     };
     return {
         aid: aid,
-        name: accountName(aid),
+        name: accountName(kv, aid),
         meta: meta,
         plan: b.plan,
         members: members,
@@ -865,7 +865,7 @@ function accountExport(aid) {
 
 const BILLING_ACTIVE_STATUSES = { active: true, trialing: true, past_due: true, incomplete: true };
 
-function billingConfigPk() {
+function billingConfigPk(kv) {
     const pk = kv.get("stripe_pk");
     if (!pk) return jsonError(503, "billing not configured");
     return { publishable_key: pk };
@@ -901,7 +901,7 @@ const BILLING_HOLD_MS = 24 * 60 * 60 * 1000;
 // a fresh window rather than failing the request: these guards shape abuse,
 // and a corrupt counter must never be able to lock a paying customer out of
 // checkout.
-function billingWindowRow(key, windowMs, now) {
+function billingWindowRow(kv, key, windowMs, now) {
     const raw = kv.get(key);
     if (raw !== null) {
         try {
@@ -916,7 +916,7 @@ function billingWindowRow(key, windowMs, now) {
 // customer whose bank declines five times is indistinguishable from a tester,
 // and a false positive costs a sale — so it expires on its own, and an
 // operator can clear it early by deleting the row.
-function billingHold(aid, now) {
+function billingHold(kv, aid, now) {
     const raw = kv.get("account/" + aid + "/billing/hold");
     if (raw === null) return null;
     let h;
@@ -928,16 +928,16 @@ function billingHold(aid, now) {
 // Returns an error body to return to the caller, or null to proceed. Charges
 // an attempt on the way through, so the caller must call it exactly once per
 // secret-minting request.
-function billingAttemptRefusal(aid) {
+function billingAttemptRefusal(kv, aid) {
     const now = Date.now();
-    const held = billingHold(aid, now);
+    const held = billingHold(kv, aid, now);
     if (held) {
         response.status = 429;
         return { error: "billing_on_hold", reason: held.reason,
                  retry_after_ms: held.until - now };
     }
     const key = "account/" + aid + "/billing/attempts";
-    const row = billingWindowRow(key, BILLING_ATTEMPT_WINDOW_MS, now);
+    const row = billingWindowRow(kv, key, BILLING_ATTEMPT_WINDOW_MS, now);
     if (row.n >= BILLING_ATTEMPTS_PER_WINDOW) {
         response.status = 429;
         return { error: "billing_attempt_rate_limited",
@@ -961,10 +961,10 @@ function declineFingerprint(pi) {
 // Fed by the `payment_intent.payment_failed` webhook. Trips a hold on either
 // axis; distinct cards is the sharper one, since one card declining five times
 // is a customer with a problem and five cards declining once each is not.
-function recordBillingDecline(aid, pi) {
+function recordBillingDecline(kv, aid, pi) {
     const now = Date.now();
     const key = "account/" + aid + "/billing/declines";
-    const row = billingWindowRow(key, BILLING_DECLINE_WINDOW_MS, now);
+    const row = billingWindowRow(kv, key, BILLING_DECLINE_WINDOW_MS, now);
     const n = row.n + 1;
     const cards = Array.isArray(row.cards) ? row.cards.slice() : [];
     const fp = declineFingerprint(pi);
@@ -984,15 +984,15 @@ function recordBillingDecline(aid, pi) {
                   " declines=" + n + " cards=" + cards.length);
 }
 
-function subscribeBilling(aid, tier) {
+function subscribeBilling(kv, next, aid, tier) {
     if (typeof tier !== "string" || !SELLABLE_TIERS[tier])
         return jsonError(400, "unknown tier");
-    const refused = billingAttemptRefusal(aid);
+    const refused = billingAttemptRefusal(kv, aid);
     if (refused) return refused;
     const price = kv.get("stripe_price/" + tier);
     const apiKey = kv.get("stripe_key");
     if (!price || !apiKey) return jsonError(503, "billing not configured");
-    const b = billingFor(aid);
+    const b = billingFor(kv, aid);
     if (b.status !== null && BILLING_ACTIVE_STATUSES[b.status])
         return jsonError(409, "already subscribed — change the plan instead");
     const sk = stripe.client({ apiKey: apiKey });
@@ -1060,7 +1060,7 @@ export function onBillingSubscription({ kv }) {
         kv.set("account/" + ctx.aid + "/billing/customer", ctx.cus);
         kv.set("billing/customer/" + ctx.cus, ctx.aid);
     }
-    recordSubscription(ctx.aid, sub, "");
+    recordSubscription(kv, ctx.aid, sub, "");
     const pi = sub.latest_invoice && sub.latest_invoice.payment_intent;
     const secret = pi && pi.client_secret;
     if (typeof secret !== "string" || !secret) { response.status = 502; return { error: "no payment intent" }; }
@@ -1068,12 +1068,12 @@ export function onBillingSubscription({ kv }) {
     return { subscription: sub.id || null, status: sub.status || "incomplete", client_secret: secret };
 }
 
-function changeBilling(aid, tier) {
+function changeBilling(kv, aid, tier) {
     if (typeof tier !== "string" || !SELLABLE_TIERS[tier])
         return jsonError(400, "unknown tier");
     // A held account does not move plans either, but a change mints no new
     // client secret, so it costs no attempt from the window.
-    const held = billingHold(aid, Date.now());
+    const held = billingHold(kv, aid, Date.now());
     if (held) {
         response.status = 429;
         return { error: "billing_on_hold", reason: held.reason,
@@ -1082,7 +1082,7 @@ function changeBilling(aid, tier) {
     const price = kv.get("stripe_price/" + tier);
     const apiKey = kv.get("stripe_key");
     if (!price || !apiKey) return jsonError(503, "billing not configured");
-    const b = billingFor(aid);
+    const b = billingFor(kv, aid);
     if (b.subscription === null) return jsonError(409, "no subscription");
     const item = kv.get("account/" + aid + "/billing/item");
     if (item === null) return jsonError(409, "no subscription item on file");
@@ -1096,10 +1096,10 @@ function changeBilling(aid, tier) {
     return { ok: true, pending: tier };
 }
 
-function cancelBilling(aid) {
+function cancelBilling(kv, aid) {
     const apiKey = kv.get("stripe_key");
     if (!apiKey) return jsonError(503, "billing not configured");
-    const b = billingFor(aid);
+    const b = billingFor(kv, aid);
     if (b.subscription === null) return jsonError(409, "no subscription");
     // Period-end cancellation (rove#313): the customer paid through the
     // period, so service runs to what they paid for. Stripe then sends
@@ -1134,7 +1134,7 @@ function cancelBilling(aid) {
 // resume path to re-enter the bypass. The plan push (rove#311) rides the
 // same atomic commit as these rows — never a held upstream call.
 
-function handleStripeWebhook(rawBody) {
+function handleStripeWebhook(kv, webhook, rawBody) {
     const secret = kv.get("stripe_whsec");
     if (!secret) return jsonError(503, "billing not configured");
     let event;
@@ -1168,7 +1168,7 @@ function handleStripeWebhook(rawBody) {
         const piaid = picus === null ? null : kv.get("billing/customer/" + picus);
         // No linked account: a test event, or an intent for a customer we
         // never wrote a reverse index for. Ack, as below.
-        if (piaid) recordBillingDecline(piaid, pi);
+        if (piaid) recordBillingDecline(kv, piaid, pi);
         return { received: true };
     }
 
@@ -1210,8 +1210,8 @@ function handleStripeWebhook(rawBody) {
     if (created < Number(kv.get(tsKey) || 0)) return { received: true, stale: true };
     kv.set(tsKey, String(created));
 
-    recordSubscription(aid, sub, type);
-    applyPlanFromSubscription(aid, sub, type);
+    recordSubscription(kv, aid, sub, type);
+    applyPlanFromSubscription(kv, webhook, aid, sub, type);
     return { received: true };
 }
 
@@ -1243,7 +1243,7 @@ function handleStripeWebhook(rawBody) {
 const SELLABLE_TIERS = { pro: true, enterprise: true };
 const PLAN_DOWN_STATUSES = { canceled: true, unpaid: true, incomplete_expired: true };
 
-function applyPlanFromSubscription(aid, sub, type) {
+function applyPlanFromSubscription(kv, webhook, aid, sub, type) {
     const status = String(sub.status || "");
     let target = null;
     if (status === "active" || status === "trialing") {
@@ -1255,11 +1255,11 @@ function applyPlanFromSubscription(aid, sub, type) {
     if (target === null) return;                       // grace / unknown: no change
     if (kv.get("account/" + aid + "/plan") === target) return;  // convergent no-op
     kv.set("account/" + aid + "/plan", target);
-    const owned = ownedInstances(aid);
-    for (let i = 0; i < owned.length; i++) pushPlanToTenant(owned[i], target);
+    const owned = ownedInstances(kv, aid);
+    for (let i = 0; i < owned.length; i++) pushPlanToTenant(webhook, owned[i], target);
 }
 
-function pushPlanToTenant(tenant, plan) {
+function pushPlanToTenant(webhook, tenant, plan) {
     webhook.send(CP_DOOR + "plan", {
         body: JSON.stringify({ tenant: tenant, plan: plan }),
         headers: { "content-type": "application/json" },
@@ -1272,7 +1272,7 @@ function pushPlanToTenant(tenant, plan) {
 // verbatim. `customer.subscription.deleted` carries status "canceled" on the
 // object; the fallback covers a malformed one so the row never goes empty on
 // a deletion we did accept.
-function recordSubscription(aid, sub, type) {
+function recordSubscription(kv, aid, sub, type) {
     const p = "account/" + aid + "/billing/";
     if (typeof sub.id === "string" && sub.id) kv.set(p + "subscription", sub.id);
     const status = (typeof sub.status === "string" && sub.status)
@@ -1297,18 +1297,18 @@ function recordSubscription(aid, sub, type) {
 // schema.
 
 // Create a new team (billing) account; caller becomes its owner. Capped per user.
-export function createAccount(name) {
+export function createAccount({ kv }, name) {
     const a = request.auth || {};
     if (!a.sub) return jsonError(401, "unauthenticated");
     const nm = String(name == null ? "" : name).trim();
     if (nm.length === 0 || nm.length > 64) return jsonError(400, "invalid name");
     const caller = accountHashFor(a.sub);
-    if (isDeleting(caller)) return jsonError(409, "account deletion in progress");
-    backfillSelf(caller, a.sub);
+    if (isDeleting(kv, caller)) return jsonError(409, "account deletion in progress");
+    backfillSelf(kv, caller, a.sub);
     // Team-account allowance rides the caller's PERSONAL account's plan —
     // your own tier decides how many orgs you may own.
-    const teamLimit = planLimitsFor(caller).max_team_accounts;
-    if (!a.is_root && ownedTeamAccountCount(caller) >= teamLimit) {
+    const teamLimit = planLimitsFor(kv, caller).max_team_accounts;
+    if (!a.is_root && ownedTeamAccountCount(kv, caller) >= teamLimit) {
         response.status = 403;
         return { error: "team_limit_reached", limit: teamLimit };
     }
@@ -1323,12 +1323,12 @@ export function createAccount(name) {
 }
 
 // Promote/demote a member (ownership transfer). Owner-only; last-owner-guarded.
-export function setMemberRole(aid, memberHash, role) {
+export function setMemberRole({ kv }, aid, memberHash, role) {
     if (role !== "owner" && role !== "member") return jsonError(400, "invalid role");
-    if (isPersonalAccount(aid)) return jsonError(400, "cannot change roles on a personal account");
-    const cur = roleInAccount(aid, memberHash);
+    if (isPersonalAccount(kv, aid)) return jsonError(400, "cannot change roles on a personal account");
+    const cur = roleInAccount(kv, aid, memberHash);
     if (cur !== "owner" && cur !== "member") return jsonError(404, "not a member");
-    if (cur === "owner" && role === "member" && ownerCount(aid) <= 1)
+    if (cur === "owner" && role === "member" && ownerCount(kv, aid) <= 1)
         return jsonError(409, "last_owner");
     kv.set("account/" + aid + "/members/" + memberHash, role);
     kv.set("user/" + memberHash + "/accounts/" + aid, role);
@@ -1339,13 +1339,13 @@ export function setMemberRole(aid, memberHash, role) {
 // Invite by email (tokened magic-link). `addr` is NOT named `email` on purpose —
 // a local `email` would shadow the imported `@rewind/email` binding and break
 // `email.send`.
-export function inviteMember(aid, addr) {
+export function inviteMember({ kv }, aid, addr) {
     const a = request.auth || {};
     const caller = accountHashFor(a.sub);
     const to = String(addr == null ? "" : addr).trim().toLowerCase();
     if (!to || to.indexOf("@") < 1) return jsonError(400, "invalid email");
     const h = userHashFor(to);
-    if (isActiveMember(aid, h)) return jsonError(409, "already_member");
+    if (isActiveMember(kv, aid, h)) return jsonError(409, "already_member");
     // Re-invite: drop any prior pending token for this email, then mint fresh.
     const prev = kv.get("account/" + aid + "/pending/" + h);
     if (prev) { try { kv.delete("invite/" + JSON.parse(prev).tokenHash); } catch (_) {} }
@@ -1357,7 +1357,7 @@ export function inviteMember(aid, addr) {
     kv.set("account/" + aid + "/pending/" + h, JSON.stringify({
         email: to, tokenHash: tokenHash, role: "member", invited_by: caller,
         invited_ms: Date.now(), exp_ms: exp_ms }));
-    backfillAccountInstances(aid);
+    backfillAccountInstances(kv, aid);
     // The rows above are the source of truth; the email is a re-sendable nudge.
     const acceptUrl = "https://" + request.host + "/#/invite/" + rawToken;
     const resendKey = kv.get("resend_key");
@@ -1366,7 +1366,7 @@ export function inviteMember(aid, addr) {
             apiKey: resendKey,
             from: kv.get("platform_email_from") || "team@" + request.host,
             to: to,
-            subject: (accountName(aid) || "A rewind team") + " invited you",
+            subject: (accountName(kv, aid) || "A rewind team") + " invited you",
             text: "You've been invited to a team on rewind.\n\nSign in with this "
                 + "email, then accept:\n" + acceptUrl + "\n\nThis invite expires in 7 days.",
         });
@@ -1379,7 +1379,7 @@ export function inviteMember(aid, addr) {
 
 // Accept an invite. The token finds the invite; acceptance is BOUND to the
 // invited email — the logged-in sub must hash to the invited address.
-export function acceptInvite(token) {
+export function acceptInvite({ kv }, token) {
     const a = request.auth || {};
     if (!a.sub) return jsonError(401, "unauthenticated");
     if (typeof token !== "string" || !token) return jsonError(400, "missing token");
@@ -1393,7 +1393,7 @@ export function acceptInvite(token) {
     if (Date.now() > inv.exp_ms) return jsonError(410, "invite expired"); // owner can re-send
     // Neither side of a deletion accepts invites: not a caller whose own
     // account is being erased, not a team that is being torn down.
-    if (isDeleting(caller) || isDeleting(inv.aid))
+    if (isDeleting(kv, caller) || isDeleting(kv, inv.aid))
         return jsonError(409, "account deletion in progress");
     kv.set("account/" + inv.aid + "/members/" + caller, "member");
     kv.set("user/" + caller + "/accounts/" + inv.aid, "member");
@@ -1401,11 +1401,11 @@ export function acceptInvite(token) {
     kv.delete("invite/" + tokenHash);                          // single-use
     kv.delete("account/" + inv.aid + "/pending/" + inv.emailHash);
     response.status = 200;
-    return { ok: true, aid: inv.aid, name: accountName(inv.aid) };
+    return { ok: true, aid: inv.aid, name: accountName(kv, inv.aid) };
 }
 
 // List active members + pending invites of an account (member-visible).
-export function listMembers(aid) {
+export function listMembers({ kv }, aid) {
     const mpre = "account/" + aid + "/members/";
     const members = kv.prefix(mpre, "", 1000).map((e) => {
         const h = e.key.slice(mpre.length);
@@ -1418,14 +1418,14 @@ export function listMembers(aid) {
                  role: p.role || "member", invited_ms: p.invited_ms || null,
                  exp_ms: p.exp_ms || null, status: "invited" };
     });
-    return { aid: aid, name: accountName(aid), members: members, pending: pending };
+    return { aid: aid, name: accountName(kv, aid), members: members, pending: pending };
 }
 
 // Remove an active member (owner-only; can't strand the last owner).
-export function removeMember(aid, memberHash) {
-    const cur = roleInAccount(aid, memberHash);
+export function removeMember({ kv }, aid, memberHash) {
+    const cur = roleInAccount(kv, aid, memberHash);
     if (cur !== "owner" && cur !== "member") return jsonError(404, "not a member");
-    if (cur === "owner" && ownerCount(aid) <= 1) return jsonError(409, "last_owner");
+    if (cur === "owner" && ownerCount(kv, aid) <= 1) return jsonError(409, "last_owner");
     kv.delete("account/" + aid + "/members/" + memberHash);
     kv.delete("account/" + aid + "/email/" + memberHash);
     kv.delete("user/" + memberHash + "/accounts/" + aid);
@@ -1434,7 +1434,7 @@ export function removeMember(aid, memberHash) {
 }
 
 // Cancel a pending invite (owner-only). Keyed by the invitee's email hash.
-export function revokeInvite(aid, emailHash) {
+export function revokeInvite({ kv }, aid, emailHash) {
     const raw = kv.get("account/" + aid + "/pending/" + emailHash);
     if (!raw) return jsonError(404, "no pending invite");
     try { kv.delete("invite/" + JSON.parse(raw).tokenHash); } catch (_) {}
@@ -1445,14 +1445,14 @@ export function revokeInvite(aid, emailHash) {
 
 // Leave a team account. Personal accounts are permanent; an owner must transfer
 // ownership (setMemberRole) before leaving so the account never goes ownerless.
-export function leaveAccount(aid) {
+export function leaveAccount({ kv }, aid) {
     const a = request.auth || {};
     if (!a.sub) return jsonError(401, "unauthenticated");
     const caller = accountHashFor(a.sub);
     if (aid === caller) return jsonError(400, "cannot leave your personal account");
-    const cur = roleInAccount(aid, caller);
+    const cur = roleInAccount(kv, aid, caller);
     if (cur !== "owner" && cur !== "member") return jsonError(404, "not a member");
-    if (cur === "owner" && ownerCount(aid) <= 1)
+    if (cur === "owner" && ownerCount(kv, aid) <= 1)
         return jsonError(409, "last_owner");
     kv.delete("account/" + aid + "/members/" + caller);
     kv.delete("account/" + aid + "/email/" + caller);
@@ -1468,7 +1468,7 @@ export function leaveAccount(aid) {
 // like deleteInstance's type-the-name). Route class `authed`; the aid is
 // BOUND to the session — there is nothing in the request to confuse.
 // A root M2M grant ({sub:null}) has no personal account and is refused.
-export function requestAccountDeletion(confirm) {
+export function requestAccountDeletion({ kv }, confirm) {
     const a = request.auth || {};
     if (!a.sub) return jsonError(401, "unauthenticated");
     const caller = accountHashFor(a.sub);
@@ -1476,9 +1476,9 @@ export function requestAccountDeletion(confirm) {
     // normalization point — " Email@X " confirms email@x.
     if (typeof confirm !== "string" || userHashFor(confirm) !== caller)
         return jsonError(400, "to delete your account, confirm with your account email");
-    if (isDeleting(caller)) return jsonError(409, "deletion_in_progress");
-    backfillSelf(caller, a.sub);
-    const sole = soleOwnerTeams(caller);
+    if (isDeleting(kv, caller)) return jsonError(409, "deletion_in_progress");
+    backfillSelf(kv, caller, a.sub);
+    const sole = soleOwnerTeams(kv, caller);
     if (sole.length > 0) {
         // Refuse, never cascade: deleting a team destroys OTHER members'
         // instances. Transfer ownership or delete the team first.
@@ -1488,7 +1488,7 @@ export function requestAccountDeletion(confirm) {
     // Leave every team now (member or co-owner with co-owners) — the
     // leaveAccount row deletes, synchronously, so the job then only ever
     // touches this account's own rows.
-    for (const aid of accountsForUser(caller)) {
+    for (const aid of accountsForUser(kv, caller)) {
         if (aid === caller) continue;
         kv.delete("account/" + aid + "/members/" + caller);
         kv.delete("account/" + aid + "/email/" + caller);
@@ -1508,13 +1508,13 @@ export function requestAccountDeletion(confirm) {
 // `accountOwner`; the typed confirm is the TEAM NAME, because the owner
 // is authorizing the destruction of every member's access and every
 // team-owned instance — that is the point of the confirmation.
-export function deleteTeamAccount(aid, confirm) {
-    if (isPersonalAccount(aid))
+export function deleteTeamAccount({ kv }, aid, confirm) {
+    if (isPersonalAccount(kv, aid))
         return jsonError(400, "delete your personal account via /v1/account/delete");
-    const nm = accountName(aid);
+    const nm = accountName(kv, aid);
     if (!nm || typeof confirm !== "string" || confirm !== nm)
         return jsonError(400, "to delete this team, confirm with its name");
-    if (isDeleting(aid)) return jsonError(409, "deletion_in_progress");
+    if (isDeleting(kv, aid)) return jsonError(409, "deletion_in_progress");
     const a = request.auth || {};
     kv.set(ACCTDEL + aid, JSON.stringify({
         state: "running", phase: "billing", is_team: true,
@@ -1533,7 +1533,7 @@ export function acctdelWake({ kv, webhook, platform }) {
     const ctx = request.ctx || {};
     const aid = ctx.aid;
     if (typeof aid !== "string" || !aid) return { ok: true };
-    const m = acctdelMarker(aid);
+    const m = acctdelMarker(kv, aid);
     // Absent or terminal: let the chain die — a terminal wake fires at
     // most once more (the already-armed watchdog) and does not re-arm.
     if (m === null || m.state !== "running") return { ok: true };
@@ -1568,7 +1568,7 @@ export function acctdelWake({ kv, webhook, platform }) {
         // composition: webhook.send at the CP door, the worker attaches the
         // move-secret). Idempotency-keyed per (account, tenant), so a
         // re-fire maps onto the same in-flight send instead of racing it.
-        const owned = ownedInstances(aid);
+        const owned = ownedInstances(kv, aid);
         let pending = 0;
         const failed = [];
         for (const t of owned) {
@@ -1600,14 +1600,14 @@ export function acctdelWake({ kv, webhook, platform }) {
             // re-authorize — half-erased must never be the resting state.
             m.state = "failed";
             m.error = "instance delete failed: " + failed.join(", ");
-            acctdelWrite(aid, m);
+            acctdelWrite(kv, aid, m);
             acctdelCancelWatchdog(aid);
             return { ok: true };
         }
         if (pending > 0) {
             // Sends in flight; their terminal callbacks advance the phase.
             // The re-armed watchdog above covers a lost callback.
-            acctdelWrite(aid, m);
+            acctdelWrite(kv, aid, m);
             return { ok: true };
         }
         m.phase = "rows";
@@ -1640,22 +1640,22 @@ export function acctdelWake({ kv, webhook, platform }) {
         }
         if (page.length >= 1000) {
             m.cursor = page[page.length - 1].key;
-            acctdelWrite(aid, m);
+            acctdelWrite(kv, aid, m);
             acctdelArm(aid, 0); // full page — continue immediately
             return { ok: true };
         }
-        if (m.is_team) return acctdelFinish(aid, m);
+        if (m.is_team) return acctdelFinish(kv, aid, m);
         m.phase = "idp";
         m.idp_step = 0;
         m.idp_cursor = "";
     }
 
-    if (m.phase === "idp") return acctdelIdpStep(aid, m, { kv: kv, platform: platform });
+    if (m.phase === "idp") return acctdelIdpStep(kv, aid, m, { kv: kv, platform: platform });
     // Unknown phase (a marker from a newer schema after a rollback):
     // freeze loudly rather than guess.
     m.state = "failed";
     m.error = "unknown phase " + m.phase;
-    acctdelWrite(aid, m);
+    acctdelWrite(kv, aid, m);
     acctdelCancelWatchdog(aid);
     return { ok: true };
 }
@@ -1709,9 +1709,9 @@ function acctdelHarvest(caps, m) {
     return rec || { v: 0, status: 0, overflow: false, body: "" };
 }
 
-function acctdelIdpStep(aid, m, caps) {
+function acctdelIdpStep(kv, aid, m, caps) {
     const addr = m.email;
-    if (typeof addr !== "string" || !addr) return acctdelFinish(aid, m);
+    if (typeof addr !== "string" || !addr) return acctdelFinish(kv, aid, m);
 
     // Each dispatched hop (scan, delete batch, the final cooldown) parks on
     // its resolution live and resolves eagerly offline — the loop harvests
@@ -1723,7 +1723,7 @@ function acctdelIdpStep(aid, m, caps) {
             if (rec === null) {
                 // Still pending — check back shortly. (The dispatch's own
                 // watchdog drives the target side; this poll is ours.)
-                acctdelWrite(aid, m);
+                acctdelWrite(kv, aid, m);
                 acctdelArm(aid, "1s");
                 return { ok: true };
             }
@@ -1734,11 +1734,11 @@ function acctdelIdpStep(aid, m, caps) {
                 // loudly; the erasure did not happen.
                 m.state = "failed";
                 m.error = "idp " + kind + " dispatch failed";
-                acctdelWrite(aid, m);
+                acctdelWrite(kv, aid, m);
                 acctdelCancelWatchdog(aid);
                 return { ok: true };
             }
-            if (kind === "cooldown") return acctdelFinish(aid, m);
+            if (kind === "cooldown") return acctdelFinish(kv, aid, m);
             if (kind === "scan") {
                 let payload = null;
                 if (rec.v === 1 && rec.status === 200 && !rec.overflow) {
@@ -1750,7 +1750,7 @@ function acctdelIdpStep(aid, m, caps) {
                     // forever for an erasure that is not happening.
                     m.state = "failed";
                     m.error = "idp scan dispatch failed";
-                    acctdelWrite(aid, m);
+                    acctdelWrite(kv, aid, m);
                     acctdelCancelWatchdog(aid);
                     return { ok: true };
                 }
@@ -1782,7 +1782,7 @@ function acctdelIdpStep(aid, m, caps) {
                 m.idp_cursor = "";
                 if (m.idp_step < ACCTDEL_IDP_STEPS.length) {
                     // Step boundary: yield the wake (one step per wake).
-                    acctdelWrite(aid, m);
+                    acctdelWrite(kv, aid, m);
                     acctdelArm(aid, 0);
                     return { ok: true };
                 }
@@ -1814,7 +1814,7 @@ function acctdelIdpStep(aid, m, caps) {
                 m.idp_step = step + 1;
                 m.idp_cursor = "";
             }
-            acctdelWrite(aid, m);
+            acctdelWrite(kv, aid, m);
             acctdelArm(aid, 0);
             return { ok: true };
         }
@@ -1826,7 +1826,7 @@ function acctdelIdpStep(aid, m, caps) {
     }
 }
 
-function acctdelFinish(aid, m) {
+function acctdelFinish(kv, aid, m) {
     // Drop the per-instance bookkeeping; the marker itself STAYS as the
     // audit tombstone (`done` blocks nothing — re-signup materializes a
     // fresh personal account lazily).
@@ -1835,7 +1835,7 @@ function acctdelFinish(aid, m) {
     m.state = "done";
     m.phase = "done";
     m.finished_ms = Date.now();
-    acctdelWrite(aid, m);
+    acctdelWrite(kv, aid, m);
     acctdelCancelWatchdog(aid);
     return { ok: true };
 }
@@ -1849,7 +1849,7 @@ export function onAcctdelCpDelete({ kv }) {
     const aid = ctx.aid;
     const t = ctx.tenant;
     if (!aid || !t) return { ok: true };
-    const m = acctdelMarker(aid);
+    const m = acctdelMarker(kv, aid);
     if (m === null || m.state !== "running") return { ok: true };
     const ik = ACCTDEL + aid + "/inst/" + t;
     const status = request.status || 0;
@@ -1871,7 +1871,7 @@ export function onAcctdelCpDelete({ kv }) {
         m.error = "instance " + t + " delete failed with status " + status +
             " after " + ((request.activation && request.activation.attempts) || "?") +
             " attempts";
-        acctdelWrite(aid, m);
+        acctdelWrite(kv, aid, m);
     }
     return { ok: true };
 }
@@ -1895,8 +1895,8 @@ export function listDeletions({ kv }) {
     return { deletions: out };
 }
 
-export function retryDeletion(aid) {
-    const m = acctdelMarker(aid);
+export function retryDeletion({ kv }, aid) {
+    const m = acctdelMarker(kv, aid);
     if (m === null) return jsonError(404, "no such deletion");
     if (m.state !== "failed") return jsonError(409, "not failed");
     // Reset failed instances to unsent (the same idempotency keys re-map
@@ -1908,7 +1908,7 @@ export function retryDeletion(aid) {
     m.state = "running";
     m.phase = "instances";
     delete m.error;
-    acctdelWrite(aid, m);
+    acctdelWrite(kv, aid, m);
     acctdelArm(aid, 0);
     return { ok: true, aid: aid };
 }
@@ -1936,20 +1936,20 @@ export function retryDeletion(aid) {
 // The CP call is a buffered `after.fetch` at the privileged door, so the reply
 // is stamped by `onProvisioned` — the bookkeeping writes live there too, so a
 // refused provision leaves no rows behind.
-export function provisionInstance(name, account) {
+export function provisionInstance({ after, kv, next }, name, account) {
     const auth = request.auth;
     const sub = auth && auth.sub;
     if (!sub) return jsonError(401, "unauthenticated");
 
     const caller = accountHashFor(sub);
-    backfillSelf(caller, sub);
+    backfillSelf(kv, caller, sub);
     const aid = (typeof account === "string" && account) ? account : caller;
-    if (isDeleting(aid)) return jsonError(409, "account deletion in progress");
-    if (!isActiveMember(aid, caller)) {
+    if (isDeleting(kv, aid)) return jsonError(409, "account deletion in progress");
+    if (!isActiveMember(kv, aid, caller)) {
         return jsonError(403, "not a member of that account");
     }
-    const limits = planLimitsFor(aid);
-    const owned = ownedInstances(aid);
+    const limits = planLimitsFor(kv, aid);
+    const owned = ownedInstances(kv, aid);
     if (owned.length >= limits.max_instances) {
         response.status = 403;
         return {
@@ -2031,23 +2031,23 @@ export function onProvisioned({ kv, platform }) {
 // _middlewares). Returns the caller's accounts (personal + teams) with role +
 // instances; `active_account` is a UI default (the personal account). `owned` is
 // kept (personal-account instances) for back-compat with older SPA builds.
-function handleSession() {
+function handleSession(kv) {
     const a = request.auth || {};
     if (!a.sub) return { is_root: !!a.is_root, sub: null, accounts: [], active_account: null, owned: [] };
     const h = accountHashFor(a.sub);
     // Mid-deletion the session must not rebuild anything: report the
     // deletion instead so the SPA renders "deletion in progress" rather
     // than an empty dashboard that invites re-provisioning.
-    if (isDeleting(h)) {
+    if (isDeleting(kv, h)) {
         return { is_root: !!a.is_root, sub: a.sub, deleting: true,
                  accounts: [], active_account: null, owned: [] };
     }
-    backfillSelf(h, a.sub);
+    backfillSelf(kv, h, a.sub);
     const pre = "user/" + h + "/accounts/";
     const accounts = kv.prefix(pre, "", 1000).map((e) => {
         const aid = e.key.slice(pre.length);
         return { aid: aid, role: e.value, is_personal: aid === h,
-                 name: accountName(aid), instances: ownedInstances(aid) };
+                 name: accountName(kv, aid), instances: ownedInstances(kv, aid) };
     });
     const personal = accounts.find((x) => x.is_personal) || accounts[0] || null;
     return {
@@ -2077,7 +2077,7 @@ function handleSession() {
 // is relayed verbatim.
 const LOG_DOOR = "http://rewind-logs.internal/v1/";
 
-function handleLogQuery(path, qs) {
+function handleLogQuery(after, kv, next, path, qs) {
     const auth = request.auth || {};
     // The M2M root grant is `{sub: null, is_root: true}`, so authority — not a
     // session — is what 401 turns on (rove#414).
@@ -2115,7 +2115,7 @@ function handleLogQuery(path, qs) {
     // tenant the caller cannot reach is refused identically whether or not it
     // exists, so the door is not a tenant-existence oracle. `show/{id}` returns
     // full request and response bodies, so it is gated the same as `list`.
-    if (!auth.is_root && !canAccess(accountHashFor(auth.sub), tenant)) {
+    if (!auth.is_root && !canAccess(kv, accountHashFor(auth.sub), tenant)) {
         return jsonError(403, "not your instance");
     }
     after.fetch(LOG_DOOR + tenant + "/" + sub + (qs ? "?" + qs : ""));
@@ -2137,7 +2137,7 @@ const CP_DOOR = "http://rewind-cp.internal/_control/";
 // move-secret). Operator-only, like the control ops.
 const CP_READ = "http://rewind-cp.internal/_cp/";
 
-function handleCpOp(cpPath, body) {
+function handleCpOp(after, next, cpPath, body) {
     const auth = request.auth || {};
     // Operator AUTHORITY, not a session. The M2M root-token grant is
     // deliberately `{sub: null, is_root: true}`, so requiring `sub` rejected
@@ -2157,7 +2157,7 @@ function handleCpOp(cpPath, body) {
 // /v1/cp/plan?tenant=T → the CP _cp/* read surface via the door. Powers the
 // #/cluster operator page's placement/plan lookups (the GUI twin of
 // `rewind-ops status`).
-function handleCpRead(cpSub, qs) {
+function handleCpRead(after, next, cpSub, qs) {
     const auth = request.auth || {};
     // Operator authority, not a session — see handleCpOp.
     if (!auth.is_root) return jsonError(403, "operator only");
@@ -2218,28 +2218,28 @@ const WSPKG = "_workspace_pkg/";
 
 // Parse + ownership-gate a deploy op. Returns the body on success, or null
 // after stamping the error response.
-function deployGate(body) {
+function deployGate(kv, body) {
     const auth = request.auth || {};
     let b;
     try { b = JSON.parse(body); } catch (e) { jsonError(400, "expected JSON body"); return null; }
     if (!validId(b.tenant)) { jsonError(400, "invalid tenant"); return null; }
     if (!auth.is_root) {
         if (!auth.sub) { jsonError(401, "unauthenticated"); return null; }
-        if (!canAccess(accountHashFor(auth.sub), b.tenant)) {
+        if (!canAccess(kv, accountHashFor(auth.sub), b.tenant)) {
             jsonError(403, "not your instance"); return null;
         }
     }
     // A deploy racing the owning account's deletion would stage into a
     // tenant the CP is tearing down — refuse while the job runs.
     const owner = kv.get("instance/" + b.tenant + "/owner");
-    if (owner !== null && isDeleting(owner)) {
+    if (owner !== null && isDeleting(kv, owner)) {
         jsonError(409, "account deletion in progress"); return null;
     }
     return b;
 }
 
-function handleWsReset(body) {
-    const b = deployGate(body); if (!b) return null;
+function handleWsReset(kv, platform, body) {
+    const b = deployGate(kv, body); if (!b) return null;
     const sk = platform.scope(b.tenant).kv;
     const rows = sk.prefix(WS, "", 1000);
     for (let i = 0; i < rows.length; i++) sk.delete(rows[i].key);
@@ -2248,8 +2248,8 @@ function handleWsReset(body) {
     return { ok: true, cleared: rows.length + prows.length };
 }
 
-function handleWsFile(body) {
-    const b = deployGate(body); if (!b) return null;
+function handleWsFile(kv, next, platform, body) {
+    const b = deployGate(kv, body); if (!b) return null;
     if (!b.path) return jsonError(400, "path required");
     // Statics stream straight to S3 via PUT /v1/upload (scope(t).blob.receive),
     // which records their own workspace entry — only handlers come through here.
@@ -2273,8 +2273,8 @@ function handleWsFile(body) {
 // /pkg/<pkg_hash>/ virtual identity, dependency-ordered across packages.
 // Recorded under _workspace_pkg/{pkg_hash}/{path} so `cut` can compile +
 // assemble the manifest's packages[].files (mirrors starter/genesis_admin.mjs).
-function handleWsPkgFile(body) {
-    const b = deployGate(body); if (!b) return null;
+function handleWsPkgFile(kv, next, platform, body) {
+    const b = deployGate(kv, body); if (!b) return null;
     if (!b.pkg_hash || !b.path) return jsonError(400, "pkg_hash + path required");
     // TRY to compile now (no resolution — the file alone): a self-contained
     // file (the common single-file package) gets its bytecode here, keeping
@@ -2350,8 +2350,8 @@ export function onFileStaged({ platform }) {
 // at deploy, not at serve. (It reads the whole object server-side; fine at
 // dashboard bundle sizes — a blob.head verb is the upgrade if it ever shows
 // in deploy latency.)
-function handleWsRef(body) {
-    const b = deployGate(body); if (!b) return null;
+function handleWsRef(kv, next, platform, body) {
+    const b = deployGate(kv, body); if (!b) return null;
     if (!b.path || !b.hash) return jsonError(400, "path + hash required");
     if (b.kind !== "static")
         return jsonError(400, "kind must be 'static' (handlers restage source)");
@@ -2388,8 +2388,8 @@ export function onRefVerified({ platform }) {
 // sibling — only now is the whole bundle present, and compilation resolves
 // every import eagerly (rove#344). It is also where a bad import fails, and
 // the compile error names the file.
-function handleWsCut(body) {
-    const b = deployGate(body); if (!b) return null;
+function handleWsCut(kv, next, platform, body) {
+    const b = deployGate(kv, body); if (!b) return null;
     const sk = platform.scope(b.tenant).kv;
     const rows = sk.prefix(WS, "", 1000);
     if (rows.length === 0) return jsonError(400, "workspace empty — nothing to cut");
@@ -2399,8 +2399,8 @@ function handleWsCut(body) {
     // batch compiled before it. Then the handlers (phase 2).
     const q = pkgCompileQueue(sk, b);
     if (q && q.error) return jsonError(400, q.error);
-    if (q && q.length > 0) return compileNextPkg(b, q, 0, {});
-    return cutCompileHandlers(b, {});
+    if (q && q.length > 0) return compileNextPkg(next, platform, b, q, 0, {});
+    return cutCompileHandlers(next, platform, b, {});
 }
 
 // Phase 2 of cut: batch-compile the workspace's handlers against the (now
@@ -2409,7 +2409,7 @@ function handleWsCut(body) {
 // written to kv mid-chain: a resume hop that writes and then fires a
 // platform call gets the call dropped (bind-from-writing-resume is not
 // wired), which would silently stall the held cut.
-function cutCompileHandlers(b, done) {
+function cutCompileHandlers(next, platform, b, done) {
     const sk = platform.scope(b.tenant).kv;
     const rows = sk.prefix(WS, "", 1000);
     const handlers = [];
@@ -2418,7 +2418,7 @@ function cutCompileHandlers(b, done) {
         if (e.kind === "handler")
             handlers.push({ path: rows[i].key.slice(WS.length), source_hash: e.source_hex });
     }
-    if (handlers.length === 0) return cutStamp(b, {}, done);  // statics-only bundle
+    if (handlers.length === 0) return cutStamp(next, platform, b, {}, done);  // statics-only bundle
     // Compile against the SERVER-authoritative resolution, not the client's
     // lockfile: the engine needs each package file's staged bytecode hash to
     // load it, and validating against anything but what the manifest will
@@ -2490,7 +2490,7 @@ function pkgCompileQueue(sk, b) {
 // file's bytecode eagerly, so an incomplete package lists empty files.
 // Dependency order makes the complete set exactly what this package may
 // import from.
-function compileNextPkg(b, q, idx, done) {
+function compileNextPkg(next, platform, b, q, idx, done) {
     const sk = platform.scope(b.tenant).kv;
     const pkg_hash = q[idx];
     const staged = sk.prefix(WSPKG + pkg_hash + "/", "", 1000);
@@ -2513,7 +2513,7 @@ function compileNextPkg(b, q, idx, done) {
     return next();
 }
 
-export function onPkgBatchCompiled() {
+export function onPkgBatchCompiled({ next, platform }) {
     const ctx = request.ctx;
     if (!ctx || !ctx.ok) {
         response.status = (ctx && ctx.status) || 500;
@@ -2536,8 +2536,8 @@ export function onPkgBatchCompiled() {
         resolution: app.resolution === null ? undefined : app.resolution,
     };
     const nextIdx = app.idx + 1;
-    if (nextIdx < app.queue.length) return compileNextPkg(b, app.queue, nextIdx, done);
-    return cutCompileHandlers(b, done);
+    if (nextIdx < app.queue.length) return compileNextPkg(next, platform, b, app.queue, nextIdx, done);
+    return cutCompileHandlers(next, platform, b, done);
 }
 
 // This deploy's resolution with files listed ONLY for bytecode-complete
@@ -2579,7 +2579,7 @@ function compiledResolution(sk, b, done) {
 }
 
 // The bundle compiled: fold each handler's bytecode hash in, then stamp.
-export function onBundleCompiled() {
+export function onBundleCompiled({ next, platform }) {
     const ctx = request.ctx;
     if (!ctx || !ctx.ok) {
         // A compile failure here is the author's — a syntax error, or an
@@ -2591,7 +2591,7 @@ export function onBundleCompiled() {
     const app = ctx.app || {};
     const bc = {};
     for (let i = 0; i < ctx.results.length; i++) bc[ctx.results[i].path] = ctx.results[i].bytecode_hex;
-    return cutStamp(
+    return cutStamp(next, platform, 
         { tenant: app.target, resolution: app.resolution === null ? undefined : app.resolution },
         bc,
         app.done || {},
@@ -2600,7 +2600,7 @@ export function onBundleCompiled() {
 
 // Assemble the manifest from the workspace + the just-compiled bytecode
 // hashes (`bc`, path → bytecode_hex) and stamp it.
-function cutStamp(b, bc, done) {
+function cutStamp(next, platform, b, bc, done) {
     const sk = platform.scope(b.tenant).kv;
     const rows = sk.prefix(WS, "", 1000);
     const entries = rows.map(function (row) {
@@ -2677,11 +2677,11 @@ export function onCut() {
 //
 // GET /v1/sources/{tenant}/{dep_hex|current}. Authz mirrors deploy/release:
 // operator (is_root) any tenant; a customer only their own.
-function handleReadSources(c, tenant, depArg) {
+function handleReadSources(kv, c, tenant, depArg) {
     const auth = request.auth || {};
     if (!auth.is_root && !auth.sub) return jsonError(401, "unauthenticated");
     if (!validId(tenant)) return jsonError(400, "invalid tenant");
-    if (!auth.is_root && !canAccess(accountHashFor(auth.sub), tenant)) {
+    if (!auth.is_root && !canAccess(kv, accountHashFor(auth.sub), tenant)) {
         return jsonError(403, "not your instance");
     }
     if (depArg === "current") {
@@ -2741,7 +2741,7 @@ export function onManifest({ next, platform, kv }) {
         rdid: ctx.rdid,
     };
     const handlers = entries.filter((e) => e.kind === "handler");
-    if (handlers.length === 0) return startPkgSources(kv, ctx2, []);
+    if (handlers.length === 0) return startPkgSources(next, platform, kv, ctx2, []);
     platform.scope(ctx.tenant).blob.get(handlers[0].hash, {
         on: "onModuleSource",
         ctx: { ...ctx2, idx: 0, acc: [] },
@@ -2768,14 +2768,14 @@ export function onModuleSource({ next, platform, kv }) {
         });
         return next();
     }
-    return startPkgSources(kv, ctx, acc);
+    return startPkgSources(next, platform, kv, ctx, acc);
 }
 
 // Kick off (or skip) the sequential package-file source reads that follow the
 // handler reads. Package sources are content-addressed blobs in the SAME
 // tenant's file-blobs (the pkgfile door staged them there at deploy time), so
 // the read is the same `blob.get` the handler sources use.
-function startPkgSources(kv, ctx, handlerAcc) {
+function startPkgSources(next, platform, kv, ctx, handlerAcc) {
     const files = (ctx.pkgs || []).flatMap((p) => p.files);
     if (files.length === 0) return finishSources(kv, ctx, handlerAcc, []);
     platform.scope(ctx.tenant).blob.get(files[0].source_hash, {
@@ -2860,11 +2860,11 @@ function isTextual(ct) {
            base === "application/xml" || base === "image/svg+xml";
 }
 
-function handleReadSource(c, tenant, depArg, qs) {
+function handleReadSource(kv, c, tenant, depArg, qs) {
     const auth = request.auth || {};
     if (!auth.is_root && !auth.sub) return jsonError(401, "unauthenticated");
     if (!validId(tenant)) return jsonError(400, "invalid tenant");
-    if (!auth.is_root && !canAccess(accountHashFor(auth.sub), tenant)) {
+    if (!auth.is_root && !canAccess(kv, accountHashFor(auth.sub), tenant)) {
         return jsonError(403, "not your instance");
     }
     const filePath = new URLSearchParams(qs || "").get("path");
@@ -2932,7 +2932,7 @@ export function onSourceFileBlob({ kv }) {
 // read endpoint"). Powers `rewind deployments <t>`; `rewind rollback` is just a
 // publishRelease at an older dep_id. Authz mirrors deploy/release: operator
 // (is_root) any tenant; a customer only their own.
-function handleHistory(c, tenant) {
+function handleHistory(kv, c, tenant) {
     const auth = request.auth || {};
     if (!auth.sub) return jsonError(401, "unauthenticated");
     if (!validId(tenant)) return jsonError(400, "invalid tenant");
@@ -2940,7 +2940,7 @@ function handleHistory(c, tenant) {
     // uses, so a team MEMBER reads history like they read logs and kv
     // (the old ownedInstances check saw only the caller's personal
     // account and 403'd members of the owning team).
-    if (!auth.is_root && !canAccess(accountHashFor(auth.sub), tenant)) {
+    if (!auth.is_root && !canAccess(kv, accountHashFor(auth.sub), tenant)) {
         return jsonError(403, "not your instance");
     }
     // `_release/{ts_ms:020}` keys are lex-ascending by timestamp; the
@@ -3039,7 +3039,7 @@ function getExportLinks(c, tenant, eid) {
 //   self          the handler gates internally (deploy/logs/cp/sources)
 const ROUTES = [
     // session / auth handshake
-    ["GET",    "/v1/session",                   "open",          (c) => handleSession()],
+    ["GET",    "/v1/session",                   "open",          (c) => handleSession(c.caps.kv)],
     ["POST",   "/v1/logout",                    "open",          (c) => oidc.rp("default").logout()],
     ["POST",   "/v1/cli/exchange",              "open",          (c) => oidc.rp("default").exchangeToken(c.body.id_token)],
     ["GET",    "/_rp/login",                    "open",          (c) => oidc.rp("default").beginLogin()],
@@ -3047,12 +3047,12 @@ const ROUTES = [
     ["GET",    "/_rp/poll",                     "open",          (c) => oidc.rp("default").pollStatus()],
     ["GET",    "/_rp/logout",                   "open",          (c) => oidc.rp("default").logoutRedirect()],
     // instances
-    ["GET",    "/v1/instances",                 "authed",        (c) => listInstance()],
-    ["POST",   "/v1/instances",                 "authed",        (c) => provisionInstance(c.body.name, c.body.account)],
+    ["GET",    "/v1/instances",                 "authed",        (c) => listInstance(c.caps)],
+    ["POST",   "/v1/instances",                 "authed",        (c) => provisionInstance(c.caps, c.body.name, c.body.account)],
     ["PUT",    "/v1/instances/:id",             "root",          (c) => createInstance(c, c.params.id)],  // operator raw
-    ["GET",    "/v1/instances/:id",             "tenant",        (c) => getInstance(c.params.id)],
-    ["DELETE", "/v1/instances/:id",             "tenant",        (c) => deleteInstance(c.params.id, c.body && c.body.confirm)],
-    ["POST",   "/v1/instances/:id/release",     "tenant",        (c) => publishRelease(c, c.params.id, c.body.dep_id)],
+    ["GET",    "/v1/instances/:id",             "tenant",        (c) => getInstance(c.caps, c.params.id)],
+    ["DELETE", "/v1/instances/:id",             "tenant",        (c) => deleteInstance(c.caps, c.params.id, c.body && c.body.confirm)],
+    ["POST",   "/v1/instances/:id/release",     "tenant",        (c) => publishRelease(c.caps, c, c.params.id, c.body.dep_id)],
     ["POST",   "/v1/instances/:id/export",      "tenant",        (c) => startExport(c, c.params.id)],
     ["GET",    "/v1/instances/:id/export",      "tenantRead",    (c) => listExports(c, c.params.id)],
     ["GET",    "/v1/instances/:id/export/:eid", "tenantRead",    (c) => getExport(c, c.params.id, c.params.eid)],
@@ -3061,48 +3061,48 @@ const ROUTES = [
     ["PUT",    "/v1/instances/:id/kv",          "tenantWrite",   (c) => kvSet(c, c.params.id, c.body.key, c.body.value)],
     ["DELETE", "/v1/instances/:id/kv",          "tenantWrite",   (c) => kvDelete(c, c.params.id, c.query.key)],
     // domains (operator)
-    ["GET",    "/v1/domains",                   "root",          (c) => listDomain()],
-    ["PUT",    "/v1/domains/:host",             "root",          (c) => assignDomain(c, c.params.host, c.body.instance_id)],
+    ["GET",    "/v1/domains",                   "root",          (c) => listDomain(c.caps)],
+    ["PUT",    "/v1/domains/:host",             "root",          (c) => assignDomain(c.caps, c, c.params.host, c.body.instance_id)],
     // accounts / teams
-    ["POST",   "/v1/accounts",                  "authed",        (c) => createAccount(c.body.name)],
-    ["GET",    "/v1/accounts/:aid/members",     "accountMember", (c) => listMembers(c.params.aid)],
-    ["POST",   "/v1/accounts/:aid/invites",     "accountOwner",  (c) => inviteMember(c.params.aid, c.body.email)],
-    ["DELETE", "/v1/accounts/:aid/invites/:eh", "accountOwner",  (c) => revokeInvite(c.params.aid, c.params.eh)],
-    ["PUT",    "/v1/accounts/:aid/members/:h",  "accountOwner",  (c) => setMemberRole(c.params.aid, c.params.h, c.body.role)],
-    ["DELETE", "/v1/accounts/:aid/members/:h",  "accountOwner",  (c) => removeMember(c.params.aid, c.params.h)],
-    ["POST",   "/v1/accounts/:aid/leave",       "authed",        (c) => leaveAccount(c.params.aid)],
+    ["POST",   "/v1/accounts",                  "authed",        (c) => createAccount(c.caps, c.body.name)],
+    ["GET",    "/v1/accounts/:aid/members",     "accountMember", (c) => listMembers(c.caps, c.params.aid)],
+    ["POST",   "/v1/accounts/:aid/invites",     "accountOwner",  (c) => inviteMember(c.caps, c.params.aid, c.body.email)],
+    ["DELETE", "/v1/accounts/:aid/invites/:eh", "accountOwner",  (c) => revokeInvite(c.caps, c.params.aid, c.params.eh)],
+    ["PUT",    "/v1/accounts/:aid/members/:h",  "accountOwner",  (c) => setMemberRole(c.caps, c.params.aid, c.params.h, c.body.role)],
+    ["DELETE", "/v1/accounts/:aid/members/:h",  "accountOwner",  (c) => removeMember(c.caps, c.params.aid, c.params.h)],
+    ["POST",   "/v1/accounts/:aid/leave",       "authed",        (c) => leaveAccount(c.caps, c.params.aid)],
     // account deletion + account-rows export (rove#340)
-    ["POST",   "/v1/account/delete",            "authed",        (c) => requestAccountDeletion(c.body.confirm)],
-    ["DELETE", "/v1/accounts/:aid",             "accountOwner",  (c) => deleteTeamAccount(c.params.aid, c.body && c.body.confirm)],
-    ["GET",    "/v1/deletions",                 "root",          (c) => listDeletions()],
-    ["POST",   "/v1/deletions/:aid/retry",      "root",          (c) => retryDeletion(c.params.aid)],
-    ["GET",    "/v1/accounts/:aid/export",      "accountMember", (c) => accountExport(c.params.aid)],
-    ["GET",    "/v1/accounts/:aid/billing",     "accountMember", (c) => getBilling(c.params.aid)],
-    ["GET",    "/v1/billing/config",            "authed",        (c) => billingConfigPk()],
-    ["POST",   "/v1/accounts/:aid/billing/subscribe", "accountOwner", (c) => subscribeBilling(c.params.aid, c.body.tier)],
-    ["POST",   "/v1/accounts/:aid/billing/change",    "accountOwner", (c) => changeBilling(c.params.aid, c.body.tier)],
-    ["POST",   "/v1/accounts/:aid/billing/cancel",    "accountOwner", (c) => cancelBilling(c.params.aid)],
+    ["POST",   "/v1/account/delete",            "authed",        (c) => requestAccountDeletion(c.caps, c.body.confirm)],
+    ["DELETE", "/v1/accounts/:aid",             "accountOwner",  (c) => deleteTeamAccount(c.caps, c.params.aid, c.body && c.body.confirm)],
+    ["GET",    "/v1/deletions",                 "root",          (c) => listDeletions(c.caps)],
+    ["POST",   "/v1/deletions/:aid/retry",      "root",          (c) => retryDeletion(c.caps, c.params.aid)],
+    ["GET",    "/v1/accounts/:aid/export",      "accountMember", (c) => accountExport(c.caps.kv, c.params.aid)],
+    ["GET",    "/v1/accounts/:aid/billing",     "accountMember", (c) => getBilling(c.caps.kv, c.params.aid)],
+    ["GET",    "/v1/billing/config",            "authed",        (c) => billingConfigPk(c.caps.kv)],
+    ["POST",   "/v1/accounts/:aid/billing/subscribe", "accountOwner", (c) => subscribeBilling(c.caps.kv, c.caps.next, c.params.aid, c.body.tier)],
+    ["POST",   "/v1/accounts/:aid/billing/change",    "accountOwner", (c) => changeBilling(c.caps.kv, c.params.aid, c.body.tier)],
+    ["POST",   "/v1/accounts/:aid/billing/cancel",    "accountOwner", (c) => cancelBilling(c.caps.kv, c.params.aid)],
     // Stripe webhook — pre-auth in _middlewares; the signature is the auth.
-    ["POST",   "/v1/billing/webhook",           "open",          (c) => handleStripeWebhook(c.rawBody || "")],
-    ["POST",   "/v1/invites/accept",            "authed",        (c) => acceptInvite(c.body.token)],
+    ["POST",   "/v1/billing/webhook",           "open",          (c) => handleStripeWebhook(c.caps.kv, c.caps.webhook, c.rawBody || "")],
+    ["POST",   "/v1/invites/accept",            "authed",        (c) => acceptInvite(c.caps, c.body.token)],
     // deploy chokepoint (root-token M2M or session-ownership; deployGate self-gates)
-    ["POST",   "/v1/deploy/reset",              "open",          (c) => handleWsReset(c.rawBody || "{}")],
-    ["POST",   "/v1/deploy/file",               "open",          (c) => handleWsFile(c.rawBody || "{}")],
-    ["POST",   "/v1/deploy/pkgfile",            "open",          (c) => handleWsPkgFile(c.rawBody || "{}")],
-    ["POST",   "/v1/deploy/ref",                "open",          (c) => handleWsRef(c.rawBody || "{}")],
-    ["POST",   "/v1/deploy/cut",                "open",          (c) => handleWsCut(c.rawBody || "{}")],
+    ["POST",   "/v1/deploy/reset",              "open",          (c) => handleWsReset(c.caps.kv, c.caps.platform, c.rawBody || "{}")],
+    ["POST",   "/v1/deploy/file",               "open",          (c) => handleWsFile(c.caps.kv, c.caps.next, c.caps.platform, c.rawBody || "{}")],
+    ["POST",   "/v1/deploy/pkgfile",            "open",          (c) => handleWsPkgFile(c.caps.kv, c.caps.next, c.caps.platform, c.rawBody || "{}")],
+    ["POST",   "/v1/deploy/ref",                "open",          (c) => handleWsRef(c.caps.kv, c.caps.next, c.caps.platform, c.rawBody || "{}")],
+    ["POST",   "/v1/deploy/cut",                "open",          (c) => handleWsCut(c.caps.kv, c.caps.next, c.caps.platform, c.rawBody || "{}")],
     // deployment history (handler enforces ownership) — /v1/history/{tenant}
-    ["GET",    "/v1/history/:id",               "self",          (c) => handleHistory(c, c.params.id)],
+    ["GET",    "/v1/history/:id",               "self",          (c) => handleHistory(c.caps.kv, c, c.params.id)],
     // log query door (handler enforces is_root) — /v1/logs/{tenant}/{list|count|show/{id}}
-    ["GET",    "/v1/logs/*",                    "self",          (c) => handleLogQuery(c.path, c.qs)],
+    ["GET",    "/v1/logs/*",                    "self",          (c) => handleLogQuery(c.caps.after, c.caps.kv, c.caps.next, c.path, c.qs)],
     // source read door (handler enforces canAccess) — /v1/sources/{tenant}/{dep}
-    ["GET",    "/v1/sources/*",                 "self",          (c) => handleSourcesPath(c)],
+    ["GET",    "/v1/sources/*",                 "self",          (c) => handleSourcesPath(c.caps.kv, c)],
     // single-file twin (text only; the file path rides the query so its
     // slashes never meet the segment matcher) — /v1/source/{tenant}/{dep}?path=…
-    ["GET",    "/v1/source/:id/:dep",           "self",          (c) => handleReadSource(c, c.params.id, c.params.dep, c.qs)],
+    ["GET",    "/v1/source/:id/:dep",           "self",          (c) => handleReadSource(c.caps.kv, c, c.params.id, c.params.dep, c.qs)],
     // CP control + read doors (handlers enforce is_root)
-    ["POST",   "/v1/cp/:op",                    "self",          (c) => handleCpPost(c.params.op, c.rawBody)],
-    ["GET",    "/v1/cp/:op",                    "self",          (c) => handleCpRead(c.params.op, c.qs)],
+    ["POST",   "/v1/cp/:op",                    "self",          (c) => handleCpPost(c.caps.after, c.caps.next, c.params.op, c.rawBody)],
+    ["GET",    "/v1/cp/:op",                    "self",          (c) => handleCpRead(c.caps.after, c.caps.next, c.params.op, c.qs)],
 ];
 
 // `request.query` is the raw query STRING; `URLSearchParams` is installed and
@@ -3146,7 +3146,7 @@ function matchRoute(method, path) {
 }
 
 // The single fail-closed gate, keyed on the route's class + matched path params.
-function routeAuthz(cls, params) {
+function routeAuthz(kv, cls, params) {
     const a = request.auth || {};
     if (a.is_root) return null;
     if (cls === "open" || cls === "self") return null;
@@ -3156,34 +3156,34 @@ function routeAuthz(cls, params) {
     const caller = accountHashFor(a.sub);
     if (cls === "tenant" || cls === "tenantRead" || cls === "tenantWrite") {
         if (!validId(params.id)) return jsonError(400, "invalid id");
-        return canAccess(caller, params.id) ? null : jsonError(403, "not your instance");
+        return canAccess(kv, caller, params.id) ? null : jsonError(403, "not your instance");
     }
     if (cls === "accountOwner") {
-        return roleInAccount(params.aid, caller) === "owner" ? null : jsonError(403, "not an owner");
+        return roleInAccount(kv, params.aid, caller) === "owner" ? null : jsonError(403, "not an owner");
     }
     if (cls === "accountMember") {
-        return isActiveMember(params.aid, caller) ? null : jsonError(403, "not a member");
+        return isActiveMember(kv, params.aid, caller) ? null : jsonError(403, "not a member");
     }
     return jsonError(403, "forbidden");
 }
 
 // `move` picks move-live when body.live; other CP ops forward the body verbatim
 // through the rewind-cp.internal door (handleCpOp enforces is_root).
-function handleCpPost(op, rawBody) {
+function handleCpPost(after, next, op, rawBody) {
     if (op === "move") {
         let live = false;
         try { live = !!JSON.parse(rawBody || "{}").live; } catch (_) {}
-        return handleCpOp(live ? "move-live" : "move", rawBody || "{}");
+        return handleCpOp(after, next, live ? "move-live" : "move", rawBody || "{}");
     }
-    return handleCpOp(op, rawBody || "{}");
+    return handleCpOp(after, next, op, rawBody || "{}");
 }
 
 // /v1/sources/{tenant}/{dep|current} — split the wildcard tail for the read door.
-function handleSourcesPath(c) {
+function handleSourcesPath(kv, c) {
     const rest = c.path.slice("/v1/sources/".length);
     const slash = rest.indexOf("/");
     if (slash < 1) return jsonError(400, "bad sources path");
-    return handleReadSources(c, rest.slice(0, slash), rest.slice(slash + 1));
+    return handleReadSources(kv, c, rest.slice(0, slash), rest.slice(slash + 1));
 }
 
 // ── Single entry point (default export) ─────────────────────────────
@@ -3201,7 +3201,7 @@ export default function({ platform, after, kv, next }) {
     const qs = request.query || "";
     const m = matchRoute(request.method, path);
     if (!m) { response.status = 404; return { error: "not found" }; }
-    const denied = routeAuthz(m.authz, m.params);
+    const denied = routeAuthz(kv, m.authz, m.params);
     if (denied) return denied;
     return m.thunk({
         // Received capabilities, threaded to route handlers (rove#753's

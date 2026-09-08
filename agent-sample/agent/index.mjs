@@ -35,7 +35,7 @@ const DESTRUCTIVE_RE =
 const MAX_TRANSCRIPT = 24; // bound kv growth (see trim())
 
 // ── Activation: one inbound WS frame from the page ──────────────────
-export function onMessage({ kv, next, tag }) {
+export function onMessage({ after }, { kv, next, tag }) {
   const frame = browser.message();
   const ctx = request.ctx || {};
   if (!frame) return next(ctx);
@@ -57,11 +57,11 @@ export function onMessage({ kv, next, tag }) {
       return next({ sid }); // the page sends its first snapshot next
     }
     case "snapshot":
-      return think(frame, ctx);
+      return think(after, kv, next, frame, ctx);
 
     case "screenshot":
       // The pixels the brain asked for came back — feed them to the model.
-      return onShot(frame, ctx);
+      return onShot(next, frame, ctx);
 
     case "confirm_result": {
       const sid = ctx.sid;
@@ -90,7 +90,7 @@ export function onMessage({ kv, next, tag }) {
 }
 
 // ── Decide the next action: call the LLM with the current view ──────
-function think(frame, ctx) {
+function think(after, kv, next, frame, ctx) {
   const sid = frame.sid || ctx.sid;
 
   // Pending getReplay (the model asked "why?"): this is a read-only WS
@@ -106,7 +106,7 @@ function think(frame, ctx) {
     }
     // Couldn't issue (no connection ctx) — tell the model next turn.
     const note = { role: "user", content: [{ type: "tool_result", tool_use_id: ctx.replay_tool_id, content: "Replay unavailable." }] };
-    return callLLM(sid, note, { sid, user_turn: note, refs: ctx.refs || {} });
+    return callLLM(after, kv, next, sid, note, { sid, user_turn: note, refs: ctx.refs || {} });
   }
 
   const goal = kv.get(`agent/${sid}/goal`) || "";
@@ -153,7 +153,7 @@ function think(frame, ctx) {
   } else {
     userTurn = { role: "user", content: `Goal: ${goal}\n\n${view}` };
   }
-  return callLLM(sid, userTurn, {
+  return callLLM(after, kv, next, sid, userTurn, {
     sid, user_turn: userTurn, refs,
     // onLLM (a write activation) stores the pixels durably; think() is
     // read-only so it can't.
@@ -170,7 +170,7 @@ function think(frame, ctx) {
 // only) then sends the image as the screenshot tool_result; onLLM does the
 // durable blob.put. No kv needed — the held WS chain threads ctx across
 // frames (request.ctx), same as a fetch resume.
-function onShot(frame, ctx) {
+function onShot(next, frame, ctx) {
   const sid = ctx.sid;
   const img = browser.image(frame);
   const shot = (img && img.ok)
@@ -185,7 +185,7 @@ function onShot(frame, ctx) {
 // onReplay is a read-only fetch callback, so it can bind the next LLM
 // turn directly: feed the session's recent activations back to the
 // model as the getReplay tool_result. callLLM stays read-only.
-export function onReplay() {
+export function onReplay({ after, kv, next }) {
   const ctx = request.ctx || {};
   const sid = ctx.sid;
   let view;
@@ -198,13 +198,13 @@ export function onReplay() {
     role: "user",
     content: [{ type: "tool_result", tool_use_id: ctx.replay_tool_id, content: view }],
   };
-  return callLLM(sid, userTurn, { sid, user_turn: userTurn, refs: ctx.refs || {} });
+  return callLLM(after, kv, next, sid, userTurn, { sid, user_turn: userTurn, refs: ctx.refs || {} });
 }
 
 // ── Shared LLM turn: hold the chain, call the model, wake onLLM ──────
 // READ-ONLY (no kv writes) so the on.fetch can bind to the held WS chain.
-function callLLM(sid, userTurn, parkCtx) {
-  const msgs = load(sid);
+function callLLM(after, kv, next, sid, userTurn, parkCtx) {
+  const msgs = load(kv, sid);
   const screenshots = kv.get("_config/screenshots") === "1";
   const replay = kv.get("_config/replay") !== "0"; // on by default
   browser.status("thinking…");
@@ -246,7 +246,7 @@ function callLLM(sid, userTurn, parkCtx) {
 }
 
 // ── Activation: the LLM responded ───────────────────────────────────
-export function onLLM({ next }) {
+export function onLLM({ blob, kv }, { next }) {
   const ctx = request.ctx || {};
   const sid = ctx.sid;
   // Bound-fetch surface (handler-shape §7): the response bytes ride
@@ -258,14 +258,14 @@ export function onLLM({ next }) {
   }
   let body;
   try { body = JSON.parse(request.text || "{}"); } catch (_) { body = {}; }
-  const msgs = load(sid);
+  const msgs = load(kv, sid);
   if (ctx.user_turn) msgs.push(ctx.user_turn); // persist now (think() was read-only)
   // think() attached the screenshot as the tool_result; store the pixels
   // content-addressed now (the durable record + replay), a write think()
   // couldn't do while issuing the LLM fetch read-only.
-  if (ctx.record_shot) recordShot(sid, ctx.record_shot);
+  if (ctx.record_shot) recordShot(blob, kv, sid, ctx.record_shot);
   msgs.push({ role: "assistant", content: body.content });
-  save(sid, msgs);
+  save(kv, sid, msgs);
 
   const tu = (body.content || []).find((b) => b && b.type === "tool_use");
   if (!tu) {
@@ -331,12 +331,12 @@ function claudeTools(screenshots, replay) {
   });
 }
 
-function load(sid) {
+function load(kv, sid) {
   try { return JSON.parse(kv.get(`agent/${sid}/msgs`) || "[]"); }
   catch (_) { return []; }
 }
 
-function save(sid, msgs) {
+function save(kv, sid, msgs) {
   kv.set(`agent/${sid}/msgs`, JSON.stringify(trim(msgs)));
 }
 
@@ -344,7 +344,7 @@ function save(sid, msgs) {
 // step-log (idempotent — same pixels → same hash). `shot` is
 // `{mime, data}` with `data` a base64 string. Non-fatal on failure: the
 // model still gets the inline pixels; this is the record, not perception.
-function recordShot(sid, shot) {
+function recordShot(blob, kv, sid, shot) {
   try {
     const hash = blob.put(base64url.decode(shot.data), { contentType: shot.mime });
     kv.set(`agent/${sid}/shots/${hash}`, JSON.stringify({ hash, mime: shot.mime }));
