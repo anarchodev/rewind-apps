@@ -4,6 +4,6 @@
 // A bare `_rp/*.mjs` file — invoked only as an {on} callback module.
 import oidc from "@rewind/oidc";
 
-export default function () {
-    return oidc.rp("default").completeJwks();
+export default function ({ kv, config, webhook }) {
+    return oidc.rp({ kv, config, webhook }, "default").completeJwks();
 }

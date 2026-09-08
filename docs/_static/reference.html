@@ -242,13 +242,13 @@ if (page.logs.indexOf("inbox") &lt; 0) throw new Error("missing log");</code></p
 <tr><td><code>opts.on <em>(optional)</em></code></td><td><code>string</code></td><td><p>Export resumed with the segment for a sealed read. Required when the record may be sealed.</p></td></tr>
 </table>
 <p><b>Returns</b> <code>string|null|undefined</code> — The value (hot), <code>null</code> (no such record), or <code>undefined</code> (sealed — the fetch is in flight, return <code>next()</code> and finish in the <code>{on}</code> export).</p>
-<pre><code>export default function () {
-const v = segments.get("room-7", 42, { on: "onSeg" });
+<pre><code>export default function ({ blob, kv, next }) {
+const v = segments.get({ blob, kv }, "room-7", 42, { on: "onSeg" });
 if (typeof v === "string") return v;          // hot
 if (v === null) { response.status = 404; return "gone"; }
 return next();                                 // sealed
 }
-export function onSeg() {
+export function onSeg({ next }) {
 if (!request.done) return next();
 return segments.record();
 }</code></pre>
@@ -265,9 +265,9 @@ return segments.record();
 </table>
 <p><b>Returns</b> <code>number</code> — Rows being sealed (0 = below <code>min</code>, no-op).</p>
 <pre><code>// cron("*\/5 * * * *", "sealRooms") in your module:
-export function sealRooms() {
+export function sealRooms({ blob, kv }) {
 for (const s of JSON.parse(kv.get("rooms") ?? "[]"))
-segments.seal(`room-${s}`);
+segments.seal({ blob, kv }, `room-${s}`);
 }</code></pre>
 <h2>Connection &amp; wakes</h2>
 <p>The held socket. <code>stream</code> pushes response bytes out over time; <code>after.*</code> arms one-shot wakes; <code>next()</code> keeps the connection held between activations; <code>http.subscribe</code> holds a long-lived OUTBOUND stream (firehoses, SSE consumers). All ephemeral — they die with the caller.</p>
@@ -456,15 +456,17 @@ in: "5m",
 <tr><td><code>opts.timeoutMs <em>(optional)</em></code></td><td><code>number</code></td><td><p>Per-attempt timeout.</p></td></tr>
 </table>
 <p><b>Returns</b> <code>string</code> — The marker id from {@link webhook.send}.</p>
-<pre><code>const apiKey = kv.get("secret/resend") ?? "re_dev_placeholder";
+<pre><code>export default ({ kv, webhook }) =&gt; {
+const apiKey = kv.get("secret/resend") ?? "re_dev_placeholder";
 const user = { email: "ada@example.com", name: "Ada" };
-email.send({
+email.send({ webhook }, {
 apiKey,
 from: "noreply@acme.dev",
 to: user.email,
 subject: "Welcome",
 html: `&lt;h1&gt;Hi ${user.name}&lt;/h1&gt;`,
-});</code></pre>
+});
+};</code></pre>
 <h3 id="retry"><code>retry</code></h3>
 <p>Customer-side retry policy layered on {@link webhook.send}. All retry state lives in this tenant's own ctx — no platform retry loop, no cross-tenant privileges. The chain only advances when the {on} handler explicitly calls {@link retry.again}. Every helper reads the ambient flattened result surface itself — no event assembly, no arguments (<code>retry.next</code> was renamed <code>retry.again</code> to stop colliding with the <code>next()</code> disposition).</p>
 <pre><code>// Fire with a policy.
@@ -558,7 +560,9 @@ cron.toFireAtNs("2026-06-01T03:00:00Z");   // absolute</code></pre>
 <tr><td><code>s</code></td><td><code>string</code></td><td><p>Duration string (see {@link cron.parseDuration}).</p></td></tr>
 </table>
 <p><b>Returns</b> <code>bigint</code> — Nanoseconds since epoch.</p>
-<pre><code>webhook.send("https://hooks.example.com/x", { at: cron.fromNow("30m") });</code></pre>
+<pre><code>export default ({ webhook }) =&gt; {
+webhook.send("https://hooks.example.com/x", { at: cron.fromNow("30m") });
+};</code></pre>
 <h4 id="cron-dailyat"><code>cron.dailyAt(hour, minute)</code></h4>
 <p>Next occurrence of <code>hour:minute</code> UTC; tomorrow's slot if today's has passed.</p>
 <table><tr><th>Param</th><th>Type</th><th></th></tr>
@@ -579,7 +583,9 @@ cron.toFireAtNs("2026-06-01T03:00:00Z");   // absolute</code></pre>
 <h4 id="cron-hourly"><code>cron.hourly()</code></h4>
 <p>Top of the next hour (UTC).</p>
 <p><b>Returns</b> <code>bigint</code> — Nanoseconds since epoch.</p>
-<pre><code>webhook.send("https://hooks.example.com/x", { at: cron.hourly() });</code></pre>
+<pre><code>export default ({ webhook }) =&gt; {
+webhook.send("https://hooks.example.com/x", { at: cron.hourly() });
+};</code></pre>
 <h4 id="cron-next"><code>cron.next(expr, now_ms?)</code></h4>
 <p>Next match of a 5-field crontab expression (UTC), at minute granularity. Day-of-month / day-of-week follow Vixie cron: when both are restricted, a match on *either* counts.</p><p>Fields: <code>minute hour day-of-month month day-of-week</code>. Each accepts <code>*</code> (any), <code>N</code>, <code>N,M,...</code> (list), <code>N-M</code> (range), or a trailing <code>/N</code> step on <code>*</code> or a range (e.g. a star then slash-15 in the minute field = every 15 minutes).</p>
 <table><tr><th>Param</th><th>Type</th><th></th></tr>
@@ -587,7 +593,9 @@ cron.toFireAtNs("2026-06-01T03:00:00Z");   // absolute</code></pre>
 <tr><td><code>now_ms <em>(optional)</em></code></td><td><code>number</code></td><td><p>Base time (ms since epoch); defaults to <code>Date.now()</code>. Mainly for testing.</p></td></tr>
 </table>
 <p><b>Returns</b> <code>bigint</code> — Nanoseconds since epoch of the next match.</p>
-<pre><code>webhook.send("https://hooks.example.com/x", { at: cron.next("0 3 * * *") });</code></pre>
+<pre><code>export default ({ webhook }) =&gt; {
+webhook.send("https://hooks.example.com/x", { at: cron.next("0 3 * * *") });
+};</code></pre>
 <h4 id="cron-cron"><code>cron(spec, target, ctx?)</code></h4>
 <p>Register a **recurring durable** schedule: run <code>target</code> on every occurrence of the crontab <code>spec</code> (docs/handler-shape.md §2.4). A connectionless trigger — the fire is a fresh durable activation with no held socket, surviving leader changes (it rides the gap-2.6 schedule verb). Idempotent: re-calling with the same <code>(spec, target)</code> (e.g. on every request) keeps exactly one cron registration.</p><p>The callable <code>cron</code> also carries the time/expr helpers as statics (<code>cron.next</code>, <code>cron.dailyAt</code>, <code>cron.parseDuration</code>, …).</p>
 <table><tr><th>Param</th><th>Type</th><th></th></tr>
@@ -596,8 +604,8 @@ cron.toFireAtNs("2026-06-01T03:00:00Z");   // absolute</code></pre>
 <tr><td><code>ctx <em>(optional)</em></code></td><td><code>*</code></td><td><p>JSON-serializable value delivered to the target as <code>request.ctx</code>.</p></td></tr>
 </table>
 <p><b>Returns</b> <code>string</code> — The stable registration id (cancel via <code>schedule.cancel(id)</code>).</p>
-<pre><code>cron("0 3 * * *", "jobs/cleanup");        // nightly cleanup
-cron("*\/15 * * * *", "jobs/poll", { src }); // every 15 min</code></pre>
+<pre><code>cron({ kv }, "0 3 * * *", "jobs/cleanup");        // nightly cleanup
+cron({ kv }, "*\/15 * * * *", "jobs/poll", { src }); // every 15 min</code></pre>
 <h2>Browser agent</h2>
 <h3 id="browser"><code>browser</code></h3>
 <p>Server-side helpers for driving the in-page agent SDK.</p>
@@ -994,7 +1002,7 @@ time.inToNs(5000);  // 5 seconds from now</code></pre>
 <tr><td><code>input</code></td><td><code>object</code></td><td><p><code>{email}</code> required; optional <code>email_verified</code> (default <code>false</code>), <code>name</code>, <code>avatar</code>, <code>metadata:{public,private}</code>.</p></td></tr>
 </table>
 <p><b>Returns</b> <code>object</code> — The created record.</p>
-<pre><code>const u = users.create({ email: "ada@example.com", email_verified: true });</code></pre>
+<pre><code>const u = users.create({ kv }, { email: "ada@example.com", email_verified: true });</code></pre>
 <h4 id="users-get"><code>users.get(uid)</code></h4>
 <p>Fetch a user by uid.</p>
 <table><tr><th>Param</th><th>Type</th><th></th></tr>
@@ -1046,7 +1054,7 @@ time.inToNs(5000);  // 5 seconds from now</code></pre>
 <tr><td><code>data</code></td><td><code>object</code></td><td><p>Arbitrary session payload.</p></td></tr>
 </table>
 <p><b>Returns</b> <code>string</code> — The new session id.</p>
-<pre><code>sessions.fromConfig().create({ user_sub: payload.sub });</code></pre>
+<pre><code>sessions.fromConfig({ kv, config }).create({ user_sub: payload.sub });</code></pre>
 <h4 id="sessions-get"><code>sessions.get()</code></h4>
 <p>Read the current request's session payload.</p>
 <p><b>Returns</b> <code>object|null</code> — The stored payload (incl. <code>created_at</code>), or <code>null</code> if there is no/unknown session cookie.</p>
@@ -1073,8 +1081,8 @@ if (!sess) { response.status = 401; return "no session"; }</code></pre>
 <tr><td><code>arg <em>(optional)</em></code></td><td><code>string|object</code></td><td><p>A name (reads <code>_config/sessions/{name}</code>; default <code>"default"</code>) or an inline config object.</p></td></tr>
 </table>
 <p><b>Returns</b> <code>Sessions</code></p>
-<pre><code>const s = sessions.fromConfig();          // "default"
-const a = sessions.fromConfig("admin");</code></pre>
+<pre><code>const s = sessions.fromConfig({ kv, config });          // "default"
+const a = sessions.fromConfig({ kv, config }, "admin");</code></pre>
 <h3 id="oidc"><code>oidc</code></h3>
 <p>OIDC provider (IdP) + relying-party (client) helpers. The same library the platform's own <code>__auth__</code> IdP and admin RP run; customers can run either side. All issuer/endpoint URLs are host-relative — no compiled-in domain.</p>
 <h4 id="oidc-constructor"><code>oidc.constructor(config, name)</code></h4>

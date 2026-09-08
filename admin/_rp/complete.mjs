@@ -6,6 +6,6 @@
 // HTTP-routable.
 import oidc from "@rewind/oidc";
 
-export default function () {
-    return oidc.rp("default").completeToken();
+export default function ({ kv, config, webhook }) {
+    return oidc.rp({ kv, config, webhook }, "default").completeToken();
 }

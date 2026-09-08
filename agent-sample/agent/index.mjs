@@ -3,7 +3,7 @@
 // WebSocket chain:
 //
 //   onMessage(snapshot)  → think(): on.fetch the LLM, park with next()
-//   onLLM(fetch result)  → browser.act(next action), park again
+//   onLLM(fetch result)  → browser.act({ stream }, next action), park again
 //   page executes, auto-sends a fresh snapshot → onMessage(snapshot) …
 //
 // Nothing here is platform magic — it composes the four primitives:
@@ -35,7 +35,7 @@ const DESTRUCTIVE_RE =
 const MAX_TRANSCRIPT = 24; // bound kv growth (see trim())
 
 // ── Activation: one inbound WS frame from the page ──────────────────
-export function onMessage({ after }, { kv, next, tag }) {
+export function onMessage({ after, kv, next, tag, stream }) {
   const frame = browser.message();
   const ctx = request.ctx || {};
   if (!frame) return next(ctx);
@@ -53,26 +53,26 @@ export function onMessage({ after }, { kv, next, tag }) {
       const sid = frame.sid;
       kv.set(`agent/${sid}/goal`, frame.goal || "");
       kv.delete(`agent/${sid}/msgs`);
-      browser.status("connected");
+      browser.status({ stream }, "connected");
       return next({ sid }); // the page sends its first snapshot next
     }
     case "snapshot":
-      return think(after, kv, next, frame, ctx);
+      return think(after, kv, next, stream, frame, ctx);
 
     case "screenshot":
       // The pixels the brain asked for came back — feed them to the model.
-      return onShot(next, frame, ctx);
+      return onShot(next, stream, frame, ctx);
 
     case "confirm_result": {
       const sid = ctx.sid;
       if (frame.approved && ctx.pending_action) {
-        browser.act(ctx.pending_action);
+        browser.act({ stream }, ctx.pending_action);
         return next({ sid, pending_tool_id: ctx.confirm_tool_id });
       }
       // Denied: ask the page for a fresh snapshot and tell the model on
       // the next turn that its action was rejected.
-      browser.status("action cancelled");
-      browser.act({ op: "snapshot", id: ctx.confirm_tool_id });
+      browser.status({ stream }, "action cancelled");
+      browser.act({ stream }, { op: "snapshot", id: ctx.confirm_tool_id });
       return next({ sid, pending_tool_id: ctx.confirm_tool_id, denied: true });
     }
 
@@ -90,7 +90,7 @@ export function onMessage({ after }, { kv, next, tag }) {
 }
 
 // ── Decide the next action: call the LLM with the current view ──────
-function think(after, kv, next, frame, ctx) {
+function think(after, kv, next, stream, frame, ctx) {
   const sid = frame.sid || ctx.sid;
 
   // Pending getReplay (the model asked "why?"): this is a read-only WS
@@ -99,14 +99,14 @@ function think(after, kv, next, frame, ctx) {
   // snapshot only to reach a read-only frame — the snapshot view itself
   // is unused on this turn.
   if (ctx.replay_tool_id) {
-    browser.status("reading session replay…");
-    const ok = browser.getReplay({ on: "onReplay" });
+    browser.status({ stream }, "reading session replay…");
+    const ok = browser.getReplay({ after }, { on: "onReplay" });
     if (ok) {
       return next({ sid, replay_tool_id: ctx.replay_tool_id, refs: ctx.refs || {} });
     }
     // Couldn't issue (no connection ctx) — tell the model next turn.
     const note = { role: "user", content: [{ type: "tool_result", tool_use_id: ctx.replay_tool_id, content: "Replay unavailable." }] };
-    return callLLM(after, kv, next, sid, note, { sid, user_turn: note, refs: ctx.refs || {} });
+    return callLLM(after, kv, next, stream, sid, note, { sid, user_turn: note, refs: ctx.refs || {} });
   }
 
   const goal = kv.get(`agent/${sid}/goal`) || "";
@@ -153,7 +153,7 @@ function think(after, kv, next, frame, ctx) {
   } else {
     userTurn = { role: "user", content: `Goal: ${goal}\n\n${view}` };
   }
-  return callLLM(after, kv, next, sid, userTurn, {
+  return callLLM(after, kv, next, stream, sid, userTurn, {
     sid, user_turn: userTurn, refs,
     // onLLM (a write activation) stores the pixels durably; think() is
     // read-only so it can't.
@@ -170,14 +170,14 @@ function think(after, kv, next, frame, ctx) {
 // only) then sends the image as the screenshot tool_result; onLLM does the
 // durable blob.put. No kv needed — the held WS chain threads ctx across
 // frames (request.ctx), same as a fetch resume.
-function onShot(next, frame, ctx) {
+function onShot(next, stream, frame, ctx) {
   const sid = ctx.sid;
   const img = browser.image(frame);
   const shot = (img && img.ok)
     ? { tool_id: ctx.pending_tool_id, mime: img.mime, data: img.data }
     : { tool_id: ctx.pending_tool_id, error: (img && img.error) || "unknown" };
-  browser.status(img && img.ok ? "looking at the screen…" : "screenshot unavailable");
-  browser.act({ op: "snapshot" });
+  browser.status({ stream }, img && img.ok ? "looking at the screen…" : "screenshot unavailable");
+  browser.act({ stream }, { op: "snapshot" });
   return next({ sid, pending_tool_id: ctx.pending_tool_id, refs: ctx.refs || {}, shot });
 }
 
@@ -198,16 +198,16 @@ export function onReplay({ after, kv, next }) {
     role: "user",
     content: [{ type: "tool_result", tool_use_id: ctx.replay_tool_id, content: view }],
   };
-  return callLLM(after, kv, next, sid, userTurn, { sid, user_turn: userTurn, refs: ctx.refs || {} });
+  return callLLM(after, kv, next, stream, sid, userTurn, { sid, user_turn: userTurn, refs: ctx.refs || {} });
 }
 
 // ── Shared LLM turn: hold the chain, call the model, wake onLLM ──────
 // READ-ONLY (no kv writes) so the on.fetch can bind to the held WS chain.
-function callLLM(after, kv, next, sid, userTurn, parkCtx) {
+function callLLM(after, kv, next, stream, sid, userTurn, parkCtx) {
   const msgs = load(kv, sid);
   const screenshots = kv.get("_config/screenshots") === "1";
   const replay = kv.get("_config/replay") !== "0"; // on by default
-  browser.status("thinking…");
+  browser.status({ stream }, "thinking…");
 
   const endpoint = kv.get("_config/llm_endpoint") || "https://api.anthropic.com/v1/messages";
   const key = kv.get("_config/anthropic_api_key") || "";
@@ -246,14 +246,14 @@ function callLLM(after, kv, next, sid, userTurn, parkCtx) {
 }
 
 // ── Activation: the LLM responded ───────────────────────────────────
-export function onLLM({ blob, kv }, { next }) {
+export function onLLM({ blob, kv, next, stream }) {
   const ctx = request.ctx || {};
   const sid = ctx.sid;
   // Bound-fetch surface (handler-shape §7): the response bytes ride
   // `request.body` (a Uint8Array for a bound fetch), with `request.status`
   // / `request.done` at the top level. There is no `request.result`.
   if (!request.done || (request.status || 0) >= 400) {
-    browser.status("LLM error " + (request.status || "?"));
+    browser.status({ stream }, "LLM error " + (request.status || "?"));
     return next({ sid });
   }
   let body;
@@ -275,7 +275,7 @@ export function onLLM({ blob, kv }, { next }) {
       .map((b) => b.text)
       .join(" ")
       .trim();
-    browser.done(text || "Done.");
+    browser.done({ stream }, text || "Done.");
     return next({ sid });
   }
 
@@ -284,8 +284,8 @@ export function onLLM({ blob, kv }, { next }) {
   // transcript above → this is a writing frame). Bounce through a
   // snapshot so think() (read-only) issues it; see think()/onReplay.
   if (tu.name === "getReplay") {
-    browser.status("checking server logs…");
-    browser.act({ op: "snapshot", id: tu.id });
+    browser.status({ stream }, "checking server logs…");
+    browser.act({ stream }, { op: "snapshot", id: tu.id });
     return next({ sid, replay_tool_id: tu.id, refs: ctx.refs || {} });
   }
 
@@ -296,11 +296,11 @@ export function onLLM({ blob, kv }, { next }) {
   const refs = ctx.refs || {};
   const name = (action.ref != null && refs[action.ref]) || "";
   if (DESTRUCTIVE_RE.test(name)) {
-    browser.confirm({ id: tu.id, prompt: `Allow “${tu.name}” on “${name}”?`, action });
+    browser.confirm({ stream }, { id: tu.id, prompt: `Allow “${tu.name}” on “${name}”?`, action });
     return next({ sid, confirm_tool_id: tu.id, pending_action: action });
   }
 
-  browser.act(action);
+  browser.act({ stream }, action);
   // Forward refs so a screenshot result (which brings no fresh snapshot)
   // can still apply the destructive-action policy on the next turn.
   return next({ sid, pending_tool_id: tu.id, refs });

@@ -45,7 +45,7 @@ function rand() {
 // package missing isRegisteredClientOrigin — is an infallibility
 // violation and must surface as the 500 it is; swallowing it converts
 // a deployment bug into a silent wrong-redirect.
-function safeReturnTo(rt) {
+function safeReturnTo(caps, rt) {
   const base = iss() + "/";
   if (typeof rt === "string" && (rt === iss() || rt.indexOf(base) === 0)) {
     return rt;
@@ -53,7 +53,7 @@ function safeReturnTo(rt) {
   if (typeof rt === "string" && rt.indexOf("://") > 0) {
     let provider = null;
     try {
-      provider = oidc.provider("default");
+      provider = oidc.provider(caps, "default");
     } catch (e) {
       if (!/^oidc\.provider:/.test((e && e.message) || "")) throw e;
     }
@@ -111,13 +111,13 @@ function checkEmailPage(addr) {
 // email it (or, with no Resend key configured, return it in the JSON
 // so a dev/test relying party can follow it — same dev seam admin's
 // signup uses).
-function startLogin() {
+function startLogin({ kv, config, webhook }) {
   const f = new URLSearchParams(request.text || "");
   // NB: name this `addr`, NOT `email` — a local `email` would shadow the
   // global `email` API object, turning `email.send(...)` below into
   // `String.prototype.send` (undefined) → "TypeError: not a function".
   const addr = (f.get("email") || "").trim().toLowerCase();
-  const return_to = safeReturnTo(f.get("return_to"));
+  const return_to = safeReturnTo({ kv, config, webhook }, f.get("return_to"));
   if (!addr || addr.indexOf("@") < 1) {
     // Re-render with the typed address as the hint so it can be corrected.
     return loginForm(return_to, "Enter a valid email.", addr);
@@ -150,7 +150,7 @@ function startLogin() {
   const link = iss() + "/login/verify?mt=" + opaque;
 
   if (resendKey) {
-    email.send({
+    email.send({ webhook }, {
       apiKey: resendKey,
       from: kv.get("platform_email_from") || "login@" + request.host,
       to: addr,
@@ -169,7 +169,7 @@ function startLogin() {
 // GET /login/verify?mt=… → consume the token (single-use), bind the
 // per-request sid to the user, bounce back to the original authorize
 // URL where oidc.js now finds the session and issues the code.
-function verifyLogin() {
+function verifyLogin({ kv, config, webhook }) {
   const q = new URLSearchParams(request.query || "");
   const mt = q.get("mt");
   if (!mt) {
@@ -202,11 +202,11 @@ function verifyLogin() {
   }));
 
   response.status = 302;
-  response.headers = { location: safeReturnTo(m.return_to) };
+  response.headers = { location: safeReturnTo({ kv, config, webhook }, m.return_to) };
   return null;
 }
 
-export default function () {
+export default function ({ kv, config, webhook }) {
   const path = (request.path || "").split("?")[0];
   const m = request.method;
 
@@ -235,10 +235,10 @@ export default function () {
     const q = new URLSearchParams(request.query || "");
     return loginForm(q.get("return_to"), null, q.get("login_hint"));
   }
-  if (m === "POST" && path === "/login") return startLogin();
-  if (m === "GET" && path === "/login/verify") return verifyLogin();
+  if (m === "POST" && path === "/login") return startLogin({ kv, config, webhook });
+  if (m === "GET" && path === "/login/verify") return verifyLogin({ kv, config, webhook });
 
   // Everything else (/.well-known/*, /authorize, /token) → the
   // dogfooded provider library.
-  return oidc.provider("default").handle();
+  return oidc.provider({ kv, config, webhook }, "default").handle();
 }

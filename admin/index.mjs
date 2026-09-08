@@ -724,8 +724,8 @@ function acctdelWrite(kv, aid, m) {
 
 // Keyed on the marker, so a re-arm MOVES the one watchdog entry rather
 // than accumulating one per attempt (the webhook_fire discipline).
-function acctdelArm(aid, inSpec) {
-    schedule({ in: inSpec }, "index.mjs.acctdelWake", { aid: aid },
+function acctdelArm(kv, aid, inSpec) {
+    schedule({ kv }, { in: inSpec }, "index.mjs.acctdelWake", { aid: aid },
              { key: ACCTDEL + aid });
 }
 
@@ -984,7 +984,7 @@ function recordBillingDecline(kv, aid, pi) {
                   " declines=" + n + " cards=" + cards.length);
 }
 
-function subscribeBilling(kv, next, aid, tier) {
+function subscribeBilling(after, kv, next, webhook, aid, tier) {
     if (typeof tier !== "string" || !SELLABLE_TIERS[tier])
         return jsonError(400, "unknown tier");
     const refused = billingAttemptRefusal(kv, aid);
@@ -995,7 +995,7 @@ function subscribeBilling(kv, next, aid, tier) {
     const b = billingFor(kv, aid);
     if (b.status !== null && BILLING_ACTIVE_STATUSES[b.status])
         return jsonError(409, "already subscribed — change the plan instead");
-    const sk = stripe.client({ apiKey: apiKey });
+    const sk = stripe.client({ after, webhook }, { apiKey: apiKey });
     // The idempotency key is scoped by the PRIOR subscription (or "first"):
     // it must change when a previous attempt dies, or Stripe's 24h idempotent
     // replay hands the next subscribe the dead attempt's response — old
@@ -1037,14 +1037,14 @@ function stripeHopFailed(label) {
 
 // Customer created → chain the incomplete subscription. NO kv writes here:
 // a write in this hop would drop the platform call it issues (rove#344).
-export function onBillingCustomer({ kv, next }) {
+export function onBillingCustomer({ after, kv, next, webhook }) {
     const failed = stripeHopFailed("stripe customer create");
     if (failed) return failed;
     const ctx = request.ctx || {};
     const cus = request.json && request.json.id;
     if (typeof cus !== "string" || !cus) { response.status = 502; return { error: "no customer id" }; }
     ctx.cus = cus;
-    issueIncompleteSubscription(stripe.client({ apiKey: kv.get("stripe_key") }), ctx);
+    issueIncompleteSubscription(stripe.client({ after, webhook }, { apiKey: kv.get("stripe_key") }), ctx);
     return next();
 }
 
@@ -1068,7 +1068,7 @@ export function onBillingSubscription({ kv }) {
     return { subscription: sub.id || null, status: sub.status || "incomplete", client_secret: secret };
 }
 
-function changeBilling(kv, aid, tier) {
+function changeBilling(after, kv, webhook, aid, tier) {
     if (typeof tier !== "string" || !SELLABLE_TIERS[tier])
         return jsonError(400, "unknown tier");
     // A held account does not move plans either, but a change mints no new
@@ -1088,7 +1088,7 @@ function changeBilling(kv, aid, tier) {
     if (item === null) return jsonError(409, "no subscription item on file");
     // Durable: the plan row moves when the webhook lands (#311); metadata.tier
     // must move WITH the price or the webhook would re-apply the old tier.
-    stripe.client({ apiKey: apiKey }).subscriptions.update(b.subscription, {
+    stripe.client({ after, webhook }, { apiKey: apiKey }).subscriptions.update(b.subscription, {
         items: [{ id: item, price: price }],
         metadata: { tier: tier, aid: aid },
         proration_behavior: "create_prorations",
@@ -1096,7 +1096,7 @@ function changeBilling(kv, aid, tier) {
     return { ok: true, pending: tier };
 }
 
-function cancelBilling(kv, aid) {
+function cancelBilling(after, kv, webhook, aid) {
     const apiKey = kv.get("stripe_key");
     if (!apiKey) return jsonError(503, "billing not configured");
     const b = billingFor(kv, aid);
@@ -1106,7 +1106,7 @@ function cancelBilling(kv, aid) {
     // customer.subscription.deleted at the boundary and the webhook (#311)
     // walks the plan to free. Immediate cancellation is deliberately NOT a
     // customer surface — it stays a support/operator action via Stripe.
-    stripe.client({ apiKey: apiKey }).subscriptions.update(b.subscription,
+    stripe.client({ after, webhook }, { apiKey: apiKey }).subscriptions.update(b.subscription,
         { cancel_at_period_end: true },
         { idempotencyKey: "subcxl-" + aid + "-" + b.subscription });
     return { ok: true, cancels_at: b.period_end };
@@ -1339,7 +1339,7 @@ export function setMemberRole({ kv }, aid, memberHash, role) {
 // Invite by email (tokened magic-link). `addr` is NOT named `email` on purpose —
 // a local `email` would shadow the imported `@rewind/email` binding and break
 // `email.send`.
-export function inviteMember({ kv }, aid, addr) {
+export function inviteMember({ kv, webhook }, aid, addr) {
     const a = request.auth || {};
     const caller = accountHashFor(a.sub);
     const to = String(addr == null ? "" : addr).trim().toLowerCase();
@@ -1362,7 +1362,7 @@ export function inviteMember({ kv }, aid, addr) {
     const acceptUrl = "https://" + request.host + "/#/invite/" + rawToken;
     const resendKey = kv.get("resend_key");
     if (resendKey) {
-        email.send({
+        email.send({ webhook }, {
             apiKey: resendKey,
             from: kv.get("platform_email_from") || "team@" + request.host,
             to: to,
@@ -1499,7 +1499,7 @@ export function requestAccountDeletion({ kv }, confirm) {
         email: a.sub, requested_by: caller,
         started_ms: Date.now(), updated_ms: Date.now(),
     }));
-    acctdelArm(caller, 0);
+    acctdelArm(kv, caller, 0);
     response.status = 202;
     return { ok: true, deleting: true };
 }
@@ -1521,7 +1521,7 @@ export function deleteTeamAccount({ kv }, aid, confirm) {
         email: null, requested_by: a.sub ? accountHashFor(a.sub) : null,
         started_ms: Date.now(), updated_ms: Date.now(),
     }));
-    acctdelArm(aid, 0);
+    acctdelArm(kv, aid, 0);
     response.status = 202;
     return { ok: true, deleting: true, aid: aid };
 }
@@ -1529,7 +1529,7 @@ export function deleteTeamAccount({ kv }, aid, confirm) {
 // The job's single driver — a durable_wake continuation (middleware does
 // not run; request.auth is absent by design). Everything it needs lives in
 // the marker; every branch is idempotent under at-least-once firing.
-export function acctdelWake({ kv, webhook, platform }) {
+export function acctdelWake({ after, kv, webhook, platform }) {
     const ctx = request.ctx || {};
     const aid = ctx.aid;
     if (typeof aid !== "string" || !aid) return { ok: true };
@@ -1540,7 +1540,7 @@ export function acctdelWake({ kv, webhook, platform }) {
     // Re-arm FIRST (the webhook_fire discipline): this activation's
     // writeset deletes the fired `_sched/` entry, so a crash below must
     // still re-fire. Same key ⇒ the entry moves, never accumulates.
-    acctdelArm(aid, ACCTDEL_WATCHDOG_S + "s");
+    acctdelArm(kv, aid, ACCTDEL_WATCHDOG_S + "s");
 
     if (m.phase === "billing") {
         // Cancel NOW — deletion is immediate (rove#340), unlike the
@@ -1554,7 +1554,7 @@ export function acctdelWake({ kv, webhook, platform }) {
         const sub = kv.get("account/" + aid + "/billing/subscription");
         const apiKey = kv.get("stripe_key");
         if (sub !== null && apiKey) {
-            stripe.client({ apiKey: apiKey }).subscriptions.cancel(sub, {
+            stripe.client({ after, webhook }, { apiKey: apiKey }).subscriptions.cancel(sub, {
                 idempotencyKey: "acctdel-cxl-" + aid + "-" + sub,
             });
         }
@@ -1641,7 +1641,7 @@ export function acctdelWake({ kv, webhook, platform }) {
         if (page.length >= 1000) {
             m.cursor = page[page.length - 1].key;
             acctdelWrite(kv, aid, m);
-            acctdelArm(aid, 0); // full page — continue immediately
+            acctdelArm(kv, aid, 0); // full page — continue immediately
             return { ok: true };
         }
         if (m.is_team) return acctdelFinish(kv, aid, m);
@@ -1724,7 +1724,7 @@ function acctdelIdpStep(kv, aid, m, caps) {
                 // Still pending — check back shortly. (The dispatch's own
                 // watchdog drives the target side; this poll is ours.)
                 acctdelWrite(kv, aid, m);
-                acctdelArm(aid, "1s");
+                acctdelArm(kv, aid, "1s");
                 return { ok: true };
             }
             const kind = m.idp_kind;
@@ -1783,7 +1783,7 @@ function acctdelIdpStep(kv, aid, m, caps) {
                 if (m.idp_step < ACCTDEL_IDP_STEPS.length) {
                     // Step boundary: yield the wake (one step per wake).
                     acctdelWrite(kv, aid, m);
-                    acctdelArm(aid, 0);
+                    acctdelArm(kv, aid, 0);
                     return { ok: true };
                 }
                 // Past the last step: the cooldown hop below.
@@ -1815,7 +1815,7 @@ function acctdelIdpStep(kv, aid, m, caps) {
                 m.idp_cursor = "";
             }
             acctdelWrite(kv, aid, m);
-            acctdelArm(aid, 0);
+            acctdelArm(kv, aid, 0);
             return { ok: true };
         }
         m.idp_did = caps.platform.dispatch(home, "__system/scope_kv",
@@ -1862,7 +1862,7 @@ export function onAcctdelCpDelete({ kv }) {
         // Kick the driver now rather than waiting out the watchdog — when
         // this was the last pending instance, the next fire advances to
         // the rows phase.
-        acctdelArm(aid, 0);
+        acctdelArm(kv, aid, 0);
     } else {
         // The send burned its whole retry budget (webhook.send terminal
         // semantics), so this is a real refusal or a dead CP — freeze.
@@ -1909,7 +1909,7 @@ export function retryDeletion({ kv }, aid) {
     m.phase = "instances";
     delete m.error;
     acctdelWrite(kv, aid, m);
-    acctdelArm(aid, 0);
+    acctdelArm(kv, aid, 0);
     return { ok: true, aid: aid };
 }
 
@@ -3040,12 +3040,12 @@ function getExportLinks(c, tenant, eid) {
 const ROUTES = [
     // session / auth handshake
     ["GET",    "/v1/session",                   "open",          (c) => handleSession(c.caps.kv)],
-    ["POST",   "/v1/logout",                    "open",          (c) => oidc.rp("default").logout()],
-    ["POST",   "/v1/cli/exchange",              "open",          (c) => oidc.rp("default").exchangeToken(c.body.id_token)],
-    ["GET",    "/_rp/login",                    "open",          (c) => oidc.rp("default").beginLogin()],
-    ["GET",    "/_rp/callback",                 "open",          (c) => oidc.rp("default").handleCallback()],
-    ["GET",    "/_rp/poll",                     "open",          (c) => oidc.rp("default").pollStatus()],
-    ["GET",    "/_rp/logout",                   "open",          (c) => oidc.rp("default").logoutRedirect()],
+    ["POST",   "/v1/logout",                    "open",          (c) => oidc.rp(c.caps, "default").logout()],
+    ["POST",   "/v1/cli/exchange",              "open",          (c) => oidc.rp(c.caps, "default").exchangeToken(c.body.id_token)],
+    ["GET",    "/_rp/login",                    "open",          (c) => oidc.rp(c.caps, "default").beginLogin()],
+    ["GET",    "/_rp/callback",                 "open",          (c) => oidc.rp(c.caps, "default").handleCallback()],
+    ["GET",    "/_rp/poll",                     "open",          (c) => oidc.rp(c.caps, "default").pollStatus()],
+    ["GET",    "/_rp/logout",                   "open",          (c) => oidc.rp(c.caps, "default").logoutRedirect()],
     // instances
     ["GET",    "/v1/instances",                 "authed",        (c) => listInstance(c.caps)],
     ["POST",   "/v1/instances",                 "authed",        (c) => provisionInstance(c.caps, c.body.name, c.body.account)],
@@ -3079,9 +3079,9 @@ const ROUTES = [
     ["GET",    "/v1/accounts/:aid/export",      "accountMember", (c) => accountExport(c.caps.kv, c.params.aid)],
     ["GET",    "/v1/accounts/:aid/billing",     "accountMember", (c) => getBilling(c.caps.kv, c.params.aid)],
     ["GET",    "/v1/billing/config",            "authed",        (c) => billingConfigPk(c.caps.kv)],
-    ["POST",   "/v1/accounts/:aid/billing/subscribe", "accountOwner", (c) => subscribeBilling(c.caps.kv, c.caps.next, c.params.aid, c.body.tier)],
-    ["POST",   "/v1/accounts/:aid/billing/change",    "accountOwner", (c) => changeBilling(c.caps.kv, c.params.aid, c.body.tier)],
-    ["POST",   "/v1/accounts/:aid/billing/cancel",    "accountOwner", (c) => cancelBilling(c.caps.kv, c.params.aid)],
+    ["POST",   "/v1/accounts/:aid/billing/subscribe", "accountOwner", (c) => subscribeBilling(c.caps.after, c.caps.kv, c.caps.next, c.caps.webhook, c.params.aid, c.body.tier)],
+    ["POST",   "/v1/accounts/:aid/billing/change",    "accountOwner", (c) => changeBilling(c.caps.after, c.caps.kv, c.caps.webhook, c.params.aid, c.body.tier)],
+    ["POST",   "/v1/accounts/:aid/billing/cancel",    "accountOwner", (c) => cancelBilling(c.caps.after, c.caps.kv, c.caps.webhook, c.params.aid)],
     // Stripe webhook — pre-auth in _middlewares; the signature is the auth.
     ["POST",   "/v1/billing/webhook",           "open",          (c) => handleStripeWebhook(c.caps.kv, c.caps.webhook, c.rawBody || "")],
     ["POST",   "/v1/invites/accept",            "authed",        (c) => acceptInvite(c.caps, c.body.token)],
@@ -3191,7 +3191,7 @@ function handleSourcesPath(kv, c) {
 // for non-pre-auth paths). The async completion modules (`_rp/complete.mjs`,
 // `_rp/jwks.mjs`), the streamed `v1/upload` module, and the `on*` continuation
 // exports above are invoked by callback dispatch — NOT routed here.
-export default function({ platform, after, kv, next }) {
+export default function({ platform, after, kv, next, config, webhook }) {
     // `request.path` NEVER carries the query string — it lives only on
     // `request.query` (handler-shape.md, the default-activation surface).
     // Splitting `path` on "?" always produced an empty query, so every routed
@@ -3207,7 +3207,7 @@ export default function({ platform, after, kv, next }) {
         // Received capabilities, threaded to route handlers (rove#753's
         // idiom — new code receives; the module's legacy ambient uses
         // migrate under #858).
-        caps: { platform: platform, after: after, kv: kv, next: next },
+        caps: { platform: platform, after: after, kv: kv, next: next, config: config, webhook: webhook },
         params: m.params, query: parseQuery(qs), qs: qs,
         body: parseBody(), rawBody: request.text || "", path: path,
     });
