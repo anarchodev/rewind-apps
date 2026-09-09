@@ -131,17 +131,23 @@ response.cookies = ['sid=…; HttpOnly'];</code></pre>
 <ul><li><code>stream.start()</code> — commit the head (from ambient <code>response.*</code>) and begin the response. Use it to open an SSE stream so the client's <code>onopen</code> fires before any data. Optional — the first <code>stream.write()</code> starts implicitly.</li><li><code>stream.write(chunk)</code> — emit a chunk. <strong>Commit-gated</strong>: the chunk reaches the wire only after this activation's writes commit (the one rule — <code>architecture/routing-and-ingress.md</code>). Call it as many times per activation as you like; raw bytes (SSE <code>data:</code> framing is yours to write).</li></ul>
 <p>A continuing activation (<code>onWake</code> etc.) that has nothing to write this hop just returns <code>next()</code> — a zero-frame wake keeps the stream parked with its arms riding (re-<code>after.*</code> only to CHANGE what you're watching; re-arming replaces the arm set). No <code>stream.start()</code> ritual is needed to stay held.</p>
 <p>Pair <code>stream.*</code> with <code>next()</code> to keep producing across activations; close with a terminal return:</p>
-<pre><code>stream.start();
-after.kv(`notif/${user}/`, { on: 'onNotify' });
-return next({ since });</code></pre>
+<pre><code>export default ({ after, next, stream }) =&gt; {
+  stream.start();
+  after.kv(`notif/${user}/`, { on: 'onNotify' });
+  return next({ since });
+};
+</code></pre>
 <p><code>stream</code> is <strong>only</strong> a namespace — <code>stream.start()</code> / <code>stream.write()</code>, never <code>return stream(...)</code>.</p>
 <h3 id="2-3-connection-triggers-after">2.3 Connection triggers — <code>after.*</code></h3>
 <p><code>after.*</code> registers a ONE-SHOT wake <strong>for the current connection</strong> — body builder calls that re-invoke a handler still holding the socket. Ephemeral (drop with the connection); node-local (never touch raft).</p>
 <ul><li><code>after.ms(ms)</code> — wake after <code>ms</code> milliseconds. Named for its unit (durations are always ms; there is deliberately no <code>after.seconds</code> family — write <code>after.ms(5 * 60_000)</code>).</li><li><code>after.kv(prefix, { on? })</code> — wake when any key under <code>prefix</code> changes <strong>since the version this activation read</strong> (anchored to the read view, so a write between "you read" and "you parked" still fires it, and the common "wait on a key, write it from a connectionless callback" pattern is lossless — <code>effect-algebra.md</code> §6.4).</li><li><code>after.fetch(url, opts?, { on? })</code> — perform an outbound request and wake on its result (whole or chunked). Connection-scoped outbound; its durable twin is <code>webhook.send</code> (§2.4). On the resume, <code>request.ctx</code> is the fetch's own <code>{ctx}</code> option if you passed one, else the connection's <code>next({ctx})</code> memory (decisions.md §4.14) — one rule on WS and HTTP. So a no-ctx fetch on a held chain still reads the state you threaded via <code>next()</code>.</li></ul>
 <p><code>{ on: "module.method" }</code> routes the wake to a different export (still holding *this* connection) — the UNIVERSAL callback-target key, the same spelling every effect takes. Without <code>on</code>, an <code>after.kv</code>/ <code>after.ms</code> wake defaults to <code>onWake</code>; <code>after.fetch</code> to <code>onFetchResult</code>/<code>onFetchChunk</code>/<code>onFetchDone</code> by event shape (§3).</p>
-<pre><code>const rooms = request.ctx?.rooms ?? [];
-for (const room of rooms) after.kv(`rooms/${room}/`);  // dynamic sets are natural
-return next({ rooms });</code></pre>
+<pre><code>export default ({ after, next }) =&gt; {
+  const rooms = request.ctx?.rooms ?? [];
+  for (const room of rooms) after.kv(`rooms/${room}/`);  // dynamic sets are natural
+  return next({ rooms });
+};
+</code></pre>
 <p>The runtime arms <code>after.*</code> wakes <strong>before</strong> firing any connectionless effects of the same activation, so a wake can't be missed even when a connectionless callback writes the key it watches (<code>effect-algebra.md</code> §6.4).</p>
 <h3 id="2-4-connectionless-triggers-webhook-send-schedule-cron">2.4 Connectionless triggers — <code>webhook.send</code> / <code>schedule</code> / <code>cron</code></h3>
 <p>These create a <strong>connectionless request</strong> — a fresh, durable activation with no held socket. They survive leader changes, route by tenant, and run whether or not anyone is connected. Each names the export it invokes:</p>
@@ -161,13 +167,13 @@ return next({ rooms });</code></pre>
 </table>
 <p>All four throw at the call site with a <code>code</code> you can branch on, so a handler never discovers a limit as a failed request. A write to the <strong>empty key</strong> is refused the same way (<code>empty_key</code>): a handler that computed an empty name — a missing id, an unparsed field — meant to name a row and got nothing. <code>kv.get("")</code> is <code>null</code>, not an error — reads never throw, and the refusal guarantees no row ever exists under the empty name. The byte budget counts what each write puts on the entry rather than the string lengths alone, so a thousand tiny writes spend 9 KB of it on framing — stated here because a budget measured in anything but the bytes it protects is one the entry can still overflow. The per-activation pair is <strong>yours alone</strong> — other activations running in the same dispatch pass share the underlying batch, but never your allowance.</p>
 <p>More work than one activation's budget is not an error to design around; it is the signal to <strong>continue in another activation</strong>:</p>
-<pre><code>export default function () {
-  return writeChunk(0);
+<pre><code>export default function ({ after, kv, next }) {
+  return writeChunk({ after, kv, next }, 0);
 }
-export function onMore() {
-  return writeChunk(request.ctx.from);
+export function onMore({ after, kv, next }) {
+  return writeChunk({ after, kv, next }, request.ctx.from);
 }
-function writeChunk(from) {
+function writeChunk({ after, kv, next }, from) {
   const rows = load(from, 200);           // a bounded slice
   for (const r of rows) kv.set(`row/${r.id}`, JSON.stringify(r));
   if (rows.length &lt; 200) return "done";
@@ -176,9 +182,12 @@ function writeChunk(from) {
 }</code></pre>
 <p>Each hop commits its own writes and hands the cursor on, so the work completes without any one entry growing. The hops are separate transactions — write the loop so a repeat of the last hop is harmless (a cursor in <code>ctx</code>, idempotent keys), because that is what makes it resumable across a leader change.</p>
 <p><strong>Deploy-time config — <code>config.get</code>.</strong> A JSON file deployed at <code>_config/&lt;name&gt;.json</code> is readable as <code>config.get("&lt;name&gt;")</code> — the file's bytes as a string (parse JSON yourself), or <code>null</code> if this deployment carries no such file. That is the whole surface, and it is the only one: config is not part of the kv keyspace, it cannot be written at runtime, and its values are scoped to the deployment the activation runs under — code and config switch atomically on release, including a rollback and a deploy that removes a file. The reads are recorded like kv reads, so replay and sim cover them; a sim world seeds them as ordinary <code>_config/&lt;name&gt;</code> rows.</p>
-<pre><code>const raw = config.get("oauth/google");   // _config/oauth/google.json
-if (raw === null) { response.status = 500; return "missing config: oauth/google"; }
-const cfg = JSON.parse(raw);</code></pre>
+<pre><code>export default ({ config }) =&gt; {
+  const raw = config.get("oauth/google");   // _config/oauth/google.json
+  if (raw === null) { response.status = 500; return "missing config: oauth/google"; }
+  const cfg = JSON.parse(raw);
+};
+</code></pre>
 <h3 id="2-6-the-rule-and-why-there-are-no-scope-flags">2.6 The rule, and why there are no scope flags</h3>
 <div class="note"><p><strong>All wakes registered through <code>after.*</code> are for the current connection. Every other trigger creates a connectionless request.</strong></p></div>
 <p>Scope must be a *verb*, not a flag, because a connectionless trigger is <strong>durable</strong>, and durability isn't a boolean — it's a Model-row + commit-gate + reload-on-leader-change overlay (<code>effect-algebra.md</code> §2.2, §6.1). A <code>{ durable: true }</code> / <code>{ detach: true }</code> flag can't conjure that lifecycle; flipping scope with a flag is the <code>bind</code> mistake the model retired (§6.3). So:</p>
@@ -206,7 +215,7 @@ const cfg = JSON.parse(raw);</code></pre>
 <p>The platform invokes <strong>only</strong> the activation's export (the table above). The former platform-level <code>?fn=name&amp;args=…</code> query and <code>{"fn":…,"args":[…]}</code> POST-body dispatch are RETIRED (decisions.md §4.5): <code>request.query</code> and the request payload are opaque bytes the engine never interprets. Internal resume targeting (<code>{on}</code>, <code>next({fn})</code>) is first-class on the runtime's Request and unaffected.</p>
 <p>A handler that wants named-function routing composes it from primitives — and because the shim reads <code>request.query</code> / <code>request.text</code> in JS, the dispatch inputs land on the replay tape like every other read:</p>
 <pre><code>function rpc(fns) {
-  return function () {
+  return function (a) {
     let fn = null, args = [];
     // `request.query` is the raw query STRING. `URLSearchParams` is installed
     // (see the ambient names above) and knows the encoding rules — `+` for a
@@ -223,15 +232,20 @@ const cfg = JSON.parse(raw);</code></pre>
         if (b &amp;&amp; typeof b.fn === "string") { fn = b.fn; args = Array.isArray(b.args) ? b.args : []; }
       } catch (_) {}
     }
-    const f = fn ? fns[fn] : null;
+    const f = fn &amp;&amp; Object.hasOwn(fns, fn) ? fns[fn] : null;
     if (!f) { response.status = 404; return "no such fn: " + fn; }
-    return f(...args);
+    // The activation object rides as every fn's LEADING argument, so an
+    // rpc function receives its capabilities first and its wire args
+    // after — the received idiom applied to the recipe. A function that
+    // needs no capabilities still takes the slot.
+    return f(a, ...args);
   };
 }
 
-function whoami() { return "it me"; }
-function add(a, b) { return a + b; }
-export default rpc({ whoami, add });</code></pre>
+function whoami(_a) { return "it me"; }
+function add(_a, a, b) { return a + b; }
+function greet({ kv }, name) { kv.set("last_greeted", name); return "hi " + name; }
+export default rpc({ whoami, add, greet });</code></pre>
 <p>The wire shapes are unchanged — <code>GET /?fn=whoami</code> and <code>POST {"fn":"add","args":[1,2]}</code> work exactly as before; the dispatch just belongs to the app now (the <code>__admin__</code> dashboard handler, <code>web/admin/index.mjs</code>, is the dogfood example).</p>
 <h3 id="3-2-the-saga-the-causal-unit">3.2 The saga — the causal unit</h3>
 <p>A <strong>saga</strong> is one external cause and everything it triggers: the causal unit your logs, replay, and billing all present. Every activation belongs to exactly one saga, and each activation of a saga is one of its <strong>hops</strong>.</p>
@@ -257,36 +271,36 @@ export default rpc({ whoami, add });</code></pre>
   return process(request.text);
 }</code></pre>
 <h3 id="5-3-streaming-inbound-per-chunk-upload-to-storage">5.3 Streaming inbound — per-chunk upload to storage</h3>
-<pre><code>export function onChunk() {
+<pre><code>export function onChunk({ after, next }) {
   after.fetch(`${STORAGE_URL}/${request.headers['x-key']}?seq=${request.chunkSeq}`,
            { method: 'PUT', body: request.bytes, on: 'onPut' });
   if (request.done) { response.status = 201; return 'uploaded'; }
   return next();                                 // await the next inbound chunk
 }
 
-export function onPut() {                        // each PUT result resumes here (held)
+export function onPut({ after, next }) {                        // each PUT result resumes here (held)
   if (request.status &gt;= 400) { response.status = 502; return 'storage failed'; }
   return next();
 }</code></pre>
 <h3 id="5-4-gateway-hold-the-client-forward-upstream-return-its-status">5.4 Gateway — hold the client, forward upstream, return its status</h3>
-<pre><code>export default function () {
+<pre><code>export default function ({ after, next }) {
   after.fetch('https://upstream.example.com',
            { method: 'POST', body: request.bytes, on: 'onUpstream' });
   return next();                                 // held, uncommitted — status still open
 }
 
-export function onUpstream() {
+export function onUpstream({ after, next }) {
   response.status = request.status;              // forward upstream's status verbatim
   return request.bytes;                          // raw response bytes, forwarded verbatim
 }</code></pre>
 <p><code>next()</code> keeps the head uncommitted so <code>onUpstream</code> can return any status (a <code>502</code>). The fetch is connection-scoped — if the client leaves, abandoning it is correct.</p>
 <h3 id="5-5-llm-proxy-streamed-connection-fetch-held-client">5.5 LLM proxy — streamed connection fetch + held client</h3>
-<pre><code>export default function () {
+<pre><code>export default function ({ after, next, stream }) {
   after.fetch(LLM_URL, { method: 'POST', body: request.bytes, on: 'onUpstream' });
   return next();                                 // hold the client; wait for the first chunk
 }
 
-export function onUpstream() {
+export function onUpstream({ after, next, stream }) {
   if (request.done) return "";                   // close the held response
   stream.write(transform(request.bytes));        // emit a chunk (commits the head on first write)
   return next();
@@ -299,7 +313,7 @@ export function onUpstream() {
   return 'queued';                               // respond immediately; the above outlive this request
 }
 
-export function onCharge() {                      // connectionless {on} callback — no socket; does work, returns nothing
+export function onCharge({ kv }) {                      // connectionless {on} callback — no socket; does work, returns nothing
   if (request.status &lt; 200 || request.status &gt;= 300) return;  // delivery failed (request.activation.error says why; status 0 = never reached)
   const charge = request.json;                    // the response payload, parsed (§7)
   kv.set(`charges/${charge.id}`, JSON.stringify(charge));
@@ -309,7 +323,7 @@ export function onCharge() {                      // connectionless {on} callbac
 <pre><code>const PAD = (n) =&gt; String(n).padStart(20, '0');
 
 // Connect (or reconnect via Last-Event-ID = the last seq delivered).
-export default function () {
+export default function ({ after, kv, next, stream }) {
   response.headers = { 'content-type': 'text/event-stream' };       // ambient head
   const last = request.headers['last-event-id'];
   const cursor = last ? `notif/${user}/${PAD(Number(last))}` : null;
@@ -319,7 +333,7 @@ export default function () {
 }
 
 // Connection-held resume: drain everything past the cursor key.
-export function onNotify() {
+export function onNotify({ after, kv, next, stream }) {
   const rows = kv.prefix(`notif/${user}/`, request.ctx.cursor);
   after.kv(`notif/${user}/`, { on: 'onNotify' });                    // re-arm
   for (const r of rows) {
@@ -331,7 +345,7 @@ export function onNotify() {
 
 // Connectionless cleanup — cron('0 3 * * *', 'gcNotifs'); each value
 // carries its write time, so retention is a scan-and-delete.
-export function gcNotifs() {
+export function gcNotifs({ after, kv, next, stream }) {
   const horizon = Date.now() - 7 * 24 * 3600 * 1000;
   let cursor = null;
   for (;;) {
@@ -343,14 +357,14 @@ export function gcNotifs() {
 }</code></pre>
 <p><code>after.kv</code> (connection, ephemeral) waits for changes *since the read view*; each wake <strong>drains the prefix past the cursor</strong> (so coalesced wakes never lose notifications) and advances the cursor in <code>ctx</code>. The notifications live in <code>kv</code> (durable) and the client's resume point is its <code>Last-Event-ID</code>, so a dropped connection just reconnects — no durable server-side connection state. (<code>effect-algebra.md</code> §6.5; retention bounds the reconnect-replay window.)</p>
 <h3 id="5-8-fan-in-join-wait-for-all-then-combine">5.8 Fan-in / join — wait for all, then combine</h3>
-<pre><code>export default function () {
+<pre><code>export default function ({ after, next }) {
   const a = after.fetch(API_A, { on: 'onResult' });   // returns the fetch id (`ftch_…`)
   const b = after.fetch(API_B, { on: 'onResult' });
   after.ms(30_000, { on: 'onTimeout' });                  // deadline
   return next({ a, b, got: {} });                         // uncommitted: response unknown until both land
 }
 
-export function onResult() {
+export function onResult({ after, next }) {
   // request.fetchId is the SAME `ftch_…` string after.fetch returned.
   const got = { ...request.ctx.got,
                 [request.fetchId]: { status: request.status, body: request.text } };
@@ -359,12 +373,12 @@ export function onResult() {
   return next({ ...request.ctx, got });                   // still waiting on the other
 }
 
-export function onTimeout() { response.status = 504; return 'upstream timeout'; }</code></pre>
+export function onTimeout({ after, next }) { response.status = 504; return 'upstream timeout'; }</code></pre>
 <p><code>next({ctx})</code> makes <code>ctx</code> the continuation's accumulator. Each fetch result fires its own <code>onResult</code> (value-triggers are delivered individually — <code>effect-algebra.md</code> §6.2), resumes are serialized, and each <code>next(ctx)</code> updates the threaded <code>ctx</code> the next resume reads — so the join is race-free with no lock. <code>next</code> (not committing) the whole time, because the response could be <code>200</code> or, via <code>onTimeout</code>, <code>504</code>. This is <code>Promise.all</code> from primitives — no dedicated combinator.</p>
 <h3 id="5-9-browser-agent-let-an-llm-drive-your-own-ui-browser">5.9 Browser agent — let an LLM drive your own UI (<code>browser.*</code>)</h3>
 <p><code>browser.*</code> is a JS-shim (same pattern as <code>webhook.send</code> — <code>globals/browser.js</code>) for building "a Playwright for LLMs" <strong>scoped to the customer's own app</strong>: the in-page SDK (<code>_static/rove-agent.js</code>) opens a held WebSocket, sends an enriched, pixel-free DOM/accessibility <strong>snapshot</strong> (<code>[ref] role "name" = value (state)</code>), and executes ref-targeted actions the handler sends back. The handler is the *brain wiring*, not the brain — the LLM call is the customer's own <code>after.fetch</code> with their key; durable reasoning state lives in <code>kv</code> (the durable-brain / ephemeral-hands split). Scope is <strong>same-origin only by construction</strong> — an agent acting inside the customer's own page is ~equivalent to JS they could already run there, so there's no new trust boundary (see <code>decisions.md</code> §4.8).</p>
 <pre><code>// Held WS chain: each page snapshot → call the LLM → send one action.
-export function onMessage() {
+export function onMessage({ after, kv, next }) {
   const frame = browser.message(request);                 // decode the ws_message
   const ctx = request.ctx || {};
   if (!frame) return next(ctx);
@@ -379,7 +393,7 @@ export function onMessage() {
   return next(ctx);                                        // read-only turn — a writing frame can't bind after.fetch
 }
 
-export function onLLM() {                                  // flattened result surface (§7): request.json/.status/.done
+export function onLLM({ after, kv, next }) {                                  // flattened result surface (§7): request.json/.status/.done
   if (!request.done || request.status &gt;= 400) { browser.status("LLM error"); return next(request.ctx); }
   const reply = request.json;
   const action = pickAction(reply);                        // adapt the model's tool call → {op, ref, ...}
