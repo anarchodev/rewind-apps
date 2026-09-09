@@ -434,8 +434,13 @@ function publish(kv, body) {
 }
 
 // ── resolve (public): dep ranges → manifest-v2 Resolution lockfile ────────
-function resolve(body) {
-    const out = resolveGraph(body.dependencies || {}, body.overrides || {}, readIndex, readRecordByHash);
+function resolve(kv, body) {
+    // The pure core takes `index(spec)` / `record(hash)` callbacks — bind the
+    // received kv into them here, since the readers take it as their first
+    // parameter (the received idiom; rove#753).
+    const out = resolveGraph(
+        body.dependencies || {}, body.overrides || {},
+        (spec) => readIndex(kv, spec), (hash) => readRecordByHash(kv, hash));
     if (out.error) {
         return jsonError(out.error.code === "unresolved" ? 422 : 500, "resolve failed", out.error);
     }
@@ -501,7 +506,7 @@ const ROUTES = [
     ["GET",  "/v1/packages",                    "open",    (c) => listPackages(c.caps.kv)],
     ["GET",  "/v1/packages/:scope/:name",       "open",    (c) => getPackage(c.caps.kv, c.params.scope + "/" + c.params.name)],
     ["GET",  "/v1/packages/:scope/:name/:version", "open", (c) => getVersion(c.caps.kv, c.params.scope + "/" + c.params.name, c.params.version)],
-    ["POST", "/v1/resolve",                     "open",    (c) => resolve(c.body)],
+    ["POST", "/v1/resolve",                     "open",    (c) => resolve(c.caps.kv, c.body)],
     ["GET",  "/v1/blobs/:hash",                 "open",    (c) => getBlob(c.caps.kv, c.params.hash)],
 ];
 
@@ -536,7 +541,7 @@ function routeAuthz(cls) {
 
 // Single entry point. `_middlewares` runs first and sets request.auth (best
 // effort — public routes need no session).
-export default function () {
+export default function ({ kv, blob, next, platform }) {
     const fullPath = request.path;
     const qi = fullPath.indexOf("?");
     const path = qi === -1 ? fullPath : fullPath.slice(0, qi);
@@ -545,5 +550,10 @@ export default function () {
     if (!m) { response.status = 404; return { error: "not found" }; }
     const denied = routeAuthz(m.authz);
     if (denied) return denied;
-    return m.thunk({ params: m.params, query: parseQuery(qs), body: parseBody(), qs: qs, path: path });
+    return m.thunk({
+        // Received capabilities, threaded to the route handlers (the
+        // received idiom — rove#753; the ambient names are gone at #861).
+        caps: { kv: kv, blob: blob, next: next, platform: platform },
+        params: m.params, query: parseQuery(qs), body: parseBody(), qs: qs, path: path,
+    });
 }

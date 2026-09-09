@@ -880,7 +880,11 @@ export function buildRequestEpilogue({ record = {}, requestReads = null, bodyByt
         // the one thing it would be silent about. Names absent from this
         // arena are skipped rather than set undefined.
         "  const __act = {};\n" +
-        "  for (const __k of (globalThis.__CAPS || [])) if (__k in globalThis) __act[__k] = globalThis[__k];\n" +
+        "  // Capabilities come from the persistent template — the ambient\n" +
+        "  // spellings are gone (rove#861); the engine installed kv/config\n" +
+        "  // onto `__rove.caps` natively.\n" +
+        "  const __tmpl = (globalThis.__rove && __rove.caps) || {};\n" +
+        "  for (const __k of (globalThis.__CAPS || [])) if (__k in __tmpl) __act[__k] = __tmpl[__k];\n" +
         "  __act.request = request;\n" +
         "  __act.response = globalThis.response;\n" +
         // The three effects that HID on `request` (rove package-isolation.md
