@@ -11,20 +11,31 @@ function validId(id) {
 
 // Operator sees every tenant; a customer sees only the tenants of the accounts
 // they belong to (was: ALL tenants leaked to any authenticated session).
-export function listInstance({ kv, platform }) {
+export function listInstance(caps) {
     const a = request.auth || {};
     if (a.is_root) {
-        const entries = platform.root.prefix("instance/", "", 1000);
-        return { instances: entries.map((e) => ({ id: e.key.slice("instance/".length) })) };
+        // The operator sees every instance — a root-store query, so it is a
+        // dispatched activation in `__root__`'s scope and this request parks
+        // on its resolution.
+        return rootQueryPark({ caps: caps }, { instances: true }, "rootInstances", {});
     }
     if (!a.sub) { response.status = 401; return { error: "unauthenticated" }; }
+    const kv = caps.kv;
     return { instances: accessibleInstances(kv, accountHashFor(a.sub)).map((id) => ({ id })) };
 }
 
-export function getInstance({ kv, platform }, id) {
+export function getInstance(caps, id) {
     if (!validId(id)) { response.status = 400; return { error: "invalid id" }; }
-    const v = platform.root.get("instance/" + id);
-    if (v === null) { response.status = 404; return { error: "not found" }; }
+    // Existence lives in the root store, so the check is a dispatched query.
+    return rootQueryPark({ caps: caps }, { instance: id }, "rootInstance", { id: id });
+}
+
+// The `getInstance` finisher: the root store answered whether the instance
+// exists; the host lives in THIS tenant's own kv.
+function finishRootInstance(c, payload, caps) {
+    const id = c.id;
+    if (!payload.instance_exists) { response.status = 404; return { error: "not found" }; }
+    const kv = caps.kv;
     // `host` is what the control plane reported when the instance was placed
     // (recorded at provision time). Null for an instance provisioned before
     // that was recorded, or one the platform has no wildcard zone for — the UI
@@ -45,21 +56,42 @@ export function createInstance(c, id) {
     return c.caps.next({ did: did, id: id });
 }
 
-export function onCreateInstanceDone({ kv, platform, next }) {
+export function onCreateInstanceDone({ kv, next }) {
     const c = request.ctx || {};
     // Marker still standing = a spurious wake (possibly our own arming
     // write) — re-park and wait for the resolution.
     if (kv.get("_dispatch/owed/" + c.did) !== null) return next(c);
-    // Consume the engine-carried result row — this flow verifies against
-    // the root store instead of the carried body.
-    kv.delete("_dispatch/result/" + c.did);
-    // Resolved: the root row is the authoritative answer.
-    if (platform.root.get("instance/" + c.id) === null) {
+    // The writer reports what landed, and reading this row is itself the
+    // commit proof: the result and the marker delete ride the same writeset
+    // as the write (rove#852). So the confirmation comes from the activation
+    // that wrote, not from a later read of the root store — no second
+    // dispatch, and no window in which a different write could be the one
+    // observed.
+    const res = consumeRootWrite(kv, c.did);
+    if (!res.wrote.includes("instance/" + c.id)) {
         response.status = 500;
         return { error: "root write resolved without landing" };
     }
     response.status = 201;
     return { id: c.id };
+}
+
+// Consume a `__system/root_kv_install` dispatch result: delete the row (the
+// no-residue invariant — every resolved dispatch leaves one, and an
+// unharvested one is a leak) and return what the writer said it wrote. The
+// body is the target's terminal output, so it carries a request-body trust
+// posture: parse defensively and answer with empty lists rather than
+// throwing on a shape this build does not recognise.
+function consumeRootWrite(kv, did) {
+    const raw = kv.get("_dispatch/result/" + did);
+    kv.delete("_dispatch/result/" + did);
+    let wrote = [], deleted = [];
+    try {
+        const body = JSON.parse(JSON.parse(raw).body || "{}");
+        if (Array.isArray(body.wrote)) wrote = body.wrote;
+        if (Array.isArray(body.deleted)) deleted = body.deleted;
+    } catch (_e) { /* unparseable → nothing confirmed */ }
+    return { wrote: wrote, deleted: deleted };
 }
 
 // Deprovision an instance (rove#294). Authz is the route's `tenant` class:
@@ -127,12 +159,15 @@ export function onDeprovisioned({ kv }) {
     return null;
 }
 
-export function listDomain({ platform }) {
-    const entries = platform.root.prefix("domain/", "", 1000);
+export function listDomain(caps) {
+    return rootQueryPark({ caps: caps }, { domains: true }, "rootDomains", {});
+}
+
+function finishRootDomains(_c, payload, _caps) {
     return {
-        domains: entries.map((e) => ({
-            host: e.key.slice("domain/".length),
-            instance_id: e.value,
+        domains: (payload.domains || []).map((d) => ({
+            host: d.host,
+            instance_id: d.instance_id,
         })),
     };
 }
@@ -142,24 +177,25 @@ export function assignDomain({ platform }, c, host, instance_id) {
         response.status = 400;
         return { error: "host and instance_id required" };
     }
-    const exists = platform.root.get("instance/" + instance_id);
-    if (exists === null) {
-        response.status = 404;
-        return { error: "instance not found" };
-    }
-    // Same shape as createInstance: the write is a dispatched activation in
-    // root scope; this request parks on the owed marker's resolution.
+    // The instance-exists check rides the WRITE as a precondition rather
+    // than a separate query: check and write are then one activation in the
+    // root log, with no window in which the instance could be deleted
+    // between the two (rove#852).
     const did = c.caps.platform.dispatch("__root__", "__system/root_kv_install",
-        { ctx: { pairs: [{ key: "domain/" + host, value: instance_id }] } });
+        { ctx: {
+            requires: ["instance/" + instance_id],
+            pairs: [{ key: "domain/" + host, value: instance_id }],
+        } });
     c.caps.after.kv("_dispatch/owed/" + did, { on: "onAssignDomainDone" });
     return c.caps.next({ did: did, host: host, instance_id: instance_id });
 }
 
-export function onAssignDomainDone({ kv, platform, next }) {
+export function onAssignDomainDone({ kv, next }) {
     const c = request.ctx || {};
     if (kv.get("_dispatch/owed/" + c.did) !== null) return next(c);
-    kv.delete("_dispatch/result/" + c.did);
-    if (platform.root.get("domain/" + c.host) !== c.instance_id) {
+    // Confirmed from the writer's own report, like createInstance — the
+    // result row IS the commit proof (rove#852).
+    if (!consumeRootWrite(kv, c.did).wrote.includes("domain/" + c.host)) {
         response.status = 500;
         return { error: "root write resolved without landing" };
     }
@@ -175,11 +211,16 @@ export function onAssignDomainDone({ kv, platform, next }) {
 // only shapes the response. `fin` names the finisher in
 // SCOPED_KV_FINISHERS that turns the parsed result into the route's
 // response; `extra` threads route state (key, limit, tenant) to it.
-function scopedKvPark(c, tenant, ask, fin, extra) {
+// `module` defaults to the scoped-kv door; the root-query door
+// (`__system/root_query` against `__root__`) shares this park and harvest
+// verbatim, because only the target and the ask differ. A parallel copy
+// would be two implementations of the same resolution free to disagree —
+// the thing this arc keeps deleting.
+function scopedKvPark(c, tenant, ask, fin, extra, module) {
     const auth = request.auth || {};
     let did;
     try {
-        did = c.caps.platform.dispatch(tenant, "__system/scope_kv", {
+        did = c.caps.platform.dispatch(tenant, module || "__system/scope_kv", {
             ctx: ask,
             actor: auth.is_root ? "operator" : "tenant_user",
         });
@@ -217,6 +258,13 @@ export function onScopedKv({ kv, platform, after, next }) {
 
 // The finish half — shared by the wake above and scopedKvPark's inline
 // path (a dispatch that resolved before the park was needed).
+// Typed reads of the platform root store, dispatched against `__root__`
+// (rove#852). Every former `platform.root.get` / `.prefix` caller was a
+// query wearing a kv costume; these ask for the thing.
+function rootQueryPark(c, ask, fin, extra) {
+    return scopedKvPark(c, "__root__", ask, fin, extra, "__system/root_query");
+}
+
 function scopedKvFinish(c, caps) {
     // `caps.kv` spelled at each use, never re-bound to a bare `kv` — a
     // module-scope `const kv = …` reads as "this file received kv" to the
@@ -269,6 +317,13 @@ function consumeReadResult(kv, ctx) {
 }
 
 const SCOPED_KV_FINISHERS = {
+    // ── root-store queries (rove#852) — dispatched against `__root__`
+    // through `rootQueryPark`, harvested by the same finish path.
+    rootInstances: function (_c, r) {
+        return { instances: (r.instances || []).map((id) => ({ id })) };
+    },
+    rootInstance: finishRootInstance,
+    rootDomains: finishRootDomains,
     kvGet: function (c, r) {
         const v = r.values ? r.values[c.key] : null;
         if (v === null || v === undefined) {
