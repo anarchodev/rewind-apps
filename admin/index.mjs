@@ -291,7 +291,7 @@ const SCOPED_KV_FINISHERS = {
     // arrives on the dispatched read; the finisher then continues the
     // existing manifest chain (readManifest → blob reads) unchanged.
     readSourcesCur: function (c, r, caps) {
-        const cur = r.values ? r.values["_deploy/current"] : null;
+        const cur = r.release ? r.release.dep_id : null;
         if (!cur || !/^[0-9a-fA-F]{1,16}$/.test(cur)) {
             caps.kv.delete("_dispatch/result/" + c.did);
             return jsonError(cur ? 400 : 404, cur ? "bad dep_id" : "no current deployment");
@@ -301,7 +301,7 @@ const SCOPED_KV_FINISHERS = {
         return caps.next();
     },
     readSourceCur: function (c, r, caps) {
-        const cur = r.values ? r.values["_deploy/current"] : null;
+        const cur = r.release ? r.release.dep_id : null;
         if (!cur || !/^[0-9a-fA-F]{1,16}$/.test(cur)) {
             caps.kv.delete("_dispatch/result/" + c.did);
             return jsonError(cur ? 400 : 404, cur ? "bad dep_id" : "no current deployment");
@@ -369,11 +369,11 @@ const SCOPED_KV_FINISHERS = {
         return { id: c.eid, ttl_seconds: EXPORT_LINK_TTL_S, links: links };
     },
     history: function (c, r) {
-        const curHex = r.values ? r.values["_deploy/current"] : null;
-        const rows = (r.pages && r.pages[0]) || [];
+        const curHex = r.release ? r.release.dep_id : null;
+        const rows = (r.release && r.release.history) || [];
         const releases = rows.map(function (row) {
             return {
-                ts_ms: parseInt(row.key.slice("_release/".length), 10),
+                ts_ms: parseInt(row.ts, 10),
                 dep_id: parseInt(row.value, 16),
                 dep_hex: row.value,
                 live: !!curHex && row.value === curHex,
@@ -2687,7 +2687,7 @@ function handleReadSources(kv, c, tenant, depArg) {
     if (depArg === "current") {
         // The live pointer is the target's row — a dispatched read; the
         // finisher continues into the manifest chain.
-        return scopedKvPark(c, tenant, { gets: ["_deploy/current"] },
+        return scopedKvPark(c, tenant, { release: true },
             "readSourcesCur", { tenant: tenant });
     }
     if (!/^[0-9a-fA-F]{1,16}$/.test(depArg)) return jsonError(400, "bad dep_id");
@@ -2870,7 +2870,7 @@ function handleReadSource(kv, c, tenant, depArg, qs) {
     const filePath = new URLSearchParams(qs || "").get("path");
     if (!filePath) return jsonError(400, "path query param required");
     if (depArg === "current") {
-        return scopedKvPark(c, tenant, { gets: ["_deploy/current"] },
+        return scopedKvPark(c, tenant, { release: true },
             "readSourceCur", { tenant: tenant, path: filePath });
     }
     if (!/^[0-9a-fA-F]{1,16}$/.test(depArg)) return jsonError(400, "bad dep_id");
@@ -2927,8 +2927,9 @@ export function onSourceFileBlob({ kv }) {
 //
 // Lists a tenant's release history from the per-tenant `_release/{ts_ms:020}` →
 // `{dep_id:016x}` log (worker_dispatch stamps one on every release) plus the
-// live pointer `_deploy/current`. Composable — reads via `platform.scope(t).kv`,
-// no engine change (rewind-cli-plan §2 "deployments/rollback were blocked: no
+// live pointer `_deploy/current`. Both are ENGINE rows carrying no root, so
+// they are read through the scoped `release` verb — a typed request, never a
+// key spelling (rove#850). No engine change (rewind-cli-plan §2 "deployments/rollback were blocked: no
 // read endpoint"). Powers `rewind deployments <t>`; `rewind rollback` is just a
 // publishRelease at an older dep_id. Authz mirrors deploy/release: operator
 // (is_root) any tenant; a customer only their own.
@@ -2946,10 +2947,11 @@ function handleHistory(kv, c, tenant) {
     // `_release/{ts_ms:020}` keys are lex-ascending by timestamp; the
     // finisher reverses for newest-first. Release cadence is low, so the
     // scoped-kv page cap (500) is generous.
-    return scopedKvPark(c, tenant, {
-        gets: ["_deploy/current"],
-        prefixes: [{ prefix: "_release/", limit: 500 }],
-    }, "history", { tenant: tenant });
+    // The release state is a TYPED request, not a key spelling — the
+    // engine's `_deploy/current` / `_release/{ts}` rows carry no root and
+    // are reachable only through this verb (rove#850).
+    return scopedKvPark(c, tenant, { release: true },
+        "history", { tenant: tenant });
 }
 
 // ── Instance data export (rove#340) ─────────────────────────────────
