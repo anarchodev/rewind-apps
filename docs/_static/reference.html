@@ -41,7 +41,7 @@
 <tr><td>Browser agent</td><td><a href="#browser"><code>browser</code></a></td></tr>
 <tr><td>Utilities</td><td><a href="#crypto"><code>crypto</code></a> · <a href="#base64"><code>base64</code></a> · <a href="#base64url"><code>base64url</code></a> · <a href="#hex"><code>hex</code></a> · <a href="#textencoder-textdecoder"><code>TextEncoder / TextDecoder</code></a> · <a href="#urlsearchparams"><code>URLSearchParams</code></a> · <a href="#console"><code>console</code></a> · <a href="#time"><code>time</code></a></td></tr>
 <tr><td>Identity &amp; federation</td><td><a href="#users"><code>users</code></a> · <a href="#sessions"><code>sessions</code></a> · <a href="#oidc"><code>oidc</code></a> · <a href="#activitypub"><code>activitypub</code></a></td></tr>
-<tr><td>Admin (the __admin__ tenant only)</td><td><a href="#platform"><code>platform</code></a> · <a href="#platform-root"><code>platform.root</code></a> · <a href="#platform-instances"><code>platform.instances</code></a></td></tr>
+<tr><td>Admin (the __admin__ tenant only)</td><td><a href="#platform"><code>platform</code></a> · <a href="#platform-instances"><code>platform.instances</code></a></td></tr>
 </table>
 <h2>Model &amp; state</h2>
 <p>Durable, replicated tenant state. <code>kv</code> is the Model; <code>blob</code> is content-addressed object storage (one-shot <code>put</code>/<code>get</code>, or the <code>receive</code> → <code>write</code> → <code>seal</code> upload session for large inbound bodies); <code>segments</code> is the append-log recipe on top of both — a hot kv tail whose history is sealed into blobs.</p>
@@ -1236,7 +1236,7 @@ return JSON.stringify(activitypub.fromConfig().publishNote(content));
 <pre><code>const ap = activitypub.fromConfig();</code></pre>
 <h2>Admin (the __admin__ tenant only)</h2>
 <h3 id="platform"><code>platform</code></h3>
-<p>Admin control plane: cross-tenant kv access, the platform root store, instance lifecycle, and root-token auth. Only usable from the <code>__admin__</code> handler.</p>
+<p>Admin control plane: cross-tenant kv access, instance lifecycle, and cross-tenant dispatch. Only usable from the <code>__admin__</code> handler.</p><p>The platform root store is NOT here. Its reads are typed queries dispatched against <code>__root__</code> (<code>__system/root_query</code>) and its writes are dispatched activations in the same scope, so root state takes a position in the root log rather than riding this handler's — one way to do cross-tenant (rove#852, rove#715).</p>
 <h4 id="platform-scope"><code>platform.scope(id)</code></h4>
 <p>Get accessors scoped to another instance — the explicit cross-tenant grant (replaces the old X-Rove-Scope global-kv rebind).</p>
 <table><tr><th>Param</th><th>Type</th><th></th></tr>
@@ -1280,24 +1280,6 @@ return next();
 //   const { results } = request.ctx; ...stamp manifest...
 // }
 };</code></pre>
-<h3 id="platform-root"><code>platform.root</code></h3>
-<p>The platform root store (<code>__root__.db</code>) — instance / domain / user / account metadata.</p>
-<h4 id="platform-root-get"><code>platform.root.get(key)</code></h4>
-
-<table><tr><th>Param</th><th>Type</th><th></th></tr>
-<tr><td><code>key</code></td><td><code>string</code></td><td></td></tr>
-</table>
-<p><b>Returns</b> <code>string|null</code> — The value, or <code>null</code> if absent.</p>
-<pre><code>const acct = JSON.parse(platform.root.get(`account/${id}`));</code></pre>
-<h4 id="platform-root-prefix"><code>platform.root.prefix(prefix, cursor?, limit?)</code></h4>
-<p>Prefix scan of the root store. Same pagination contract as {@link kv.prefix} (limit default 100, max 1000).</p>
-<table><tr><th>Param</th><th>Type</th><th></th></tr>
-<tr><td><code>prefix</code></td><td><code>string</code></td><td></td></tr>
-<tr><td><code>cursor <em>(optional)</em></code></td><td><code>string</code></td><td></td></tr>
-<tr><td><code>limit <em>(optional)</em></code></td><td><code>number</code></td><td></td></tr>
-</table>
-<p><b>Returns</b> <code>Array&lt;{key:string,value:string</code> — &gt;}</p>
-<pre><code>const all = platform.root.prefix("instance/", null, 1000);</code></pre>
 <h3 id="platform-instances"><code>platform.instances</code></h3>
 <p>Instance lifecycle.</p>
 <h4 id="platform-instances-deploystarter"><code>platform.instances.deployStarter(name)</code></h4>
