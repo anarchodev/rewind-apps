@@ -1,0 +1,8 @@
+# GENERATED — the provenance stamp for qjs_arena_wasm.{js,wasm}.
+# Written by scripts/ops/build_wasm_arena.sh (rove) and committed
+# beside the artifact it describes. Do not hand-edit: a stamp that
+# does not come from the build it claims is worse than no stamp.
+# Verified by scripts/conformance/adapters.py before the replay
+# engine runs. See scripts/ops/arena_wasm_inputs.py.
+digest 9c825a96aada1a26c9cca2aff1564ed93d8cf0e35d88216a8fb09f99357a6649
+established asserted
