@@ -61,7 +61,20 @@ export const RTAP_MAGIC   = 0x52544150;
 // change; the bump exists because a v9 tape's named keys read
 // against a store-spelled overlay miss on every row — a silent
 // all-miss dressed as a divergence.
-export const RTAP_VERSION = 10;
+// 10 → 11 by crypto-shredding bodies (rove#610): the entries that
+// can reference the cross-tenant body pool — `trigger_payload` and
+// `fetch_responses` — gained a trailing `body_key`, the pool body's
+// data key sealed under key material a destroy can reach. Trailing,
+// so the older layout is a strict prefix. The bump is a GUARD, not a
+// compatibility band: a v10 tape's pool references name PLAINTEXT
+// bytes, and reading one as a sealed body would report live data as
+// erased.
+//
+// This reader never opens one — PLAN §2.7 locks NO client-side key
+// distribution, so the arena is served already-decrypted over TLS.
+// The field is decoded and kept so the shape stays faithful and so a
+// bundle that round-trips through here does not silently drop it.
+export const RTAP_VERSION = 11;
 // The oldest layout this reader still understands (mirrors
 // src/replay/tape_decode.zig MIN_VERSION).
 //
@@ -237,9 +250,13 @@ function decodeEntry(channel, bytes, version) {
             // (never-tape-blobs, rove#430). Empty on an entry that carried
             // its bytes the other way.
             const content_hash = off < bytes.length ? readUtf8() : "";
+            // v11: the wrapped data key for a pool-resident body. Empty
+            // when the chunk carried its bytes or referenced a
+            // content-addressed object instead.
+            const body_key = off < bytes.length ? readLenPrefixed() : new Uint8Array(0);
             return { fetch_id, seq, byte_offset, pool_ref, ref_len,
                      final, terminal_status, terminal_ok, body_truncated,
-                     headers, inline_bytes, content_hash };
+                     headers, inline_bytes, content_hash, body_key };
         }
         // The activation's Msg: the request body for an inbound, or a
         // synthesized `{"ctx": …}` envelope for a continuation resume
@@ -249,7 +266,10 @@ function decodeEntry(channel, bytes, version) {
         case CHANNEL_TRIGGER_PAYLOAD: {
             const pool_ref = readPoolRef(view, bytes, off); off += POOL_REF_WIRE_LEN;
             const inline_bytes = readLenPrefixed();
-            return { pool_ref, ref_len: pool_ref.len, inline_bytes };
+            // v11: the wrapped data key for a pool-resident body. Empty on
+            // the inline path, which points at no pool object.
+            const body_key = off < bytes.length ? readLenPrefixed() : new Uint8Array(0);
+            return { pool_ref, ref_len: pool_ref.len, inline_bytes, body_key };
         }
         case CHANNEL_REQUEST_READS: {
             const kind = bytes[off++];

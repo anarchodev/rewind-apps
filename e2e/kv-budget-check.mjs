@@ -28,7 +28,7 @@ console.log("=== replay: a value the kv budget dropped ===");
 
 // ── the wire: v9 carries the outcome and the elided page's lost bytes ──
 {
-    check("RTAP_VERSION is the version that knows `elided`", RTAP_VERSION === 10, String(RTAP_VERSION));
+    check("RTAP_VERSION is the version that knows `elided`", RTAP_VERSION >= 10, String(RTAP_VERSION));
 
     // Keys as the producer records them (v10): store-spelled.
     const blob = serializeTape(CHANNEL_KV, [
