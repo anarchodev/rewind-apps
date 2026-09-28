@@ -2905,7 +2905,6 @@ async function main() {
     const surface = deriveActivationSurface({
         activation: bundle.activation,
         tapes,
-        activationBytes: bundle.activation_bytes ?? null,
         // Payloads the record kept only a POINTER to, resolved by the
         // dashboard through the body door and folded into the bundle.
         // This origin holds no credential — the session cookie is
@@ -2931,7 +2930,7 @@ async function main() {
         // kv tape (outcome=refused, value=code); the wrapper throws them
         // verbatim and decides nothing itself.
         kvRefusals: tapes.kv,
-        bodyBytes: surface.bodyBytes ?? bundle.request?.body_bytes ?? null,
+        bodyBytes: surface.bodyBytes ?? null,
         ctx: surface.ctx,
         activationBag: surface.activation,
         result: surface.result,

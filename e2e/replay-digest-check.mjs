@@ -45,7 +45,7 @@ const entrySrc = readFileSync(entryPath, "utf-8");
 const tapesField = record.tapes || {};
 
 const { buildTapesFromBlobs } = await import(join(STATIC, "rtap.mjs"));
-const { buildRequestEpilogue, REPLAY_OUTPUT_KEY } = await import(join(STATIC, "request-replay.mjs"));
+const { buildRequestEpilogue, deriveActivationSurface, REPLAY_OUTPUT_KEY } = await import(join(STATIC, "request-replay.mjs"));
 const getArenaJs = (await import(join(STATIC, "qjs_arena_wasm.js"))).default;
 
 const b64 = (s) => (s ? Uint8Array.from(Buffer.from(s, "base64")) : null);
@@ -83,6 +83,7 @@ try {
     request_reads: b64(tapesField.request_reads_tape_b64),
     fetch_responses: b64(tapesField.fetch_responses_tape_b64),
     trigger_payload: b64(tapesField.trigger_payload_tape_b64),
+    activation: b64(tapesField.activation_tape_b64),
   });
 } catch (e) {
   out({ replayed: null, error: "tape decode failed: " + e.message });
@@ -108,10 +109,22 @@ for (const pair of extraArgs) {
   Module.module_sources[pair.slice(0, eq)] = readFileSync(pair.slice(eq + 1), "utf-8");
 }
 
+// The payload surface exactly as the replay shell derives it. A payload the
+// record kept only a POINTER to arrives the way the dashboard folds it into a
+// bundle: `record.resolved_bodies`, `{"channel/index": "<base64>"}`, fetched
+// through the logs door by the caller.
+const resolvedBodies = {};
+for (const [addr, bytesB64] of Object.entries(record.resolved_bodies || {})) {
+  resolvedBodies[addr] = { status: 200, source: "pool", bytes: b64(bytesB64) };
+}
+const surface = deriveActivationSurface({
+  activation: record.activation || "inbound", tapes, resolvedBodies,
+});
+
 const epilogue = buildRequestEpilogue({
   record: { method: record.method, path: record.path, host: record.host },
   requestReads: tapes.request_reads,
-  bodyBytes: b64(tapesField.request_body_b64),
+  bodyBytes: surface.bodyBytes ?? null,
   exportName: tapesField.export || "default",
   activation: record.activation || "inbound",
 });
