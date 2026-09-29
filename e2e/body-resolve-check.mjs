@@ -218,15 +218,15 @@ function fetchEntry({
   check(blind.bodyBytes === null && typeof blind.payloadUnresolved?.reason === "string",
     "a ref-bearing entry with no resolution replayed as empty — the pre-door bug");
 
-  // A small inbound body still comes off the record, not off the tape:
-  // the surface leaves `bodyBytes` null so the shell's
-  // `surface.bodyBytes ?? bundle.request.body_bytes` keeps its meaning.
+  // A small inbound body comes off the tape entry itself — the record
+  // carries no other copy of it (v12).
   const inline = deriveActivationSurface({
     activation: "inbound",
     tapes: { trigger_payload: [{ pool_ref: poolRef(0), ref_len: 2, inline_bytes: enc.encode("hi") }] },
   });
-  check(inline.bodyBytes === null && inline.payloadUnresolved === null,
-    "an inline inbound body changed hands");
+  check(inline.bodyBytes && new TextDecoder().decode(inline.bodyBytes) === "hi" &&
+        inline.payloadUnresolved === null,
+    "an inline inbound body never reached the surface");
 }
 
 {

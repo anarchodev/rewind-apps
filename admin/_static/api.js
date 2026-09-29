@@ -176,9 +176,9 @@ async function resolveRecordBodies(instance_id, record, tapesField) {
 
   const jobs = [];
   // trigger_payload/0 — the activation's Msg: an inbound request body, or
-  // a continuation's `{"ctx": …}` envelope. Skipped when the record
-  // already carries the body inline, which is the common case.
-  if (tapesField.trigger_payload_tape_b64 && !tapesField.request_body_b64) {
+  // a continuation's `{"ctx": …}` envelope. The door answers `carried` for
+  // one that rode the tape inline, which the shell already has.
+  if (tapesField.trigger_payload_tape_b64) {
     jobs.push(["trigger_payload", 0]);
   }
   // fetch_responses — only a `fetch_chunk` activation takes its payload
@@ -758,10 +758,10 @@ export const api = {
       // request (the channels were empty).
       fetch_responses: decodeB64(tapesField.fetch_responses_tape_b64),
       trigger_payload: decodeB64(tapesField.trigger_payload_tape_b64),
+      // The activation's own record: the resolved export, and the Msg of a
+      // ws_message (the [opcode][data] frame) or a wake_batch (the bag).
+      activation: decodeB64(tapesField.activation_tape_b64),
     };
-    // The WS-frame / activation Msg bytes ([opcode][data]) for a
-    // ws_message activation — raw, not an RTAP tape.
-    const activationBytes = decodeB64(tapesField.activation_bytes_b64);
     // The resolved dispatch export the activation actually ran (the
     // `{to}` override or onFetchResult/Chunk/Done), recorded server-side
     // per commit 41f9d30. Emitted only when set; absent for a plain
@@ -782,7 +782,6 @@ export const api = {
     // no-op today (one engine), but threaded now so old captures stay
     // attributable. 0 = unknown (pre-stamp / non-handler record).
     const js_engine_version = tapesField.js_engine_version ?? 0;
-    const bodyBytes = decodeB64(tapesField.request_body_b64);
     // Out-of-line payloads, resolved through the body door and keyed by
     // tape address. Best-effort as a WHOLE (a door outage must not stop a
     // replay from opening) but never per-entry: each address that was
@@ -812,8 +811,6 @@ export const api = {
         method: record.method,
         path: record.path,
         host: record.host,
-        body_bytes: bodyBytes,
-        body_truncated: !!tapesField.request_body_truncated,
       },
       response: {
         status: record.status,
@@ -834,8 +831,6 @@ export const api = {
       // The recorded export the shell should invoke. Null → the shell
       // derives it from `activation` (exportForActivation).
       entry_fn: exportName,
-      activation_bytes: activationBytes,
-      activation_bytes_truncated: !!tapesField.activation_bytes_truncated,
       // `{channel}/{index}` → {status:200, source, len, bytes} for a
       // resolved payload, or {status, error} for one the door refused.
       // The `bytes` Uint8Arrays survive the shell's sessionStorage bundle

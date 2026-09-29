@@ -202,6 +202,12 @@ export function locatePayload(entry, index, channel, resolvedBodies) {
 }
 
 export function deriveActivationSurface({ activation = "inbound", tapes = {}, activationBytes = null, resolvedBodies = null } = {}) {
+    // The Msg of a WS frame or a wake batch rides the record's `activation`
+    // tape; a caller holding the bytes some other way may still pass them.
+    if (activationBytes == null) {
+        const a0 = (tapes.activation || [])[0];
+        if (a0?.inline_bytes?.length) activationBytes = a0.inline_bytes;
+    }
     // Prod installs `request.activation = {kind, ...payload}` on EVERY
     // activation, inbound included (globals_request.zig) — a handler that
     // branches on `request.activation.kind` is doing the documented thing.
@@ -247,12 +253,12 @@ export function deriveActivationSurface({ activation = "inbound", tapes = {}, ac
     }
     if (envelope && "ctx" in envelope) out.ctx = envelope.ctx;
 
-    // An inbound activation's Msg IS the request body. Only a payload the
-    // RECORD did not carry inline is taken from here: a body under the
-    // inline cap already rides `request_body_b64`, which the shell hands
-    // to the epilogue directly, and re-deriving it would be one more way
-    // for the two to disagree.
-    if (INBOUND_KINDS.has(activation) && trigger?.bytes && trigger.source !== "carried") {
+    // An inbound activation's Msg IS the request body — carried on the
+    // entry under the inline cap, resolved through the body door over it.
+    // The record carries no other copy. A resume's `{"ctx": …}` envelope is
+    // its body too, when the handler read it.
+    const bodyRead = (tapes.request_reads || []).some((r) => r.kind === READ_KIND_BODY_READ);
+    if (trigger?.bytes && (INBOUND_KINDS.has(activation) || bodyRead)) {
         out.bodyBytes = trigger.bytes;
     }
 

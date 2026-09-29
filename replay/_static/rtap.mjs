@@ -74,7 +74,13 @@ export const RTAP_MAGIC   = 0x52544150;
 // distribution, so the arena is served already-decrypted over TLS.
 // The field is decoded and kept so the shape stays faithful and so a
 // bundle that round-trips through here does not silently drop it.
-export const RTAP_VERSION = 11;
+// 11 → 12 by sealing INLINE payloads (rove#975): a `body_key` beside
+// `inline_bytes` means those bytes are sealed, and the `activation`
+// channel gained a trailing `body_key` — its entry now reaches the record
+// as `activation_tape_b64` instead of a raw `activation_bytes_b64`. The
+// logs door opens every payload and strips every wrap before a record
+// reaches this reader, so a v12 tape here is always plaintext.
+export const RTAP_VERSION = 12;
 // The oldest layout this reader still understands (mirrors
 // src/replay/tape_decode.zig MIN_VERSION).
 //
@@ -106,6 +112,7 @@ export const CHANNEL_MODULE        = 1;
 export const CHANNEL_FETCH_RESPONSES = 2;
 export const CHANNEL_TRIGGER_PAYLOAD = 3;
 export const CHANNEL_REQUEST_READS = 4;
+export const CHANNEL_ACTIVATION    = 5;
 
 // `request_reads` entry kinds — mirrors `RequestReadKind` in
 // src/tape/root.zig.
@@ -277,6 +284,18 @@ function decodeEntry(channel, bytes, version) {
             const value = readUtf8();
             return { kind, name, value };
         }
+        // The activation's own record (src/tape/root.zig `ActivationEntry`):
+        // the resolved export, and the Msg for the kinds that keep it here —
+        // a wake_batch's drained wakes bag, a ws_message's [opcode][data]
+        // frame. The record carries this tape instead of a raw
+        // `activation_bytes_b64` side field (v12).
+        case CHANNEL_ACTIVATION: {
+            const export_name = readUtf8();
+            const pool_ref = readPoolRef(view, bytes, off); off += POOL_REF_WIRE_LEN;
+            const inline_bytes = readLenPrefixed();
+            const body_key = off < bytes.length ? readLenPrefixed() : new Uint8Array(0);
+            return { export_name, pool_ref, ref_len: pool_ref.len, inline_bytes, body_key };
+        }
         default:
             throw new Error("unknown RTAP channel " + channel);
     }
@@ -376,6 +395,7 @@ export function buildTapesFromBlobs(blobs) {
         // the flattened result (rove#230).
         fetch_responses: CHANNEL_FETCH_RESPONSES,
         trigger_payload: CHANNEL_TRIGGER_PAYLOAD,
+        activation: CHANNEL_ACTIVATION,
     };
     for (const name of Object.keys(map)) {
         const blob = blobs[name];
