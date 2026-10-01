@@ -1,0 +1,270 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Data Processing Agreement — rewind.js</title>
+  <meta name="description" content="The data processing agreement between rewind.js customers and Loop46, Inc., with processing details and security measures.">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' rx='4' fill='%2311111b'/%3E%3Crect x='1.5' y='3' width='13' height='10' rx='5' fill='%23cba6f7'/%3E%3Cpolygon points='7,5 7,11 4.3,8' fill='%2311111b'/%3E%3Cpolygon points='11,5 11,11 8.3,8' fill='%2311111b'/%3E%3C/svg%3E">
+  <!-- Fully self-contained, like privacy.html: no rewind.css (it imports
+       Google Fonts) and no other external request. -->
+  <style>
+    :root {
+      color-scheme: dark;
+      --crust: #11111b; --mantle: #181825; --base: #1e1e2e; --surface-0: #313244;
+      --text-0: #cdd6f4; --text-1: #bac2de; --text-2: #a6adc8; --text-3: #7f849c;
+      --c-brand: #cba6f7; --c-warn: #f9e2af;
+      --font-sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+      --font-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    }
+    body { margin: 0; background: var(--base); color: var(--text-1); font-family: var(--font-sans); }
+    .doc { max-width: 720px; margin: 0 auto; padding: 56px 24px 96px; }
+    .doc h1 { font-size: 38px; line-height: 1.15; letter-spacing: -1px; margin: 0 0 10px; color: var(--text-0); }
+    .doc h2 { font-size: 21px; margin: 44px 0 12px; color: var(--text-0); letter-spacing: -0.3px; }
+    .doc h3 { font-size: 16px; margin: 26px 0 8px; color: var(--text-1); }
+    .doc p, .doc li { font-size: 15.5px; line-height: 1.65; color: var(--text-2); }
+    .doc ul { padding-left: 22px; margin: 10px 0; }
+    .doc li { margin-bottom: 7px; }
+    .doc a { color: var(--c-brand); }
+    .doc strong { color: var(--text-1); }
+    .doc code { font-family: var(--font-mono); font-size: 13.5px; color: var(--text-1); }
+    .doc table { width: 100%; border-collapse: collapse; margin: 14px 0; font-size: 14px; }
+    .doc th, .doc td { text-align: left; padding: 9px 12px; border-bottom: 1px solid var(--surface-0); color: var(--text-2); vertical-align: top; }
+    .doc th { color: var(--text-1); font-weight: 600; }
+    .updated { font-family: var(--font-mono); font-size: 13px; color: var(--text-3); margin: 0 0 34px; }
+    .callout { border: 1px solid var(--surface-0); border-left: 3px solid var(--c-brand);
+               background: var(--mantle); padding: 16px 18px; margin: 20px 0; border-radius: 0 8px 8px 0; }
+    .callout p { margin: 0; font-size: 14.5px; }
+    .callout p + p { margin-top: 10px; }
+    .draft { border: 1px solid var(--c-warn); color: var(--c-warn); padding: 12px 16px; border-radius: 8px;
+             font-family: var(--font-mono); font-size: 13px; margin: 0 0 30px; }
+    .decide { background: rgba(249, 226, 175, .14); color: var(--c-warn); font-family: var(--font-mono);
+              font-size: 12.5px; padding: 1px 6px; border-radius: 4px; }
+    .doc footer { margin-top: 56px; padding-top: 20px; border-top: 1px solid var(--surface-0);
+                  font-size: 13px; color: var(--text-3); }
+  </style>
+</head>
+<body>
+<div class="doc">
+
+  <p class="updated"><a href="/">&larr; rewind.js</a></p>
+
+  <!-- DRAFT MARKERS: the .draft banner and every .decide span must be gone
+       before this page is published. They mark text awaiting sign-off. -->
+  <p class="draft">DRAFT — not in effect. Items marked DECISION are awaiting sign-off.</p>
+
+  <h1>Data Processing Agreement</h1>
+  <p class="updated">Version 1 · Effective <span class="decide">DECISION: publication date</span></p>
+
+  <p>This agreement covers personal data that reaches rewind.js through the
+     apps you run on it — above all, your users' data. It forms part of the
+     <a href="/terms">Terms of Service</a> between you ("Customer") and
+     Loop46, Inc., operator of rewind.js ("we")
+     <span class="decide">DECISION: incorporated by accepting the Terms, or
+     signed on request</span>. Where it and the Terms conflict about personal
+     data, this agreement wins.</p>
+  <p>Data about you as our account holder — your email, your team, your
+     billing — is not covered here. For that we are the controller, and our
+     <a href="/privacy">privacy policy</a> applies.</p>
+
+  <div class="callout">
+    <p><strong>rewind.js records requests so it can replay them.</strong>
+       Request bodies, the values your handlers read from their stores, and
+       the responses to their outbound requests are stored by design, for as
+       long as section 9 describes. If you route personal data through an app,
+       it is recorded. Annex 1 lists exactly what. Do not send special-category
+       data or credentials through rewind.js unless you have decided that is
+       acceptable for your users.</p>
+  </div>
+
+  <h2>1. Roles</h2>
+  <p>You are the controller of the personal data your apps process (or a
+     processor acting for your own customer, in which case we are your
+     subprocessor and this agreement applies in the same way). We are your
+     processor. Terms such as <em>personal data</em>, <em>processing</em>,
+     <em>controller</em>, <em>processor</em> and <em>data subject</em> have
+     their meaning under the EU and UK GDPR; this agreement also applies to
+     personal data protected by other laws that require such terms.</p>
+
+  <h2>2. Instructions</h2>
+  <p>We process personal data only to provide rewind.js to you, as the Terms
+     describe, and on your documented instructions. The code you deploy, the
+     configuration you set and the requests you make through the dashboard and
+     APIs are your instructions. If we believe an instruction breaks data
+     protection law, we will tell you. If the law requires us to process data
+     otherwise, we will tell you first unless the law forbids it.</p>
+
+  <h2>3. Confidentiality</h2>
+  <p>Only people who need access to operate the service have it, and each is
+     bound by confidentiality. Today that is
+     <span class="decide">DECISION: state headcount, e.g. "one person"</span>.</p>
+
+  <h2>4. Security</h2>
+  <p>We maintain the measures in Annex 2 and will not reduce their overall
+     protection while this agreement is in force.</p>
+
+  <h2>5. Subprocessors</h2>
+  <p>You authorise the subprocessors on our
+     <a href="/subprocessors">subprocessor list</a>. We impose data protection
+     obligations on each that are no less protective than these, and we remain
+     responsible for them.</p>
+  <p>We will notify you of a new subprocessor at least
+     <span class="decide">DECISION: 30</span> days before it starts processing
+     your data, by email to account owners and on the list itself. You may
+     object, with reasons, within that period. If we cannot address the
+     objection, you may end the affected service before the change takes
+     effect, and we will refund any prepaid fees for the period after it.</p>
+
+  <h2>6. Helping you answer your users</h2>
+  <p>Requests from your users go to you. If one reaches us, we will pass it
+     to you and not answer it ourselves. Responsibility divides along what each
+     of us can actually see:</p>
+  <table>
+    <tr><th>Data</th><th>Who acts</th><th>How</th></tr>
+    <tr><td>Your apps' key-value stores</td><td>You</td>
+        <td>Your data model is yours — only your code knows which rows belong
+            to whom. Read, export, correct and delete with your own code or
+            the dashboard's export.</td></tr>
+    <tr><td>Request records, replays, and stored bodies — which you cannot
+            edit</td><td>You call, we execute</td>
+        <td>Tie a person's requests to them with <code>shredKey(id)</code>;
+            <code>shredKey.destroy(id)</code> then makes their recorded
+            payloads, and the store values written under that key,
+            permanently unreadable everywhere. Records a request never tied to a
+            person can only be erased with the whole app.</td></tr>
+    <tr><td>Everything else</td><td>You ask, we assist</td>
+        <td>Write to <a href="mailto:privacy@loop46.com">privacy@loop46.com</a>.</td></tr>
+  </table>
+  <p><code>shredKey</code> does not reach store key names, tags, request paths
+     and query strings, or recorded header values (Annex 1). Keep identifying
+     data out of them; an erasure that needs them reached is one we can only
+     honour by deleting the app.</p>
+  <p>We will also give you the information you reasonably need for data
+     protection impact assessments and consultations with regulators.</p>
+
+  <h2>7. Personal data breaches</h2>
+  <p>We will notify you without undue delay, and in any case within
+     <span class="decide">DECISION: 48 / 72</span> hours, after becoming aware
+     of a personal data breach affecting your data. We will tell you what we
+     know — what happened, what data and roughly how many people, what we are
+     doing — and add to it as we learn more.</p>
+
+  <h2>8. International transfers</h2>
+  <p>We process data in Canada and the United States (Annex 1). We are a
+     United States company. For transfers of personal data from the EEA,
+     the UK or Switzerland:</p>
+  <ul>
+    <li>to <strong>Canada</strong>, we rely on the European Commission's
+        adequacy decision for Canada and the corresponding UK and Swiss
+        decisions;</li>
+    <li>to the <strong>United States</strong>,
+        <span class="decide">DECISION: the EU Standard Contractual Clauses
+        (Commission Decision 2021/914), Module 2 (controller to processor) and
+        Module 3 (processor to processor), incorporated by reference with
+        Annexes 1 and 2 of this agreement as their annexes, plus the UK
+        Addendum and the Swiss amendments — OR certification under the EU–US
+        Data Privacy Framework</span>.</li>
+  </ul>
+  <p>On request we will provide a transfer impact assessment for the US leg.</p>
+
+  <h2>9. Retention, deletion and return</h2>
+  <ul>
+    <li><strong>Store data and code</strong> stays until you delete it, the
+        app, or your account.</li>
+    <li><strong>Request records</strong> stay readable for your plan's
+        retention window (7, 30 or 365 days). Past the window they are hidden
+        from every way of reading them. <strong>Automatic physical deletion
+        past the window is not built yet</strong>; until it is, hidden records
+        remain in our storage. We will update this section when it ships.</li>
+    <li><strong>Return.</strong> At any time, and before you leave, you can
+        export each app's store data and code from the dashboard. A copy of
+        request records is available on request.</li>
+    <li><strong>Deletion at the end of service.</strong> When an app or your
+        account is deleted, the app's encryption key is destroyed on every
+        server, so all its recorded payloads become unreadable wherever they
+        are stored. Its code, static files, data store and exports are
+        deleted. The record fields listed in Annex 1 as unencrypted remain
+        hidden in storage until automatic deletion past the retention window
+        ships.</li>
+  </ul>
+
+  <h2>10. Audits</h2>
+  <p>We will make available the information needed to show we meet this
+     agreement, and answer reasonable security questionnaires. We have no
+     third-party certification today. <span class="decide">DECISION: on-site
+     or independent audits — e.g. once a year, at your cost, on 30 days'
+     notice, or where a regulator requires it</span>.</p>
+
+  <h2>11. Term and liability</h2>
+  <p>This agreement lasts as long as we process personal data for you.
+     Liability under it is subject to the limits in the Terms, except where the
+     law does not allow that.</p>
+
+  <h2 id="annex-1">Annex 1 — Details of processing</h2>
+  <table>
+    <tr><th>Subject matter</th><td>Hosting and running the Customer's apps on rewind.js, and recording their requests for replay and debugging.</td></tr>
+    <tr><th>Duration</th><td>The term of the Customer's account, plus the retention described in section 9.</td></tr>
+    <tr><th>Nature and purpose</th><td>Receiving requests and running the Customer's code against them; storing the Customer's app data; recording each request, its inputs and its outbound results so it can be inspected and replayed; making outbound HTTP requests the Customer's code asks for.</td></tr>
+    <tr><th>Data subjects</th><td>People who send requests to the Customer's apps, and anyone whose personal data the Customer's apps store or fetch. Determined by the Customer.</td></tr>
+    <tr><th>Personal data</th><td>Whatever the Customer's apps receive, store or fetch. Determined by the Customer. The platform records, per request:
+      <ul>
+        <li>method, host, and path including query string; status; timing; console output; exceptions; tags;</li>
+        <li>the names of all request headers, and the values of those the app reads, including cookies;</li>
+        <li>the request body, whether or not the app reads it;</li>
+        <li>values read from the app's store, and the keys it writes;</li>
+        <li>headers and bodies of responses to the app's outbound requests;</li>
+        <li>the client IP address, only if the app reads it — masked to /24 (IPv4) or /48 (IPv6) unless the app deliberately requests the full address.</li>
+      </ul>
+      Response bodies are not recorded.</td></tr>
+    <tr><th>Special categories</th><td>None intended by us. The Customer decides whether its apps process any, and is responsible for that decision in light of the recording described above.</td></tr>
+    <tr><th>Where</th><td>Running apps, their stores and the replicated log: Beauharnois, Canada. Request records, bodies, code and files: Virginia, USA.</td></tr>
+  </table>
+
+  <h2 id="annex-2">Annex 2 — Security measures</h2>
+  <h3>In place</h3>
+  <ul>
+    <li><strong>Encryption in transit</strong>: TLS on every connection from
+        the internet, with certificates issued per host. Traffic between our
+        servers runs over a private network inside one datacenter and is not
+        separately encrypted.</li>
+    <li><strong>Encryption at rest, for payloads</strong>: recorded request
+        bodies, outbound responses and message payloads, the replicated write
+        log, and store values written under <code>shredKey</code> are encrypted
+        with AES-256-GCM under per-app keys (or per-person keys the app names).
+        Key files are themselves encrypted under a cluster key.</li>
+    <li><strong>Erasure by key destruction</strong>, per person
+        (<code>shredKey.destroy</code>) and per app (on deletion).</li>
+    <li><strong>Isolation</strong>: each app has its own replicated store,
+        its own storage prefix, its own keys, and a fresh JavaScript context
+        for every request; session cookies are scoped to a single host.</li>
+    <li><strong>Resource limits</strong>: per-request time and memory limits;
+        automatic pausing of apps that repeatedly exceed them.</li>
+    <li><strong>Outbound controls</strong>: outbound requests cannot reach
+        private, loopback, link-local or metadata addresses; they are
+        rate-limited per plan and off on the free plan.</li>
+    <li><strong>Minimisation</strong>: client IPs masked by default; header
+        values recorded only when read; response bodies not recorded.</li>
+    <li><strong>Replication</strong>: every write is stored on a majority of
+        three servers before it is acknowledged.</li>
+    <li><strong>Access</strong>: production access is limited to our
+        operators; customer-facing access goes through sign-in by email
+        link, with link tokens stored hashed.</li>
+  </ul>
+  <h3>Not in place — stated so you can judge</h3>
+  <ul>
+    <li>Record fields other than payloads (Annex 1), store values not written
+        under <code>shredKey</code>, store key names, code and static files are
+        not encrypted by us, and we do not request encryption from our storage
+        provider.</li>
+    <li>All three servers are in one datacenter: replication protects against
+        a server failing, not against the site failing.</li>
+    <li>No independent security certification
+        <span class="decide">DECISION: confirm — and no external penetration
+        test</span> yet.</li>
+  </ul>
+
+  <footer>© 2026 Loop46, Inc. · <a href="/">rewind.js</a> · <a href="/support">Support</a></footer>
+
+</div>
+</body>
+</html>

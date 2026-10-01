@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Subprocessors — rewind.js</title>
+  <meta name="description" content="Who processes personal data in rewind.js apps on our behalf, and where.">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' rx='4' fill='%2311111b'/%3E%3Crect x='1.5' y='3' width='13' height='10' rx='5' fill='%23cba6f7'/%3E%3Cpolygon points='7,5 7,11 4.3,8' fill='%2311111b'/%3E%3Cpolygon points='11,5 11,11 8.3,8' fill='%2311111b'/%3E%3C/svg%3E">
+  <!-- Fully self-contained, like privacy.html: no rewind.css (it imports
+       Google Fonts) and no other external request. -->
+  <style>
+    :root {
+      color-scheme: dark;
+      --crust: #11111b; --mantle: #181825; --base: #1e1e2e; --surface-0: #313244;
+      --text-0: #cdd6f4; --text-1: #bac2de; --text-2: #a6adc8; --text-3: #7f849c;
+      --c-brand: #cba6f7; --c-warn: #f9e2af;
+      --font-sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+      --font-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    }
+    body { margin: 0; background: var(--base); color: var(--text-1); font-family: var(--font-sans); }
+    .doc { max-width: 720px; margin: 0 auto; padding: 56px 24px 96px; }
+    .doc h1 { font-size: 38px; line-height: 1.15; letter-spacing: -1px; margin: 0 0 10px; color: var(--text-0); }
+    .doc h2 { font-size: 21px; margin: 44px 0 12px; color: var(--text-0); letter-spacing: -0.3px; }
+    .doc h3 { font-size: 16px; margin: 26px 0 8px; color: var(--text-1); }
+    .doc p, .doc li { font-size: 15.5px; line-height: 1.65; color: var(--text-2); }
+    .doc ul { padding-left: 22px; margin: 10px 0; }
+    .doc li { margin-bottom: 7px; }
+    .doc a { color: var(--c-brand); }
+    .doc strong { color: var(--text-1); }
+    .doc code { font-family: var(--font-mono); font-size: 13.5px; color: var(--text-1); }
+    .doc table { width: 100%; border-collapse: collapse; margin: 14px 0; font-size: 14px; }
+    .doc th, .doc td { text-align: left; padding: 9px 12px; border-bottom: 1px solid var(--surface-0); color: var(--text-2); vertical-align: top; }
+    .doc th { color: var(--text-1); font-weight: 600; }
+    .updated { font-family: var(--font-mono); font-size: 13px; color: var(--text-3); margin: 0 0 34px; }
+    .callout { border: 1px solid var(--surface-0); border-left: 3px solid var(--c-brand);
+               background: var(--mantle); padding: 16px 18px; margin: 20px 0; border-radius: 0 8px 8px 0; }
+    .callout p { margin: 0; font-size: 14.5px; }
+    .callout p + p { margin-top: 10px; }
+    .draft { border: 1px solid var(--c-warn); color: var(--c-warn); padding: 12px 16px; border-radius: 8px;
+             font-family: var(--font-mono); font-size: 13px; margin: 0 0 30px; }
+    .decide { background: rgba(249, 226, 175, .14); color: var(--c-warn); font-family: var(--font-mono);
+              font-size: 12.5px; padding: 1px 6px; border-radius: 4px; }
+    .doc footer { margin-top: 56px; padding-top: 20px; border-top: 1px solid var(--surface-0);
+                  font-size: 13px; color: var(--text-3); }
+  </style>
+</head>
+<body>
+<div class="doc">
+
+  <p class="updated"><a href="/">&larr; rewind.js</a></p>
+
+  <!-- DRAFT MARKERS: the .draft banner and every .decide span must be gone
+       before this page is published. They mark text awaiting sign-off. -->
+  <p class="draft">DRAFT — not in effect. Items marked DECISION are awaiting sign-off.</p>
+
+  <h1>Subprocessors</h1>
+  <p class="updated">Version 1 · <span class="decide">DECISION: publication date</span></p>
+
+  <p>The companies that process personal data in your apps on our behalf, as
+     our <a href="/dpa">data processing agreement</a> describes. We notify
+     account owners by email at least <span class="decide">DECISION: 30</span>
+     days before adding one, and record every change at the bottom of this
+     page.</p>
+
+  <h2>Your apps' data</h2>
+  <table>
+    <tr><th>Company</th><th>What for</th><th>Data</th><th>Location</th></tr>
+    <tr><td>OVHcloud — <span class="decide">DECISION: confirm contracting entity (Canada)</span></td>
+        <td>Servers that run apps, their stores and the replicated log</td>
+        <td>Everything apps process</td><td>Beauharnois, Canada</td></tr>
+    <tr><td>OVHcloud — <span class="decide">DECISION: confirm contracting entity (OVH US LLC)</span></td>
+        <td>Object storage</td>
+        <td>Request records and bodies, code, static files, exports; payloads encrypted</td><td>Virginia, USA</td></tr>
+    <tr><td>Grafana Labs (Grafana Cloud)</td>
+        <td>Operational metrics, service logs and alerting</td>
+        <td>App identifiers and hostnames, including custom domains; no request contents</td><td>USA</td></tr>
+  </table>
+
+  <h2>Not subprocessors of your apps' data</h2>
+  <p>These process data about you as an account holder, for which we are the
+     controller; see our <a href="/privacy">privacy policy</a>.</p>
+  <table>
+    <tr><th>Company</th><th>What for</th><th>Location</th></tr>
+    <tr><td>Resend</td><td>Sign-in and team-invitation email</td><td>USA</td></tr>
+    <tr><td>Tuta (Tutao GmbH)</td><td>Our @loop46.com inboxes — including anything you send us</td><td>Germany</td></tr>
+    <tr><td>Stripe</td><td>Payments, once paid plans launch</td><td>USA</td></tr>
+  </table>
+  <p>If your app sends email or calls another service, that provider works for
+     you under your own account with them — for example, an app's
+     <code>email.send</code> uses the app's own Resend key. They are your
+     processors, not ours.</p>
+
+  <h2>Changes</h2>
+  <table>
+    <tr><th>Version</th><th>Date</th><th>Change</th></tr>
+    <tr><td>1</td><td><span class="decide">DECISION: date</span></td><td>First published list.</td></tr>
+  </table>
+
+  <footer>© 2026 Loop46, Inc. · <a href="/">rewind.js</a> · <a href="/support">Support</a></footer>
+
+</div>
+</body>
+</html>
