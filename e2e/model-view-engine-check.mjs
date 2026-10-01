@@ -59,7 +59,7 @@ const tapes = {
 // connection effect.
 const ENTRY = "index.mjs";
 const SOURCE = `
-export default function () {
+export default function ({ kv, after }) {
   const a = kv.get("cart/1");
   const missing = kv.get("cart/missing");
   kv.set("cart/1", "8");
