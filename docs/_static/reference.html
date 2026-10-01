@@ -1289,6 +1289,28 @@ return next();
 </table>
 <p><b>Returns</b> <code>void</code></p>
 <pre><code>platform.instances.deployStarter("acme-prod");</code></pre>
+<h4 id="platform-instances-incarnation"><code>platform.instances.incarnation(name)</code></h4>
+<p>The instance's storage incarnation — a token naming this tenant LIFETIME. Deprovisioning a name and provisioning it again yields a different token, so state keyed by name (ownership) should record the incarnation beside it and compare before trusting it. An instance keyed by name alone (provisioned before incarnations existed) returns <code>"legacy"</code>. Recorded on the tape, so replay sees the value the live run saw. Throws <code>Error{code:"InstanceNotFound"}</code> if <code>name</code> doesn't resolve.</p>
+<table><tr><th>Param</th><th>Type</th><th></th></tr>
+<tr><td><code>name</code></td><td><code>string</code></td><td><p>Target instance id.</p></td></tr>
+</table>
+<p><b>Returns</b> <code>string</code></p>
+<pre><code>export default ({ kv, platform }) =&gt; {
+const id = "acme-prod";
+const owned = kv.get("instance/" + id + "/incarnation") ===
+platform.instances.incarnation(id);
+return { owned };
+};</code></pre>
+<h4 id="platform-instances-usage"><code>platform.instances.usage(name)</code></h4>
+<p>This node's kv footprint for one instance. <code>usedBytes</code> is the figure the plan's <code>max_kv_bytes</code> cap is enforced against, and <code>capBytes</code> is that cap as the worker enforces it now (<code>null</code> when the instance is uncapped or its cap is unknown on this node), so a dashboard showing them shows exactly what enforcement reads. Recorded on the tape, like {@link platform.instances.incarnation}. Throws <code>Error{code:"InstanceNotFound"}</code> if <code>name</code> doesn't resolve.</p>
+<table><tr><th>Param</th><th>Type</th><th></th></tr>
+<tr><td><code>name</code></td><td><code>string</code></td><td><p>Target instance id.</p></td></tr>
+</table>
+<p><b>Returns</b> <code>{usedBytes:number, durableBytes:number, overlayBytes:number, entries:number, capBytes:(number|null)</code> — }</p>
+<pre><code>export default ({ platform }) =&gt; {
+const { usedBytes, capBytes } = platform.instances.usage("acme-prod");
+return { usedBytes, capBytes };
+};</code></pre>
 <h4 id="platform-instances-dispatch"><code>platform.instances.dispatch(tenant, module, opts?)</code></h4>
 <p>Run a platform action in another tenant's scope — durably.</p><p>The primitive that unfuses *whose code runs* from *whose data it runs against* (rove#691). <code>module</code> is the platform's own baked <code>__system/…</code> code; it executes on the worker anchoring <code>tenant</code>, under that tenant's lease, proposing into that tenant's own raft group. So the write takes a position in that tenant's activation order, instead of arriving from another tenant's raft log with no order relative to it — and it appears in that tenant's log, because it changed that tenant's data.</p><p>**Webhook semantics, not a call.** This returns as soon as the intent is durable; it does not wait for the action to run. The activation is a NEW SAGA ROOT — an arm that crossed the durability boundary roots its own saga (<code>handler-shape.md</code> §3.2), and a parent in another tenant's namespace is not addressable from this one anyway.</p><p>**At-least-once.** The marker below is the retry: the activation lands on whichever worker anchors <code>tenant</code>, and that node may not lead the target's raft group, in which case the propose faults and the attempt is gone. A watchdog re-fires it. <code>module</code> must therefore be idempotent — it is platform code, so that is a contract we hold, not a hope.</p><p>Admin-only, like the rest of <code>platform.*</code>.</p>
 <table><tr><th>Param</th><th>Type</th><th></th></tr>

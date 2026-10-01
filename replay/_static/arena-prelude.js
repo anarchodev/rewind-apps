@@ -456,6 +456,14 @@
   var GATE_MSG = "platform is only available on the admin handler";
   var gate = function(fn){ return function(){ if (!globalThis.__rove_captured && globalThis.__rove.caps.kv.get(NS_STORE + "admin") !== "1") throw new TypeError(GATE_MSG); return fn.apply(null, arguments); }; };
   var rootStore_r = storeKv(NS_STORE + "r/", "r");
+  // A per-instance platform read (`platform.instances.*`): the hidden row the
+  // harness seeds, or InstanceNotFound — the native's answer for an unknown
+  // name. Read through the per-run kv, where `__rove_store/` is unrecorded.
+  var instanceRow = function(ns, name){
+    var v = globalThis.__rove.caps.kv.get(NS_STORE + ns + name);
+    if (v === null || v === undefined) { var e = new Error("instance not found"); e.code = "InstanceNotFound"; throw e; }
+    return v;
+  };
   // Fetch/subscribe recorder. Ids are unique per run (`ftch_<seq>` — the
   // epilogue resets the counter each activation), NOT prod's ftch_<64hex>:
   // determinism over realism, but distinct so a handler can correlate the
@@ -850,7 +858,21 @@
           okv.delete("_sched/by_id/" + sid);
         }
       },
-      instances: { deployStarter: gate(function(name){ push({ kind: "platform", op: "instances.deployStarter", name: name }); }) },
+      instances: {
+        deployStarter: gate(function(name){ push({ kind: "platform", op: "instances.deployStarter", name: name }); }),
+        // jsPlatformInstancesIncarnation / jsPlatformInstancesUsage: store
+        // reads at `inc/{name}` and `usage/{name}`. The harness seeds both
+        // for every declared instance and a captured tape carries the live
+        // read, so an absent row is exactly prod's InstanceNotFound.
+        incarnation: gate(function(name){
+          if (name === undefined) throw new TypeError("platform.instances.incarnation requires (name)");
+          return instanceRow("inc/", String(name));
+        }),
+        usage: gate(function(name){
+          if (name === undefined) throw new TypeError("platform.instances.usage requires (name)");
+          return JSON.parse(instanceRow("usage/", String(name)));
+        }),
+      },
       // No `auth` verb: the operator-root verdict is `request.rewind.isRoot`,
       // supplied by the world (scenario({ isRoot })) and folded from the
       // root_verdict tape entry — never a call taking the bearer. A token the
@@ -2974,6 +2996,51 @@ __rove_factories.platform = function (caps) {
        */
       deployStarter(name) {
         return sys.instances.deployStarter(name);
+      },
+
+      /**
+       * The instance's storage incarnation — a token naming this tenant
+       * LIFETIME. Deprovisioning a name and provisioning it again yields a
+       * different token, so state keyed by name (ownership) should record
+       * the incarnation beside it and compare before trusting it. An
+       * instance keyed by name alone (provisioned before incarnations
+       * existed) returns `"legacy"`. Recorded on the tape, so replay sees
+       * the value the live run saw. Throws `Error{code:"InstanceNotFound"}`
+       * if `name` doesn't resolve.
+       *
+       * @param {string} name - Target instance id.
+       * @returns {string}
+       * @example
+       * export default ({ kv, platform }) => {
+       *   const id = "acme-prod";
+       *   const owned = kv.get("instance/" + id + "/incarnation") ===
+       *     platform.instances.incarnation(id);
+       *   return { owned };
+       * };
+       */
+      incarnation(name) {
+        return sys.instances.incarnation(name);
+      },
+
+      /**
+       * This node's kv footprint for one instance. `usedBytes` is the
+       * figure the plan's `max_kv_bytes` cap is enforced against, and
+       * `capBytes` is that cap as the worker enforces it now (`null` when
+       * the instance is uncapped or its cap is unknown on this node), so a
+       * dashboard showing them shows exactly what enforcement reads.
+       * Recorded on the tape, like {@link platform.instances.incarnation}.
+       * Throws `Error{code:"InstanceNotFound"}` if `name` doesn't resolve.
+       *
+       * @param {string} name - Target instance id.
+       * @returns {{usedBytes:number, durableBytes:number, overlayBytes:number, entries:number, capBytes:(number|null)}}
+       * @example
+       * export default ({ platform }) => {
+       *   const { usedBytes, capBytes } = platform.instances.usage("acme-prod");
+       *   return { usedBytes, capBytes };
+       * };
+       */
+      usage(name) {
+        return sys.instances.usage(name);
       },
     },
 
