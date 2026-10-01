@@ -15,7 +15,11 @@
 // Per-tenant kv is nested under the instance (`/v1/instances/:id/kv`); there is
 // no `X-Rove-Scope` header anymore.
 
-const BASE_KEY = "rove.admin.api_base";
+// A storage key older builds persisted an API-base override under. Nothing
+// reads it; it is cleared on load so a browser that once stored a value stops
+// carrying it.
+const LEGACY_BASE_KEY = "rove.admin.api_base";
+try { window.localStorage.removeItem(LEGACY_BASE_KEY); } catch (_) { /* storage blocked */ }
 
 export class ApiError extends Error {
   constructor(status, statusText, body) {
@@ -25,12 +29,11 @@ export class ApiError extends Error {
   }
 }
 
-/// The admin API base. Defaults to this page's origin (prod shape:
-/// same-origin as the UI bundle). Override via `?api=` once and it
-/// sticks in localStorage — useful for dev against a remote worker.
-function adminBase() {
-  const override = window.__rove_api_base ?? localStorage.getItem(BASE_KEY);
-  if (override && override.length > 0) return override.replace(/\/+$/, "");
+/// The admin API base: this page's own origin, always. Every call carries the
+/// session cookie, so the base is not something a URL, a query parameter, or
+/// stored state may choose — a page that could be pointed elsewhere would send
+/// the operator's requests to whoever wrote the link.
+export function adminBase() {
   return window.location.origin;
 }
 

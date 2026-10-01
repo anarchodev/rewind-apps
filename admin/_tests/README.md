@@ -20,3 +20,10 @@ rewind test ./admin      # billing, release, teams, doors, code_pane_doors
   same `crypto.sha256(email.trim().toLowerCase())` (`userHashFor`) the handler uses.
 - **Bodyless requests** (GET/DELETE) need no special handling — an authored inbound with
   no `body` reads `request.text` as `""`, matching prod (rove `2e27da3`).
+
+## Browser-bundle checks (node)
+
+`_api_base.node.mjs` loads `_static/index.html`'s inline scripts and `_static/api.js`
+under node with a stubbed `window` and asserts every request goes to the page's own
+origin. The handler engine never loads `_static/`, so these run as
+`node admin/_tests/<file>`; the leading `_` keeps `rewind test` from picking them up.
