@@ -69,6 +69,11 @@ export function render(root, { goto, api, params, who }) {
       <p class="renewal-line" hidden></p>
     </section>
     <section class="tiers"></section>
+    <section class="invoices">
+      <h2>Invoices</h2>
+      <div class="invoice-body"></div>
+      <button type="button" class="invoice-more" hidden>Load more</button>
+    </section>
     <section class="payment" hidden>
       <h2>Payment details</h2>
       <div class="payment-element"></div>
@@ -214,4 +219,127 @@ export function render(root, { goto, api, params, who }) {
   }
 
   api.getBilling(aid).then((b) => { billing = b; renderState(); }).catch(showError);
+
+  // ── Invoice history ────────────────────────────────────────────────
+  // Payment is embedded, so there is no Stripe portal: this is where an
+  // owner sees what was charged, gets the PDF, and pays an open invoice.
+  // Members see the plan above but not invoices (they carry payer details).
+  const invBody = wrap.querySelector(".invoice-body");
+  const moreBtn = wrap.querySelector(".invoice-more");
+  let invTable = null, cursor = null;
+
+  async function loadInvoices(next = false) {
+    if (!amOwner) {
+      invBody.innerHTML = `<p class="muted">Only an account owner can see invoices.</p>`;
+      return;
+    }
+    moreBtn.disabled = true;
+    try {
+      const page = await api.listInvoices(aid, next ? cursor : null);
+      if (!next) { invBody.replaceChildren(); invTable = null; }
+      if (!invTable && page.invoices.length === 0) {
+        invBody.innerHTML = `<p class="muted">No invoices yet. Your first one appears here when a paid plan starts.</p>`;
+      } else {
+        if (!invTable) {
+          invTable = document.createElement("table");
+          invTable.className = "instance-table invoice-table";
+          invTable.innerHTML = `<thead><tr><th>Date</th><th>Invoice</th><th>Period</th>
+            <th class="num">Amount</th><th>Status</th><th></th></tr></thead><tbody></tbody>`;
+          invBody.appendChild(invTable);
+        }
+        const tb = invTable.querySelector("tbody");
+        for (const inv of page.invoices) tb.appendChild(invoiceRow(inv));
+      }
+      cursor = page.next_cursor;
+      moreBtn.hidden = !page.has_more || !cursor;
+    } catch (e) {
+      invBody.innerHTML = "";
+      const p = document.createElement("p");
+      p.className = "muted";
+      p.textContent = "Invoices could not be loaded. " +
+        ((e instanceof ApiError && e.body && e.body.error) || "Try again shortly.");
+      invBody.appendChild(p);
+    } finally {
+      moreBtn.disabled = false;
+    }
+  }
+  moreBtn.addEventListener("click", () => loadInvoices(true));
+  loadInvoices();
+}
+
+/// One invoice as a table row. The state is a word (with an icon when it
+/// needs action), never color alone; an unpaid invoice links to Stripe's own
+/// payment page for it.
+function invoiceRow(inv) {
+  const tr = document.createElement("tr");
+  const st = invoiceState(inv, Date.now());
+  const td = (text, cls) => {
+    const c = document.createElement("td");
+    if (cls) c.className = cls;
+    c.textContent = text;
+    tr.appendChild(c);
+    return c;
+  };
+  td(inv.created_ms ? fmtDate(inv.created_ms) : "—");
+  td(inv.number || inv.id);
+  td(inv.period_start_ms && inv.period_end_ms && inv.period_end_ms > inv.period_start_ms
+    ? fmtDate(inv.period_start_ms) + " – " + fmtDate(inv.period_end_ms) : "—");
+  const amt = td(fmtMoney(inv.total, inv.currency), "num");
+  if (typeof inv.tax === "number" && inv.tax > 0) amt.title = "incl. tax " + fmtMoney(inv.tax, inv.currency);
+  const sc = td("", "inv-status " + st.cls);
+  if (st.icon) {
+    const i = document.createElement("span");
+    i.className = "inv-icon";
+    i.setAttribute("aria-hidden", "true");
+    i.textContent = st.icon + " ";
+    sc.appendChild(i);
+  }
+  sc.appendChild(document.createTextNode(st.label));
+  const links = td("", "actions");
+  const link = (href, text) => {
+    if (!href) return;
+    const a = document.createElement("a");
+    a.href = href; a.target = "_blank"; a.rel = "noopener"; a.textContent = text;
+    if (links.childElementCount) links.appendChild(document.createTextNode(" · "));
+    links.appendChild(a);
+  };
+  link(inv.hosted_invoice_url, st.payable ? "Pay" : "View");
+  link(inv.invoice_pdf, "PDF");
+  return tr;
+}
+
+/// Stripe's invoice status in the customer's words. `open` splits on whether
+/// payment is already late: past its due date, or a charge was attempted and
+/// money is still owed.
+export function invoiceState(inv, nowMs) {
+  switch (inv.status) {
+    case "paid": return { label: "Paid", cls: "paid" };
+    case "void": return { label: "Void", cls: "void" };
+    case "uncollectible": return { label: "Uncollectible", cls: "late", icon: "■" };
+    case "open": {
+      const late = (inv.due_ms && inv.due_ms < nowMs) || (inv.attempted && inv.amount_remaining > 0);
+      return late
+        ? { label: "Past due", cls: "late", icon: "▲", payable: true }
+        : { label: inv.due_ms ? "Due " + fmtDate(inv.due_ms) : "Open", cls: "open", payable: true };
+    }
+    default: return { label: inv.status || "—", cls: "" };
+  }
+}
+
+function fmtDate(ms) {
+  return new Date(ms).toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
+}
+
+/// Stripe amounts are in the currency's minor unit; the currency's own
+/// fraction digits decide the divisor (JPY has none, USD two).
+export function fmtMoney(minor, currency) {
+  if (typeof minor !== "number" || !currency) return "—";
+  const cur = currency.toUpperCase();
+  try {
+    const f = new Intl.NumberFormat(undefined, { style: "currency", currency: cur });
+    const digits = f.resolvedOptions().maximumFractionDigits;
+    return f.format(minor / Math.pow(10, digits));
+  } catch (_) {
+    return (minor / 100).toFixed(2) + " " + cur;
+  }
 }

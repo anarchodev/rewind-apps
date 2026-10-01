@@ -225,6 +225,16 @@ label {
 .instance-table td a { color: var(--accent); text-decoration: none; }
 .instance-table td a:hover { text-decoration: underline; }
 
+/* Invoice history on the billing page — the instance table's chrome. Status
+   stays in text ink; only the icon of a state that needs action is colored. */
+.billing .invoices { margin-top: 32px; }
+.billing .invoice-body { overflow-x: auto; }
+.invoice-table td.num, .invoice-table th.num { text-align: right; }
+.invoice-table .inv-status.paid,
+.invoice-table .inv-status.void { color: var(--muted); }
+.invoice-table .inv-status.late .inv-icon { color: var(--danger); }
+.billing .invoice-more { margin-top: 12px; }
+
 /* ── Instance detail page ──────────────────────────────────────── */
 
 .instance .back-link {
