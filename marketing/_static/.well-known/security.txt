@@ -1,0 +1,8 @@
+# Security contact for rewind.js, operated by Loop46, Inc.
+# DRAFT: unsigned. Sign as an OpenPGP cleartext message before publishing,
+# and renew before Expires.
+Contact: mailto:security@loop46.com
+Expires: 2027-04-01T00:00:00.000Z
+Preferred-Languages: en
+Canonical: https://rewindjs.com/.well-known/security.txt
+Policy: https://rewindjs.com/security
