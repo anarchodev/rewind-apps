@@ -4,13 +4,21 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Privacy Policy — rewind.js</title>
-  <meta name="description" content="What rewind.js records, where it is processed, how long it is kept, and who else touches it.">
+  <meta name="description" content="What rewind.js records about you and about traffic to your apps, where it is processed, how long it stays, and who else touches it.">
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' rx='4' fill='%2311111b'/%3E%3Crect x='1.5' y='3' width='13' height='10' rx='5' fill='%23cba6f7'/%3E%3Cpolygon points='7,5 7,11 4.3,8' fill='%2311111b'/%3E%3Cpolygon points='11,5 11,11 8.3,8' fill='%2311111b'/%3E%3C/svg%3E">
-  <link rel="stylesheet" href="rewind.css">
-  <!-- Self-contained prose styling. No external stylesheet or font: this
-       page describes our third-party data sharing, so it must not itself
-       introduce a third-party request. -->
+  <!-- Fully self-contained: no rewind.css (it imports Google Fonts) and no
+       other external request. A page that describes our third-party data
+       sharing must not itself create any. -->
   <style>
+    :root {
+      color-scheme: dark;
+      --crust: #11111b; --mantle: #181825; --base: #1e1e2e; --surface-0: #313244;
+      --text-0: #cdd6f4; --text-1: #bac2de; --text-2: #a6adc8; --text-3: #7f849c;
+      --c-brand: #cba6f7; --c-warn: #f9e2af;
+      --font-sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+      --font-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    }
+    body { margin: 0; background: var(--base); color: var(--text-1); font-family: var(--font-sans); }
     .doc { max-width: 720px; margin: 0 auto; padding: 56px 24px 96px; }
     .doc h1 { font-size: 38px; line-height: 1.15; letter-spacing: -1px; margin: 0 0 10px; color: var(--text-0); }
     .doc h2 { font-size: 21px; margin: 44px 0 12px; color: var(--text-0); letter-spacing: -0.3px; }
@@ -19,6 +27,7 @@
     .doc ul { padding-left: 22px; margin: 10px 0; }
     .doc li { margin-bottom: 7px; }
     .doc a { color: var(--c-brand); }
+    .doc strong { color: var(--text-1); }
     .doc code { font-family: var(--font-mono); font-size: 13.5px; color: var(--text-1); }
     .doc table { width: 100%; border-collapse: collapse; margin: 14px 0; font-size: 14px; }
     .doc th, .doc td { text-align: left; padding: 9px 12px; border-bottom: 1px solid var(--surface-0); color: var(--text-2); vertical-align: top; }
@@ -27,6 +36,11 @@
     .callout { border: 1px solid var(--surface-0); border-left: 3px solid var(--c-brand);
                background: var(--mantle); padding: 16px 18px; margin: 20px 0; border-radius: 0 8px 8px 0; }
     .callout p { margin: 0; font-size: 14.5px; }
+    .callout p + p { margin-top: 10px; }
+    .draft { border: 1px solid var(--c-warn); color: var(--c-warn); padding: 12px 16px; border-radius: 8px;
+             font-family: var(--font-mono); font-size: 13px; margin: 0 0 30px; }
+    .decide { background: rgba(249, 226, 175, .14); color: var(--c-warn); font-family: var(--font-mono);
+              font-size: 12.5px; padding: 1px 6px; border-radius: 4px; }
     .doc footer { margin-top: 56px; padding-top: 20px; border-top: 1px solid var(--surface-0);
                   font-size: 13px; color: var(--text-3); }
   </style>
@@ -36,17 +50,22 @@
 
   <p class="updated"><a href="/">&larr; rewind.js</a></p>
 
-  <h1>Privacy Policy</h1>
-  <p class="updated">Last updated 2 August 2026</p>
+  <!-- DRAFT MARKERS: the .draft banner and every .decide span must be gone
+       before this page is published. They mark text awaiting sign-off. -->
+  <p class="draft">DRAFT — not in effect. Items marked DECISION are awaiting sign-off.</p>
 
-  <p>rewind.js records requests so they can be replayed. That is the whole
-     point of the product, and it means we store more about traffic to your
-     app than a typical host does. This page says exactly what, where it goes,
-     how long it stays, and who else can touch it.</p>
+  <h1>Privacy Policy</h1>
+  <p class="updated">Effective <span class="decide">DECISION: publication date</span></p>
+
+  <p>rewind.js records requests so they can be replayed. That is the product,
+     and it means we store more about traffic to your apps than a typical host
+     does. This page says exactly what, where it is processed, how long it
+     stays, and who else can touch it. Where something is not built yet, it
+     says so.</p>
 
   <h2>1. Who we are</h2>
-  <p>Loop46, Inc., a Washington corporation, trading as rewind.js. We are the
-     data controller for the information described in section 3.</p>
+  <p>rewind.js is operated by Loop46, Inc., a Washington corporation. For the
+     information described in section 3 we are the data controller.</p>
   <p>
     Loop46, Inc.<br>
     124 28th Ave, Seattle, WA 98122, USA<br>
@@ -56,142 +75,296 @@
   <h2>2. Two different relationships</h2>
   <p>Which parts of this policy apply depends on who you are.</p>
   <ul>
-    <li><strong>You visit our websites or hold an account with us.</strong> We
-        decide what is collected and why, so we are the controller and this
-        policy governs.</li>
-    <li><strong>You run an app on rewind.js and other people send requests to
-        it.</strong> Their data is yours, not ours. We process it on your
-        instructions, as your processor — you are the controller and you decide
-        what your app collects and what you tell your users. Our
-        <a href="mailto:privacy@loop46.com">data processing agreement</a>
-        governs that relationship.</li>
+    <li><strong>You visit our websites or hold a rewind.js account.</strong>
+        We decide what is collected about you and why, so we are the controller
+        and this policy governs. Sections 3 to 11 are about you.</li>
+    <li><strong>You use an app that someone else runs on rewind.js.</strong>
+        That app's operator decides what it collects and is the controller of
+        your data; we process it on their instructions. Ask them first — they
+        are the one who can find and delete your data. Section 4 describes what
+        the platform records, so you know what to ask about. Our
+        <span class="decide">DECISION: DPA link — /dpa or "on request"</span>
+        governs our side of that relationship.</li>
   </ul>
 
-  <h2>3. What we collect</h2>
+  <h2>3. What we collect about account holders</h2>
 
   <h3>Account and sign-in</h3>
   <ul>
-    <li><strong>Your email address.</strong> It is how you sign in and how we
-        identify your account. We have no passwords.</li>
-    <li><strong>Sign-in link tokens</strong>, stored as SHA-256 hashes and
-        usable once, so a copy of our database cannot be used to sign in as
-        you.</li>
-    <li><strong>A session cookie</strong> once you are signed in. See section 7.</li>
+    <li><strong>Your email address.</strong> It is how you sign in and is the
+        identifier of your account, stored as you typed it (lower-cased). We
+        have no passwords.</li>
+    <li><strong>Sign-in links.</strong> Each link carries a random token. We
+        store only a SHA-256 hash of it, together with your email address and
+        the page to return you to. A link works once and expires after 15
+        minutes. The stored row is removed when the link is used; a link that
+        is never clicked stays stored until your account is deleted.</li>
+    <li><strong>Sign-in sessions and tokens.</strong> Signing in creates a
+        session record and the tokens our dashboard uses to act for you
+        (15-minute access tokens, 30-day refresh tokens; the dashboard's own
+        session lasts 7 days). They are kept until your account is deleted.</li>
+    <li><strong>A cookie</strong> that ties your browser to that session. See
+        section 9.</li>
   </ul>
 
-  <h3>Requests to apps running on rewind.js</h3>
-  <p>For each request we record what is needed to replay it: the method, path,
-     query string, headers, timing, response status, the results of any
-     outbound work your handler performed (HTTP calls, emails, webhooks), and a
-     client IP address as described below.</p>
+  <h3>Accounts and teams</h3>
+  <ul>
+    <li>The accounts you belong to, your role in each, and the apps each
+        account owns, with their hostnames and plan.</li>
+    <li>Team invitations: the invited address, who sent the invitation, and
+        when. Invitations expire after 7 days.</li>
+    <li>Team invitations and sign-in links are sent by email; see section 7.</li>
+  </ul>
 
+  <h3>Billing</h3>
+  <p>Paid plans are not yet available, and no payment provider holds any data
+     for us today. When they are available:</p>
+  <ul>
+    <li>Card details go from your browser directly to Stripe. They never pass
+        through our servers and we never see them.</li>
+    <li>We send Stripe your account's email address and an internal account
+        id, and keep Stripe's customer and subscription ids, your
+        subscription's status and period, and card fingerprints Stripe
+        returns, which we use only to block card-testing fraud.</li>
+  </ul>
+
+  <h3>Your requests to our own dashboard and sign-in pages</h3>
+  <p>Our dashboard and sign-in service are themselves apps running on
+     rewind.js, so your requests to them are recorded exactly as section 4
+     describes — including the email address you type into the sign-in form.
+     We use these records to operate, debug, and secure those services.</p>
+
+  <h3>Operational telemetry</h3>
+  <p>We collect metrics and service logs to keep the platform running —
+     request and error rates, latency, storage use, cluster health. These carry
+     your apps' identifiers and hostnames, including custom domains. They do not
+     carry request or response bodies.</p>
+
+  <h3>Our websites</h3>
+  <p>rewindjs.com and docs.rewindjs.com are static pages. We do not run
+     analytics on them and set no cookies there. Until we finish removing them,
+     some pages load fonts or icons from third parties, who receive your IP
+     address and browser details when they do; see section 7.</p>
+
+  <h2>4. What the platform records about traffic to apps</h2>
+  <p>If you run an app on rewind.js, this is what we store about requests your
+     users send it. You are the controller of that data and decide what you
+     tell your users; our <span class="decide">DECISION: DPA link</span> sets
+     out our obligations to you.</p>
   <div class="callout">
-    <p><strong>Client IP addresses are masked before your code sees them.</strong>
-       IPv4 addresses have the final octet zeroed; IPv6 addresses are truncated
-       to the first 48 bits. A handler can call
-       <code>unmaskedIp()</code> (a capability it receives with the activation) to obtain the full address — a
-       deliberate escalation, not the default — and when it does, the full
-       address is recorded in that request's tape. If you run an app here, that
-       call is your decision and yours to disclose to your users.</p>
+    <p><strong>Request bodies are recorded by design.</strong> Anything your
+       users send in a request body, and anything your handler fetches from
+       another service, is stored so the request can be replayed. Do not send
+       secrets or special-category data through a rewind.js app unless you
+       intend it to be recorded.</p>
   </div>
+  <p>For each request we record:</p>
+  <ul>
+    <li>the method, host, and path <strong>including the query string</strong>,
+        the response status, timing, the handler's console output and any
+        exception, and any tags your code attaches;</li>
+    <li>the <strong>names</strong> of every request header, and the
+        <strong>values</strong> of the headers your handler reads — reading
+        cookies records the whole <code>Cookie</code> header;</li>
+    <li>the <strong>request body</strong>. It is stored before your handler
+        runs, so that the request is durable. If the handler never reads it, the
+        record drops its reference, but the stored bytes are not removed;</li>
+    <li>the values your handler reads from its key-value store, and the keys it
+        writes;</li>
+    <li>the responses — headers and bodies — to any outbound HTTP requests your
+        handler makes.</li>
+  </ul>
+  <p>We do <strong>not</strong> record your app's response bodies.</p>
 
-  <p><strong>Request bodies</strong> are buffered into object storage before
-     your handler runs, so that the request is durable. If your handler never
-     reads the body, the stored request record keeps no reference to those
-     bytes — but the bytes themselves may still exist in that buffer. Treat
-     anything sent in a request body as recorded.</p>
+  <h3>Client IP addresses</h3>
+  <p>Your handler sees a masked client address by default: IPv4 addresses have
+     the final octet zeroed, and IPv6 addresses are cut to their first 48 bits.
+     The address is recorded only if your handler reads it. A handler can ask
+     for the full address through <code>unmaskedIp()</code>, a capability it is
+     handed deliberately; when it does, the full address is recorded with that
+     request. That call is the app operator's decision, and theirs to disclose.</p>
 
-  <h3>Operational information</h3>
-  <p>We collect metrics and logs about the service itself — request rates,
-     error rates, latency, and cluster health — to keep it running. These
-     describe the system rather than individuals.</p>
+  <h3>What is encrypted</h3>
+  <p>Recorded payloads — request bodies, outbound responses and message
+     contents — are encrypted with AES-256-GCM under a key belonging to the app,
+     or under a per-person key the app names (see section 6). So is the
+     replicated log every write passes through. Other things are stored as
+     written:</p>
+  <ul>
+    <li>the record fields above other than payloads — paths and query strings,
+        header values, console output, tags;</li>
+    <li>key-value store contents, unless the app wrote them under a per-person
+        key, and all key names;</li>
+    <li>deployed code and static files.</li>
+  </ul>
 
-  <h2>4. Where your data is processed</h2>
+  <h2>5. Where data is processed</h2>
   <table>
     <tr><th>What</th><th>Where</th></tr>
-    <tr><td>Handlers running, and the databases behind them</td><td>Beauharnois, Quebec, <strong>Canada</strong></td></tr>
-    <tr><td>Recordings, code bundles, static assets, request bodies</td><td>Virginia, <strong>USA</strong></td></tr>
+    <tr><td>Handlers running, the databases behind them, and the replicated log</td><td>Beauharnois, Quebec, <strong>Canada</strong> (OVHcloud)</td></tr>
+    <tr><td>Request records, request bodies, code bundles, static files, exports</td><td>Virginia, <strong>USA</strong> (OVHcloud)</td></tr>
   </table>
-  <p>Both are OVHcloud facilities. We are a United States company. <strong>No
-     data is stored in the European Union.</strong> If you are in the EEA or
-     the UK, transfers rely on Standard Contractual Clauses; ask us for a copy.</p>
+  <p>We are a United States company. <strong>No data is stored in the European
+     Union.</strong> For people in the EEA, the UK or Switzerland, transfers to
+     Canada rely on Canada's adequacy decision, and transfers to the United
+     States rely on <span class="decide">DECISION: transfer mechanism — SCCs, or
+     certification under the EU–US Data Privacy Framework</span>.</p>
+  <p>Traffic between browsers and our servers is encrypted with TLS. Traffic
+     between our own servers runs over a private network inside one datacenter
+     and is not separately encrypted.</p>
 
-  <h2>5. How long we keep it</h2>
-  <p>Your plan sets a retention window — 7 days on the free plan, 30 on pro,
-     365 on enterprise — that limits how far back logs and replays can be
-     queried.</p>
+  <h2>6. How long we keep it</h2>
+
+  <h3>Request records</h3>
+  <p>Each plan has a retention window — 7 days on the free plan, 30 on pro, 365
+     on enterprise. A customer may choose a shorter one.</p>
   <div class="callout">
-    <p><strong>That window limits access, not storage.</strong> We do not
-       currently delete recordings once it passes; the query surface simply
-       stops returning them. Automatic reclamation is being built. Until it
-       ships, assume anything recorded is retained indefinitely, and ask us if
-       you need something deleted sooner.</p>
+    <p><strong>The window limits what can be read, not yet what is
+       stored.</strong> Records older than the window are hidden from every way
+       of reading them — the dashboard, replay, the CLI, and the APIs.
+       Automatic physical deletion past the window is not built yet, so hidden
+       records remain in our storage, where our operators can still reach them.
+       Ask us at <a href="mailto:privacy@loop46.com">privacy@loop46.com</a> if
+       you need records removed sooner.</p>
   </div>
-  <p>Account information is kept while your account is open, and after closure
-     only as long as needed to meet legal and accounting obligations.</p>
 
-  <h2>6. Who else processes it</h2>
+  <h3>Erasing one person's data</h3>
+  <p>An app can tie a request to a person with <code>shredKey(id)</code>; that
+     request's recorded payloads and the key-value values it writes are then
+     encrypted under that person's own key. <code>shredKey.destroy(id)</code>
+     destroys the key on every server, permanently, and those payloads and
+     values become unreadable everywhere they are stored. It does not reach key
+     names, tags, paths and query strings, or recorded header values, so apps
+     should keep identifying details out of those.</p>
+
+  <h3>Account data</h3>
+  <p>Kept while your account is open. When you delete your account, see section
+     8 for what goes and what remains.</p>
+
+  <h2>7. Who else processes it</h2>
   <table>
-    <tr><th>Who</th><th>What for</th><th>What they see</th></tr>
-    <tr><td>OVHcloud (Canada)</td><td>Servers running handlers</td><td>Everything processed by your app</td></tr>
-    <tr><td>OVHcloud (USA)</td><td>Object storage</td><td>Recordings, bundles, assets, bodies</td></tr>
-    <tr><td>Resend</td><td>Sign-in and notification email</td><td>Recipient address and message contents</td></tr>
-    <tr><td>Grafana Cloud</td><td>Operational metrics and alerting</td><td>Service telemetry, not request contents</td></tr>
-    <tr><td>Cloudflare</td><td>Authoritative DNS only</td><td>DNS queries. It does not proxy our traffic and never sees request contents.</td></tr>
-    <tr><td>jsDelivr</td><td>Icon font on our landing page</td><td>Your IP and browser when you load that page. We are removing this dependency.</td></tr>
+    <tr><th>Who</th><th>What for</th><th>What they see</th><th>Where</th></tr>
+    <tr><td>OVHcloud (Canada)</td><td>Servers that run apps</td><td>Everything apps process</td><td>Canada</td></tr>
+    <tr><td>OVHcloud (US)</td><td>Object storage</td><td>Request records and bodies, code, static files, exports — payloads encrypted as in section 4</td><td>USA</td></tr>
+    <tr><td>Resend</td><td>Sign-in and team-invitation email</td><td>Recipient address and message</td><td>USA</td></tr>
+    <tr><td>Grafana Labs (Grafana Cloud)</td><td>Metrics, service logs, alerting</td><td>App identifiers and hostnames, service health; no request contents</td><td><span class="decide">DECISION: confirm stack region</span></td></tr>
+    <tr><td>Tuta (Tutao GmbH)</td><td>Our email inboxes</td><td>Messages you send to our @loop46.com addresses</td><td>Germany</td></tr>
+    <tr><td>Stripe</td><td>Payments — <strong>once paid plans launch</strong></td><td>As in section 3, Billing</td><td>USA</td></tr>
   </table>
-  <p>We will update this list before adding anyone new. Payment processing is
-     not yet available and no payment provider currently holds any data for us.</p>
+  <p>Some apps send email through Resend or call other services. Those are
+     services the app's operator chose and pays for, under their own account
+     with that provider; they are not our subprocessors.</p>
+  <p>Two further services touch our websites rather than your data. Cloudflare
+     provides DNS only — it answers lookups for our domains, does not carry our
+     traffic, and never sees request contents. Google Fonts and jsDelivr serve
+     fonts and icons to some of our pages and see the IP address and browser of
+     whoever loads them; we are removing both.</p>
+  <p>We do not sell personal information, and we do not share it for
+     advertising. We will update this list before adding anyone who processes
+     account data or app data.</p>
 
-  <h2>7. Cookies and local storage</h2>
-  <p>One cookie, <code>sid</code>, which keeps you signed in. It is strictly
-     necessary for the service to work and is not used to track you. We set no
-     advertising or analytics cookies, and there are no third-party trackers on
-     our sites — with the single exception of the icon font noted above, which
-     is being removed.</p>
+  <h2>8. Your rights, export, and deleting your account</h2>
+  <p>You can ask us for a copy of your data, to correct it, to delete it, to
+     restrict or object to how we use it, or to send it elsewhere. Depending on
+     where you live, some of these are legal rights; we extend them to every
+     account holder.</p>
 
-  <h2>8. Your rights</h2>
-  <p>You can ask us to give you a copy of your data, correct it, delete it,
-     restrict or object to how we use it, or send it elsewhere. Depending on
-     where you live, some of these are legal rights and some are simply things
-     we will do.</p>
-  <div class="callout">
-    <p><strong>We do not yet have self-service export or account deletion.</strong>
-       Requests are handled by hand today. Email
-       <a href="mailto:privacy@loop46.com">privacy@loop46.com</a> and we
-       will acknowledge within 5 working days and complete within 30. We are
-       building both as product features.</p>
-  </div>
-  <p>If you are in the EEA or the UK, you also have the right to complain to
-     your local data protection authority.</p>
+  <h3>Self-service</h3>
+  <ul>
+    <li><strong>Export.</strong> The dashboard exports your account — members
+        and roles, pending invitations, apps, and billing references — and,
+        per app, its key-value data and code.</li>
+    <li><strong>Deletion.</strong> Deleting your account from the dashboard is
+        immediate and cannot be undone. If you are the only owner of a team,
+        transfer or delete that team first. Deletion takes you out of every
+        team, cancels any subscription, deletes each app your account owns, and
+        removes your account, sign-in and session records.</li>
+  </ul>
 
-  <h2>9. How we protect it</h2>
-  <p>What we do: traffic is encrypted in transit with TLS. Each tenant's data
-     lives in its own replicated store under its own storage prefix. Handler
-     code runs under enforced CPU and memory limits so one tenant cannot starve
-     another. Client IPs are masked as described above. Sign-in tokens are
-     hashed.</p>
-  <p>What we do not do, stated plainly: <strong>recordings are not encrypted at
-     rest by us</strong> beyond whatever our storage provider applies. If your
-     app handles data that must be encrypted under your own key, rewind.js is
-     not the right place for it today.</p>
+  <h3>What deleting an account does to app data</h3>
+  <p>Each deleted app's encryption key is destroyed on every server, so its
+     recorded payloads become unreadable wherever they are stored. Its code,
+     static files, data stores and exports are deleted. What remains:</p>
+  <ul>
+    <li>the unencrypted fields of its request records (section 4) — hidden from
+        every reading surface, and in storage until automatic deletion past the
+        retention window is built;</li>
+    <li>a record that the deletion happened, including the account's email
+        address, kept <span class="decide">DECISION: indefinitely, or for N
+        years</span> as evidence of the deletion;</li>
+    <li>the records of your own requests to our dashboard and sign-in pages
+        (section 3), which are hidden after 365 days and, like all request
+        records, not yet deleted;</li>
+    <li>if you were a paying customer, your customer record at Stripe: the
+        subscription is cancelled, but the customer record is
+        <span class="decide">DECISION: kept for N years for tax records, or
+        deleted</span>.</li>
+  </ul>
 
-  <h2>10. Children</h2>
+  <h3>Anything else</h3>
+  <p>For anything the dashboard does not do — including a copy of request
+     records or sign-in data — email
+     <a href="mailto:privacy@loop46.com">privacy@loop46.com</a>. We acknowledge
+     within <span class="decide">DECISION: 5 working days</span> and complete
+     within <span class="decide">DECISION: 30 days</span>. We may need to
+     confirm that the request comes from the account's email address.</p>
+  <p>If you are in the EEA or the UK, you may also complain to your local data
+     protection authority.</p>
+
+  <h2>9. Cookies and browser storage</h2>
+  <table>
+    <tr><th>Name</th><th>Where</th><th>What for</th><th>Lasts</th></tr>
+    <tr><td><code>__Host-rove_sid</code> (cookie)</td><td>Our dashboard and sign-in pages, and any app on rewind.js that runs code</td><td>Identifies the browser session. For us it keeps you signed in. Strictly necessary; not used to track you</td><td>1 year</td></tr>
+    <tr><td><code>rove.admin.*</code> (local storage)</td><td>Dashboard</td><td>Which account you last selected</td><td>Until cleared</td></tr>
+    <tr><td><code>rewind.replay.*</code> (local storage)</td><td>Replay viewer</td><td>Panel layout preferences</td><td>Until cleared</td></tr>
+    <tr><td><code>replay:bundle:*</code> (session storage)</td><td>Replay viewer</td><td>A copy of the recording you are viewing, so reloading does not refetch it</td><td>Until the tab closes</td></tr>
+  </table>
+  <p>No advertising or analytics cookies, and no trackers. Our static websites
+     set nothing.</p>
+
+  <h2>10. Why we may use it (legal bases)</h2>
+  <ul>
+    <li><strong>To provide the service you signed up for</strong> (performance
+        of a contract): your account, sign-in, apps, records and billing.</li>
+    <li><strong>Legitimate interests</strong>: keeping the platform secure and
+        running, preventing fraud and abuse, and debugging our own services
+        from their records.</li>
+    <li><strong>Legal obligation</strong>: tax and accounting records.</li>
+  </ul>
+  <p>We do not use your data for advertising, profiling, or automated
+     decisions that affect you.</p>
+
+  <h2>11. Security</h2>
+  <p>What we do: TLS on every connection from the internet. Each app's data
+     lives in its own replicated store under its own storage prefix and its own
+     encryption key. Handlers run under per-request time and memory limits, and
+     cannot reach private network addresses. Client IPs are masked by default.
+     Sign-in link tokens are stored hashed.</p>
+  <p>What we do not do, stated plainly: the items listed in section 4 as
+     stored as written are not encrypted by us, and we do not ask our storage
+     provider to encrypt them either. If your app handles data that must be
+     encrypted at rest throughout, keep it in payloads under
+     <code>shredKey</code>, or do not put it on rewind.js yet.</p>
+  <p>To report a vulnerability, write to
+     <a href="mailto:security@loop46.com">security@loop46.com</a>.</p>
+
+  <h2>12. Children</h2>
   <p>rewind.js is a developer tool and is not directed at children. We do not
      knowingly collect personal information from anyone under 16.</p>
 
-  <h2>11. Changes</h2>
+  <h2>13. Changes</h2>
   <p>We will post any change here and move the date at the top. If a change
-     materially affects you, we will email the address on your account.</p>
+     materially affects you, we will email the address on your account
+     <span class="decide">DECISION: N days</span> before it takes effect.</p>
 
-  <h2>12. Contact</h2>
+  <h2>14. Contact</h2>
   <p>
-    Loop46, Inc.<br>
+    Loop46, Inc. — operator of rewind.js<br>
     124 28th Ave, Seattle, WA 98122, USA<br>
     <a href="mailto:privacy@loop46.com">privacy@loop46.com</a>
   </p>
 
-  <footer>© 2026 Loop46, Inc. · <a href="/">rewind.js</a></footer>
+  <footer>© 2026 Loop46, Inc. · <a href="/">rewind.js</a> · <a href="/support">Support</a></footer>
 
 </div>
 </body>
