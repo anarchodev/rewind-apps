@@ -24,6 +24,7 @@ export function render(root, { goto, api, params }) {
       <button type="button" class="logout">Sign out</button>
     </header>
     <p class="error" hidden></p>
+    <section class="usage" hidden></section>
 
     <nav class="tabs"></nav>
     <section class="tab-body"></section>
@@ -98,6 +99,16 @@ export function render(root, { goto, api, params }) {
     urlLink.hidden = false;
   }).catch(() => { /* the tabs carry the real work; a missing link is cosmetic */ });
 
+  // KV usage against the plan cap — in the header, not the KV tab, because the
+  // warning has to reach someone who never opens that tab (logs is the
+  // default). Re-read on entering the KV tab, where usage changes by hand.
+  const usageBox = wrap.querySelector(".usage");
+  const refreshUsage = () => api.getUsage(instanceId)
+    .then((u) => renderUsage(usageBox, u))
+    .catch(() => { usageBox.hidden = true; /* cosmetic; the tabs still work */ });
+  refreshUsage();
+  tabButtons.get("kv").addEventListener("click", refreshUsage);
+
   root.appendChild(wrap);
   selectTab("logs");
 
@@ -107,6 +118,61 @@ export function render(root, { goto, api, params }) {
     }
     activeTeardown = null;
   };
+}
+
+// ── KV usage meter ─────────────────────────────────────────────────
+
+const USAGE_STATUS = {
+  warn:     { icon: "▲", text: "Approaching this plan's KV limit." },
+  critical: { icon: "▲", text: "Nearly at this plan's KV limit." },
+  full:     { icon: "■", text: "KV limit reached — new writes are being refused." },
+};
+
+/// One headline figure against one ceiling: a stat line plus a thin meter.
+/// The level (and its thresholds) come from the server; this only draws it.
+/// From `warn` up, a status line names the state in words (never color
+/// alone) and carries the way out: the upgrade path for an account owner, the
+/// person who can act for anyone else.
+function renderUsage(box, u) {
+  if (!u || typeof u.used_bytes !== "number") { box.hidden = true; return; }
+  const capKnown = typeof u.cap_bytes === "number" && u.cap_bytes > 0;
+  const pct = capKnown ? Math.min(100, (u.used_bytes / u.cap_bytes) * 100) : 0;
+  const level = capKnown ? u.level : "unknown";
+  box.className = "usage level-" + level;
+  const figure = capKnown
+    ? `${formatBytes(u.used_bytes)} <span class="muted">of ${formatBytes(u.cap_bytes)} · ${pct < 1 && u.used_bytes > 0 ? "<1" : Math.floor(pct)}%</span>`
+    : `${formatBytes(u.used_bytes)} <span class="muted">used</span>`;
+  const status = USAGE_STATUS[level];
+  let action = "";
+  if (status) {
+    action = u.can_upgrade && u.account
+      ? `<a class="usage-upgrade" href="#/billing/${encodeURIComponent(u.account)}">Upgrade plan →</a>`
+      : `<span class="muted">An owner of this instance's account can upgrade its plan.</span>`;
+  }
+  box.innerHTML = `
+    <div class="usage-head">
+      <span class="usage-label">KV storage</span>
+      <span class="usage-figure">${figure}</span>
+    </div>
+    ${capKnown ? `<div class="usage-track" role="meter" aria-label="KV storage used"
+         aria-valuemin="0" aria-valuemax="${u.cap_bytes}" aria-valuenow="${Math.min(u.used_bytes, u.cap_bytes)}"
+         aria-valuetext="${escapeHtml(formatBytes(u.used_bytes))} of ${escapeHtml(formatBytes(u.cap_bytes))}">
+      <div class="usage-fill" style="width:${pct.toFixed(2)}%"></div>
+    </div>` : ""}
+    ${status ? `<p class="usage-status" role="status"><span class="usage-icon" aria-hidden="true">${status.icon}</span>
+      <span>${status.text}${level === "full" ? " Existing data is kept; nothing is evicted." : ` Writes are refused past ${escapeHtml(formatBytes(u.cap_bytes))}; nothing is evicted.`}</span>
+      ${action}</p>` : ""}
+  `;
+  box.hidden = false;
+}
+
+/// Binary units, matching how the caps are set (64 MiB, 512 MiB, 2 GiB).
+function formatBytes(n) {
+  if (n < 1024) return `${n} B`;
+  const units = ["KiB", "MiB", "GiB", "TiB"];
+  let v = n / 1024, i = 0;
+  while (v >= 1024 && i < units.length - 1) { v /= 1024; i++; }
+  return `${v >= 100 ? Math.round(v) : v.toFixed(1).replace(/\.0$/, "")} ${units[i]}`;
 }
 
 // ── Settings panel ─────────────────────────────────────────────────

@@ -359,6 +359,12 @@ export const api = {
   getInstance(id) {
     return rest("GET", "/v1/instances/" + seg(id));
   },
+  /// KV footprint against the plan cap: `{used_bytes, cap_bytes, entries,
+  /// level: "ok"|"warn"|"critical"|"full"|"unknown", warn_ratio,
+  /// critical_ratio, plan, account, can_upgrade}`.
+  getUsage(id) {
+    return rest("GET", "/v1/instances/" + seg(id) + "/usage");
+  },
   /// Deprovision an instance. DESTRUCTIVE and not undoable: the server
   /// requires `confirm` to equal the instance's own name, so a stray call
   /// cannot destroy a tenant.
