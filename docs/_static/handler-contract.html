@@ -64,7 +64,7 @@
 <tr><td><code>kv</code>, <code>http</code>, <code>blob</code>, <code>platform</code></td><td>the ES intrinsics</td></tr>
 <tr><td><code>after</code>, <code>next</code>, <code>stream</code>, <code>webhook</code></td><td><code>TextEncoder</code>/<code>TextDecoder</code>, <code>URLSearchParams</code></td></tr>
 <tr><td><code>request</code>, <code>response</code></td><td><code>atob</code>/<code>btoa</code>, <code>base64url</code>, <code>hex</code>, <code>time</code></td></tr>
-<tr><td><code>tag</code>, <code>unmaskedIp</code>, <code>shredKey</code></td><td><code>crypto</code> — pure, and seeded for replay</td></tr>
+<tr><td><code>tag</code>, <code>unmaskedIp</code>, <code>shredKey</code></td><td><code>crypto</code> — pure, and its draws are recorded for replay</td></tr>
 </table>
 <p>The last row moved off <code>request</code>. Each is an effect that had been sitting on a data shape: <code>tag</code> writes a durable exported record against a shared budget, <code>unmaskedIp</code> is the deliberate escalation past <code>request.ip</code>'s masking, and <code>shredKey</code> <strong>replaces</strong> the activation's erasure identity rather than adding to it.</p>
 <p><strong>Helpers take a destructured first parameter too.</strong> A module-scope helper has no activation to receive from, so its caller hands over what it needs:</p>
