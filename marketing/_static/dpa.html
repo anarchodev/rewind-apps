@@ -135,10 +135,13 @@
     <tr><td>Everything else</td><td>You ask, we assist</td>
         <td>Write to <a href="mailto:privacy@loop46.com">privacy@loop46.com</a>.</td></tr>
   </table>
-  <p><code>shredKey</code> does not reach store key names, tags, request paths
-     and query strings, or recorded header values (Annex 1). Keep identifying
-     data out of them; an erasure that needs them reached is one we can only
-     honour by deleting the app.</p>
+  <p><code>shredKey</code> reaches recorded payloads and store values written
+     under it. It does not yet reach the rest of a request record — paths and
+     query strings, recorded header values, store values the handler read,
+     console output, exception messages and tags — nor store key names. Keep
+     identifying data out of them where you can. Until erasure covers them, a
+     request to erase those fields is handled by deleting the app, and they
+     remain hidden in storage as section 9 describes.</p>
   <p>We will also give you the information you reasonably need for data
      protection impact assessments and consultations with regulators.</p>
 
@@ -252,10 +255,12 @@
   </ul>
   <h3>Not in place — stated so you can judge</h3>
   <ul>
-    <li>Record fields other than payloads (Annex 1), store values not written
-        under <code>shredKey</code>, store key names, code and static files are
-        not encrypted by us, and we do not request encryption from our storage
-        provider.</li>
+    <li>Request-record fields other than payloads — paths and query strings,
+        header values, store values the handler read, console output,
+        exception messages, tags — store values not written under
+        <code>shredKey</code>, store key names, code and static files are not
+        encrypted by us, and we do not request encryption from our storage
+        provider. Key destruction therefore does not reach them.</li>
     <li>All three servers are in one datacenter: replication protects against
         a server failing, not against the site failing.</li>
     <li>No independent security certification
