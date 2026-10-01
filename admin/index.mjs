@@ -43,6 +43,59 @@ function finishRootInstance(c, payload, caps) {
     return { id: id, host: kv.get("instance/" + id + "/host") };
 }
 
+// GET /v1/instances/:id/usage — the tenant's KV footprint against its cap, so
+// the hard cap (writes refuse past it, nothing is evicted) is never the first
+// a customer hears of it. Authz is the route's `tenantRead` class.
+//
+// Both figures come from the engine — `usedBytes` is the conservative
+// durable-plus-overlay figure the cap is enforced against, and `capBytes` the
+// `max_kv_bytes` of the plan the engine has installed for this tenant — so the
+// meter reads exactly what enforcement reads, with no tier table here to drift
+// from it. The level is decided here, once, for every client:
+//   ok < 75% ≤ warn < 90% ≤ critical < 100% ≤ full
+// A warning that lands at 90% leaves a busy app hours, not days; 75% leaves
+// room to upgrade or clean up before anything refuses.
+const USAGE_WARN_RATIO = 0.75;
+const USAGE_CRITICAL_RATIO = 0.9;
+
+export function getUsage({ kv, platform }, id) {
+    if (!validId(id)) return jsonError(400, "invalid id");
+    let u;
+    try {
+        u = platform.instances.usage(id);
+    } catch (e) {
+        if (e && e.code === "InstanceNotFound") return jsonError(404, "instance not found");
+        throw e;
+    }
+    if (!u) return jsonError(503, "usage unavailable");
+    const used = Number(u.usedBytes) || 0;
+    const cap = Number(u.capBytes) > 0 ? Number(u.capBytes) : null;
+    const ratio = cap === null ? null : used / cap;
+    const level = ratio === null ? "unknown"
+        : ratio >= 1 ? "full"
+        : ratio >= USAGE_CRITICAL_RATIO ? "critical"
+        : ratio >= USAGE_WARN_RATIO ? "warn"
+        : "ok";
+    // The upgrade path is billing, which only an owner of the account that
+    // holds the tenant can reach; a member is told who can act instead.
+    const aid = kv.get("instance/" + id + "/owner");
+    const plan = aid === null ? null : (kv.get("account/" + aid + "/plan") || "free");
+    const auth = request.auth || {};
+    const isOwner = aid !== null && !!auth.sub &&
+        roleInAccount(kv, aid, accountHashFor(auth.sub)) === "owner";
+    return {
+        used_bytes: used,
+        cap_bytes: cap,
+        entries: Number(u.entries) || 0,
+        level: level,
+        warn_ratio: USAGE_WARN_RATIO,
+        critical_ratio: USAGE_CRITICAL_RATIO,
+        plan: plan,
+        account: aid,
+        can_upgrade: isOwner && plan !== "enterprise",
+    };
+}
+
 export function createInstance(c, id) {
     if (!validId(id)) { response.status = 400; return { error: "invalid id" }; }
     // The root write is an ACTIVATION in `__root__`'s own scope:
@@ -3114,6 +3167,7 @@ const ROUTES = [
     ["GET",    "/v1/instances/:id/export",      "tenantRead",    (c) => listExports(c, c.params.id)],
     ["GET",    "/v1/instances/:id/export/:eid", "tenantRead",    (c) => getExport(c, c.params.id, c.params.eid)],
     ["GET",    "/v1/instances/:id/export/:eid/links", "tenantRead", (c) => getExportLinks(c, c.params.id, c.params.eid)],
+    ["GET",    "/v1/instances/:id/usage",       "tenantRead",    (c) => getUsage(c.caps, c.params.id)],
     ["GET",    "/v1/instances/:id/kv",          "tenantRead",    (c) => kvRead(c, c.params.id, c.query)],
     ["PUT",    "/v1/instances/:id/kv",          "tenantWrite",   (c) => kvSet(c, c.params.id, c.body.key, c.body.value)],
     ["DELETE", "/v1/instances/:id/kv",          "tenantWrite",   (c) => kvDelete(c, c.params.id, c.query.key)],

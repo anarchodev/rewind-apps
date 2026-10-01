@@ -19,6 +19,7 @@
   --danger-hover: #f5a0b8;
   --error-bg: rgba(243, 139, 168, 0.12);
   --error-fg: #f38ba8;
+  --warn: #f9e2af;         /* yellow — approaching a limit */
   --input-bg: #11111b;    /* crust  */
   --shadow: 0 1px 0 rgba(0, 0, 0, 0.3);
   --sans: 'Geist', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
@@ -300,6 +301,42 @@ button.danger:disabled {
   margin-top: 2px;
 }
 .instance .instance-url:hover { color: var(--accent); text-decoration: underline; }
+
+/* KV usage against the plan cap — one figure, one thin meter. Text stays in
+   text ink; only the fill and the status icon carry the level's color. */
+.instance .usage {
+  margin: -8px 0 20px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel);
+}
+.instance .usage-head { display: flex; justify-content: space-between; gap: 12px; align-items: baseline; flex-wrap: wrap; }
+.instance .usage-label { font-size: 13px; color: var(--muted); }
+.instance .usage-figure { font-family: var(--mono); font-size: 13px; color: var(--text); }
+.instance .usage-track {
+  margin-top: 8px;
+  height: 6px;
+  border-radius: 3px;
+  background: var(--border);
+  overflow: hidden;
+}
+.instance .usage-fill { height: 100%; min-width: 2px; border-radius: 3px; background: var(--accent); }
+.instance .level-warn .usage-fill { background: var(--warn); }
+.instance .level-critical .usage-fill,
+.instance .level-full .usage-fill { background: var(--danger); }
+.instance .usage-status {
+  display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: baseline;
+  margin: 10px 0 0; font-size: 13px; color: var(--text);
+}
+.instance .usage-icon { font-size: 11px; }
+.instance .level-warn .usage-icon { color: var(--warn); }
+.instance .level-critical .usage-icon,
+.instance .level-full .usage-icon { color: var(--danger); }
+.instance .level-critical,
+.instance .level-full { border-color: rgba(243, 139, 168, 0.45); }
+.instance .usage-upgrade { color: var(--accent); font-weight: 500; text-decoration: none; }
+.instance .usage-upgrade:hover { text-decoration: underline; }
 
 /* Field-level rule hint under a form input. */
 .provision-form .hint {
