@@ -141,7 +141,11 @@ const owned = scenario({
   kv: Object.assign({}, BASE, {
     ["account/" + TEAM + "/instances/existing"]: "",
     "instance/existing/owner": TEAM,
+    // Bound to the tenant's current incarnation (the harness default), as
+    // onProvisioned records it — an unbound row grants nothing.
+    "instance/existing/incarnation": "0000000000000000",
   }),
+  instances: { existing: {} },
 });
 const del = (id, sid, confirm) =>
   owned.inbound({ method: "DELETE", path: "/v1/instances/" + id, host: "app.rewindjs.com",
@@ -199,7 +203,9 @@ const logs = scenario({
   kv: Object.assign({}, BASE, {
     ["instance/logapp/owner"]: TEAM,
     ["account/" + TEAM + "/instances/logapp"]: "",
+    ["instance/logapp/incarnation"]: "0000000000000000",
   }),
+  instances: { logapp: {} },
 });
 const logCall = (path, sid) => logs.inbound({ method: "GET", path, host: "app.rewindjs.com",
   session: sid ? { id: sid } : undefined });

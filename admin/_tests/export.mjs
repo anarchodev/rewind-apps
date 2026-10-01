@@ -52,6 +52,7 @@ const mk = (instKv) => scenario({
     ["user/" + B + "/accounts/" + TEAM]: "member",
     ["account/" + TEAM + "/instances/app1"]: "",
     "instance/app1/owner": TEAM,
+    "instance/app1/incarnation": "0000000000000000", // the harness default
   },
   instances: { app1: { kv: instKv || {} } },
 });

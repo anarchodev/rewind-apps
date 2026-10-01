@@ -154,6 +154,7 @@ export function onDeprovisioned({ kv }) {
         kv.delete("account/" + aid + "/instances/" + id);
         kv.delete("instance/" + id + "/owner");
     }
+    kv.delete("instance/" + id + "/incarnation");
     kv.delete("instance/" + id + "/host");
     response.status = 204;
     return null;
@@ -507,7 +508,7 @@ export function publishRelease({ kv }, c, instance_id, dep_id) {
     const dep = dep_id;
     const auth = request.auth || {};
     if (!auth.sub) return jsonError(401, "unauthenticated");
-    if (!auth.is_root && !canAccess(kv, accountHashFor(auth.sub), instance_id)) {
+    if (!auth.is_root && !canAccess(c.caps, accountHashFor(auth.sub), instance_id)) {
         return jsonError(403, "not your instance");
     }
     // The flip is a dispatched activation in the TARGET's own log (the
@@ -636,17 +637,38 @@ function ownedInstances(kv, accountHash) {
 // __admin__-home kv. See the teams plan for the full schema.
 
 // THE authz primitive — is `userHash` an active member of the account that owns
-// `tenant`? O(1): at most two kv.get on one store, no scans.
-function canAccess(kv, userHash, tenant) {
+// the CURRENT incarnation of `tenant`?
+//
+// A name is not an identity: an operator-side deprovision withdraws the tenant
+// without passing through this app, so the ownership rows outlive it, and the
+// next tenant to take the name is a different tenant. The owner row therefore
+// grants nothing unless the incarnation recorded beside it (`onProvisioned`) is
+// the one the engine serves today. A rebirth mints a fresh incarnation (storage
+// is keyed by `(name, incarnation)` — the storage-incarnation rule,
+// architecture/consensus-and-storage.md), so every row from an earlier lifetime
+// stops granting the moment the name is reused, whichever path deleted it.
+//
+// Fails closed: no owner row, no recorded incarnation, or a tenant the engine
+// does not resolve all refuse. O(1): three kv.get on one store plus one engine
+// lookup, no scans.
+function canAccess({ kv, platform }, userHash, tenant) {
     const aid = kv.get("instance/" + tenant + "/owner");
-    if (aid !== null) {
-        const role = kv.get("account/" + aid + "/members/" + userHash);
-        return role === "owner" || role === "member"; // NOT "invited:*"
+    if (aid === null) return false;
+    const bound = kv.get("instance/" + tenant + "/incarnation");
+    if (bound === null || bound !== currentIncarnation(platform, tenant)) return false;
+    const role = kv.get("account/" + aid + "/members/" + userHash);
+    return role === "owner" || role === "member"; // NOT "invited:*"
+}
+
+// The storage incarnation the engine serves for `tenant`, or null when the
+// name does not resolve to a live instance.
+function currentIncarnation(platform, tenant) {
+    try {
+        const inc = platform.instances.incarnation(tenant);
+        return typeof inc === "string" && inc ? inc : null;
+    } catch (_) {
+        return null;
     }
-    // LEGACY FALLBACK until the reverse pointer is backfilled: only the legacy
-    // owner's own marker exists, so this grants exactly the pre-teams set (owner
-    // only) — membership can't leak here (it needs instance/{id}/owner set).
-    return kv.get("account/" + userHash + "/instances/" + tenant) !== null;
 }
 
 function roleInAccount(kv, aid, userHash) {
@@ -692,6 +714,49 @@ function backfillSelf(kv, userHash, email) {
     for (const id of ownedInstances(kv, userHash))
         if (kv.get("instance/" + id + "/owner") === null)
             kv.set("instance/" + id + "/owner", userHash);
+}
+
+// POST /v1/ops/incarnations/bind {tenant?, dry_run?} — operator-only. Records
+// the engine's current incarnation beside an owner row that has none, which is
+// what makes canAccess grant. Rows written by `onProvisioned` are already
+// bound; this exists for rows that predate the binding, and for the rare
+// provision whose instance did not resolve in time.
+//
+// Binding asserts "the recorded owner owns the tenant serving under this name
+// TODAY" — exactly the claim canAccess refuses to make on its own, because a
+// name an operator deleted and re-provisioned for someone else would carry the
+// earlier owner's row. So it is an operator act, and `dry_run` lists what it
+// would bind (owner + incarnation) for that check first. Already-bound rows are
+// never rewritten: a mismatch there is the refusal working, not drift.
+function bindIncarnations({ kv, platform }, tenant, dryRun) {
+    const names = [];
+    if (typeof tenant === "string" && tenant) {
+        if (!validId(tenant)) return jsonError(400, "invalid tenant");
+        names.push(tenant);
+    } else {
+        let cursor = "";
+        for (;;) {
+            const page = kv.prefix("instance/", cursor, 1000);
+            for (const e of page) {
+                const rest = e.key.slice("instance/".length);
+                if (rest.endsWith("/owner")) names.push(rest.slice(0, -"/owner".length));
+            }
+            if (page.length < 1000) break;
+            cursor = page[page.length - 1].key;
+        }
+    }
+    const bound = [], already = [], unresolved = [], unowned = [];
+    for (const name of names) {
+        const owner = kv.get("instance/" + name + "/owner");
+        if (owner === null) { unowned.push(name); continue; }
+        if (kv.get("instance/" + name + "/incarnation") !== null) { already.push(name); continue; }
+        const inc = currentIncarnation(platform, name);
+        if (inc === null) { unresolved.push(name); continue; }
+        if (!dryRun) kv.set("instance/" + name + "/incarnation", inc);
+        bound.push({ tenant: name, owner: owner, incarnation: inc });
+    }
+    return { dry_run: !!dryRun, bound: bound, already_bound: already,
+             unresolved: unresolved, unowned: unowned };
 }
 
 // Active owners of an account (drives the last-owner guard).
@@ -1689,6 +1754,7 @@ export function acctdelWake({ after, kv, webhook, platform }) {
                 // no live tenant still needs its pointers dropped.
                 const t = rest.slice("instances/".length);
                 kv.delete("instance/" + t + "/owner");
+                kv.delete("instance/" + t + "/incarnation");
                 kv.delete("instance/" + t + "/host");
             }
             kv.delete(e.key);
@@ -1912,6 +1978,7 @@ export function onAcctdelCpDelete({ kv }) {
     if (status === 204 || status === 404) {
         kv.delete("account/" + aid + "/instances/" + t);
         kv.delete("instance/" + t + "/owner");
+        kv.delete("instance/" + t + "/incarnation");
         kv.delete("instance/" + t + "/host");
         kv.set(ik, "gone");
         // Kick the driver now rather than waiting out the watchdog — when
@@ -2056,10 +2123,11 @@ export function onProvisioned({ kv, platform }) {
     // Placed. The CP's reply names where it answers — the dashboard carries no
     // copy of the platform's zone, and deriving one here would be a second
     // truth that drifts from the thing that actually routes.
-    let host = null;
+    let host = null, cpInc = null;
     try {
         const body = request.json;
         if (body && typeof body.host === "string" && body.host) host = body.host;
+        if (body && typeof body.incarnation === "string" && body.incarnation) cpInc = body.incarnation;
     } catch (_) { /* older CP replies 204 with no body — host stays unknown */ }
 
     // Record ownership, then seed the plan row — both only now, so a refusal
@@ -2067,8 +2135,23 @@ export function onProvisioned({ kv, platform }) {
     if (kv.get("account/" + aid + "/plan") === null) {
         kv.set("account/" + aid + "/plan", "free");
     }
+    // A row naming a different owner belongs to an earlier lifetime of this
+    // name (an operator-side delete never reached `onDeprovisioned`). It
+    // already grants nothing — its incarnation is stale — so drop it rather
+    // than leave the old account listing, and paying for, a tenant it lost.
+    const prev = kv.get("instance/" + name + "/owner");
+    if (prev !== null && prev !== aid) kv.delete("account/" + prev + "/instances/" + name);
     kv.set("account/" + aid + "/instances/" + name, "");
     kv.set("instance/" + name + "/owner", aid); // reverse pointer for canAccess
+    // Bind ownership to THIS lifetime of the name — canAccess grants only
+    // while the engine still serves the incarnation recorded here. The CP
+    // minted it and names it in its reply; the engine's own answer is the
+    // fallback for a reply that predates the field. Neither → the row stays
+    // absent and access fails closed until an operator binds it
+    // (`bindIncarnations`).
+    const inc = cpInc || currentIncarnation(platform, name);
+    if (inc !== null) kv.set("instance/" + name + "/incarnation", inc);
+    else kv.delete("instance/" + name + "/incarnation");
     // The instance's primary host, so the UI can link it later without asking
     // the CP again. Absent when the platform has no wildcard zone — then the
     // instance is placed but has no URL until an operator maps one.
@@ -2132,7 +2215,7 @@ function handleSession(kv) {
 // is relayed verbatim.
 const LOG_DOOR = "http://rewind-logs.internal/v1/";
 
-function handleLogQuery(after, kv, next, path, qs) {
+function handleLogQuery(after, kv, platform, next, path, qs) {
     const auth = request.auth || {};
     // The M2M root grant is `{sub: null, is_root: true}`, so authority — not a
     // session — is what 401 turns on (rove#414).
@@ -2170,7 +2253,7 @@ function handleLogQuery(after, kv, next, path, qs) {
     // tenant the caller cannot reach is refused identically whether or not it
     // exists, so the door is not a tenant-existence oracle. `show/{id}` returns
     // full request and response bodies, so it is gated the same as `list`.
-    if (!auth.is_root && !canAccess(kv, accountHashFor(auth.sub), tenant)) {
+    if (!auth.is_root && !canAccess({ kv, platform }, accountHashFor(auth.sub), tenant)) {
         return jsonError(403, "not your instance");
     }
     after.fetch(LOG_DOOR + tenant + "/" + sub + (qs ? "?" + qs : ""));
@@ -2273,14 +2356,14 @@ const WSPKG = "_workspace_pkg/";
 
 // Parse + ownership-gate a deploy op. Returns the body on success, or null
 // after stamping the error response.
-function deployGate(kv, body) {
+function deployGate(kv, platform, body) {
     const auth = request.auth || {};
     let b;
     try { b = JSON.parse(body); } catch (e) { jsonError(400, "expected JSON body"); return null; }
     if (!validId(b.tenant)) { jsonError(400, "invalid tenant"); return null; }
     if (!auth.is_root) {
         if (!auth.sub) { jsonError(401, "unauthenticated"); return null; }
-        if (!canAccess(kv, accountHashFor(auth.sub), b.tenant)) {
+        if (!canAccess({ kv, platform }, accountHashFor(auth.sub), b.tenant)) {
             jsonError(403, "not your instance"); return null;
         }
     }
@@ -2294,7 +2377,7 @@ function deployGate(kv, body) {
 }
 
 function handleWsReset(kv, platform, body) {
-    const b = deployGate(kv, body); if (!b) return null;
+    const b = deployGate(kv, platform, body); if (!b) return null;
     const sk = platform.scope(b.tenant).kv;
     const rows = sk.prefix(WS, "", 1000);
     for (let i = 0; i < rows.length; i++) sk.delete(rows[i].key);
@@ -2304,7 +2387,7 @@ function handleWsReset(kv, platform, body) {
 }
 
 function handleWsFile(kv, next, platform, body) {
-    const b = deployGate(kv, body); if (!b) return null;
+    const b = deployGate(kv, platform, body); if (!b) return null;
     if (!b.path) return jsonError(400, "path required");
     // Statics stream straight to S3 via PUT /v1/upload (scope(t).blob.receive),
     // which records their own workspace entry — only handlers come through here.
@@ -2329,7 +2412,7 @@ function handleWsFile(kv, next, platform, body) {
 // Recorded under _workspace_pkg/{pkg_hash}/{path} so `cut` can compile +
 // assemble the manifest's packages[].files (mirrors starter/genesis_admin.mjs).
 function handleWsPkgFile(kv, next, platform, body) {
-    const b = deployGate(kv, body); if (!b) return null;
+    const b = deployGate(kv, platform, body); if (!b) return null;
     if (!b.pkg_hash || !b.path) return jsonError(400, "pkg_hash + path required");
     // TRY to compile now (no resolution — the file alone): a self-contained
     // file (the common single-file package) gets its bytecode here, keeping
@@ -2406,7 +2489,7 @@ export function onFileStaged({ platform }) {
 // dashboard bundle sizes — a blob.head verb is the upgrade if it ever shows
 // in deploy latency.)
 function handleWsRef(kv, next, platform, body) {
-    const b = deployGate(kv, body); if (!b) return null;
+    const b = deployGate(kv, platform, body); if (!b) return null;
     if (!b.path || !b.hash) return jsonError(400, "path + hash required");
     if (b.kind !== "static")
         return jsonError(400, "kind must be 'static' (handlers restage source)");
@@ -2444,7 +2527,7 @@ export function onRefVerified({ platform }) {
 // every import eagerly (rove#344). It is also where a bad import fails, and
 // the compile error names the file.
 function handleWsCut(kv, next, platform, body) {
-    const b = deployGate(kv, body); if (!b) return null;
+    const b = deployGate(kv, platform, body); if (!b) return null;
     const sk = platform.scope(b.tenant).kv;
     const rows = sk.prefix(WS, "", 1000);
     if (rows.length === 0) return jsonError(400, "workspace empty — nothing to cut");
@@ -2736,7 +2819,7 @@ function handleReadSources(kv, c, tenant, depArg) {
     const auth = request.auth || {};
     if (!auth.is_root && !auth.sub) return jsonError(401, "unauthenticated");
     if (!validId(tenant)) return jsonError(400, "invalid tenant");
-    if (!auth.is_root && !canAccess(kv, accountHashFor(auth.sub), tenant)) {
+    if (!auth.is_root && !canAccess(c.caps, accountHashFor(auth.sub), tenant)) {
         return jsonError(403, "not your instance");
     }
     if (depArg === "current") {
@@ -2919,7 +3002,7 @@ function handleReadSource(kv, c, tenant, depArg, qs) {
     const auth = request.auth || {};
     if (!auth.is_root && !auth.sub) return jsonError(401, "unauthenticated");
     if (!validId(tenant)) return jsonError(400, "invalid tenant");
-    if (!auth.is_root && !canAccess(kv, accountHashFor(auth.sub), tenant)) {
+    if (!auth.is_root && !canAccess(c.caps, accountHashFor(auth.sub), tenant)) {
         return jsonError(403, "not your instance");
     }
     const filePath = new URLSearchParams(qs || "").get("path");
@@ -2996,7 +3079,7 @@ function handleHistory(kv, c, tenant) {
     // uses, so a team MEMBER reads history like they read logs and kv
     // (the old ownedInstances check saw only the caller's personal
     // account and 403'd members of the owning team).
-    if (!auth.is_root && !canAccess(kv, accountHashFor(auth.sub), tenant)) {
+    if (!auth.is_root && !canAccess(c.caps, accountHashFor(auth.sub), tenant)) {
         return jsonError(403, "not your instance");
     }
     // `_release/{ts_ms:020}` keys are lex-ascending by timestamp; the
@@ -3132,6 +3215,7 @@ const ROUTES = [
     ["POST",   "/v1/account/delete",            "authed",        (c) => requestAccountDeletion(c.caps, c.body.confirm)],
     ["DELETE", "/v1/accounts/:aid",             "accountOwner",  (c) => deleteTeamAccount(c.caps, c.params.aid, c.body && c.body.confirm)],
     ["GET",    "/v1/deletions",                 "root",          (c) => listDeletions(c.caps)],
+    ["POST",   "/v1/ops/incarnations/bind",     "root",          (c) => bindIncarnations(c.caps, c.body.tenant, c.body.dry_run)],
     ["POST",   "/v1/deletions/:aid/retry",      "root",          (c) => retryDeletion(c.caps, c.params.aid)],
     ["GET",    "/v1/accounts/:aid/export",      "accountMember", (c) => accountExport(c.caps.kv, c.params.aid)],
     ["GET",    "/v1/accounts/:aid/billing",     "accountMember", (c) => getBilling(c.caps.kv, c.params.aid)],
@@ -3151,7 +3235,7 @@ const ROUTES = [
     // deployment history (handler enforces ownership) — /v1/history/{tenant}
     ["GET",    "/v1/history/:id",               "self",          (c) => handleHistory(c.caps.kv, c, c.params.id)],
     // log query door (handler enforces is_root) — /v1/logs/{tenant}/{list|count|show/{id}}
-    ["GET",    "/v1/logs/*",                    "self",          (c) => handleLogQuery(c.caps.after, c.caps.kv, c.caps.next, c.path, c.qs)],
+    ["GET",    "/v1/logs/*",                    "self",          (c) => handleLogQuery(c.caps.after, c.caps.kv, c.caps.platform, c.caps.next, c.path, c.qs)],
     // source read door (handler enforces canAccess) — /v1/sources/{tenant}/{dep}
     ["GET",    "/v1/sources/*",                 "self",          (c) => handleSourcesPath(c.caps.kv, c)],
     // single-file twin (text only; the file path rides the query so its
@@ -3203,7 +3287,8 @@ function matchRoute(method, path) {
 }
 
 // The single fail-closed gate, keyed on the route's class + matched path params.
-function routeAuthz(kv, cls, params) {
+function routeAuthz(caps, cls, params) {
+    const kv = caps.kv;
     const a = request.auth || {};
     if (a.is_root) return null;
     if (cls === "open" || cls === "self") return null;
@@ -3213,7 +3298,7 @@ function routeAuthz(kv, cls, params) {
     const caller = accountHashFor(a.sub);
     if (cls === "tenant" || cls === "tenantRead" || cls === "tenantWrite") {
         if (!validId(params.id)) return jsonError(400, "invalid id");
-        return canAccess(kv, caller, params.id) ? null : jsonError(403, "not your instance");
+        return canAccess(caps, caller, params.id) ? null : jsonError(403, "not your instance");
     }
     if (cls === "accountOwner") {
         return roleInAccount(kv, params.aid, caller) === "owner" ? null : jsonError(403, "not an owner");
@@ -3258,7 +3343,7 @@ export default function({ platform, after, kv, next, config, webhook }) {
     const qs = request.query || "";
     const m = matchRoute(request.method, path);
     if (!m) { response.status = 404; return { error: "not found" }; }
-    const denied = routeAuthz(kv, m.authz, m.params);
+    const denied = routeAuthz({ kv: kv, platform: platform }, m.authz, m.params);
     if (denied) return denied;
     return m.thunk({
         // Received capabilities, threaded to route handlers (rove#753's

@@ -18,6 +18,13 @@ rewind test ./admin      # billing, release, teams, doors, code_pane_doors
   releases.publish, instances.create), which is admin-only — the scenario must opt in.
 - **Membership** rows are `sha256(email)`-keyed; fixtures compute the hash with the
   same `crypto.sha256(email.trim().toLowerCase())` (`userHashFor`) the handler uses.
+- **Tenant reach is bound to an incarnation.** `canAccess` grants only when
+  `instance/{id}/incarnation` matches what `platform.instances.incarnation(id)`
+  reports, so a fixture that exercises a customer's reach over a tenant declares the
+  instance (`instances: { id: {} }`, optionally `{ incarnation }` — the harness
+  default is `"0000000000000000"`) AND seeds the matching row beside
+  `instance/{id}/owner`. An owner row alone grants nothing. `incarnation.mjs` is the
+  delete-and-reuse sequence.
 - **Bodyless requests** (GET/DELETE) need no special handling — an authored inbound with
   no `body` reads `request.text` as `""`, matching prod (rove `2e27da3`).
 
