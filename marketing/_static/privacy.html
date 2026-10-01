@@ -94,10 +94,9 @@
     <li><strong>Your email address.</strong> It is how you sign in and is the
         identifier of your account, stored as you typed it (lower-cased). We
         have no passwords.</li>
-    <li><strong>Sign-in links.</strong> Each link carries a random token. We
-        store only a SHA-256 hash of it, together with your email address and
-        the page to return you to. A link works once and expires after 15
-        minutes. The stored row is removed when the link is used; a link that
+    <li><strong>Sign-in links.</strong> Each link carries a token, stored
+        with your email address and the page to return you to. A link works
+        once and expires after 15 minutes. The stored row is removed when the link is used; a link that
         is never clicked stays stored until your account is deleted.</li>
     <li><strong>Sign-in sessions and tokens.</strong> Signing in creates a
         session record and the tokens our dashboard uses to act for you
@@ -341,8 +340,8 @@
   <p>What we do: TLS on every connection from the internet. Each app's data
      lives in its own replicated store under its own storage prefix and its own
      encryption key. Handlers run under per-request time and memory limits, and
-     cannot reach private network addresses. Client IPs are masked by default.
-     Sign-in link tokens are stored hashed.</p>
+     cannot reach private network addresses. Client IPs are masked by
+     default.</p>
   <p>What we do not do, stated plainly: the items listed in section 4 as
      stored as written are not encrypted by us, and we do not ask our storage
      provider to encrypt them either. If your app handles data that must be
