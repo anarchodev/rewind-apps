@@ -844,6 +844,89 @@ function getBilling(kv, aid) {
     return billingFor(kv, aid);
 }
 
+// GET /v1/accounts/:aid/billing/invoices?starting_after=in_… — accountOwner.
+// The account's invoice history, newest first, a page at a time. Payment runs
+// through embedded Elements, so there is no Stripe-hosted portal to send a
+// customer to; this is where they see what they were charged, download the
+// PDF, and pay an open invoice (`hosted_invoice_url` is Stripe's own payment
+// page for that one invoice).
+//
+// Owner-only, unlike the billing summary: an invoice carries the payer's
+// name, address and tax details, and its link can settle it.
+//
+// The Stripe call is HELD (the page needs the answer) and keyed by the
+// account's OWN customer id from our rows — never one from the request — so
+// an owner can list only invoices their account was billed. Drafts are
+// Stripe's working copies, not bills, and are never shown.
+const INVOICE_PAGE = 12;
+
+function listInvoices({ kv, after, next }, aid, startingAfter) {
+    const cus = kv.get("account/" + aid + "/billing/customer");
+    if (cus === null) return { invoices: [], has_more: false, next_cursor: null };
+    if (startingAfter !== undefined && startingAfter !== null && startingAfter !== "" &&
+        !/^in_[A-Za-z0-9]{1,64}$/.test(startingAfter)) {
+        return jsonError(400, "bad cursor");
+    }
+    const apiKey = kv.get("stripe_key");
+    if (!apiKey) return jsonError(503, "billing not configured");
+    const q = new URLSearchParams({ customer: cus, limit: String(INVOICE_PAGE) });
+    if (startingAfter) q.set("starting_after", startingAfter);
+    after.fetch("https://api.stripe.com/v1/invoices?" + q.toString(), {
+        method: "GET",
+        headers: { "Authorization": "Bearer " + apiKey },
+        on: "onInvoices",
+        ctx: { cus: cus },
+    });
+    return next();
+}
+
+// Seconds (Stripe) → ms (everything else here); null stays null.
+function stripeMs(sec) { return typeof sec === "number" && sec > 0 ? sec * 1000 : null; }
+
+export function onInvoices() {
+    const ctx = request.ctx || {};
+    if (!(request.status >= 200 && request.status < 300)) {
+        // Stripe's error body is for us, not the customer — it can name the
+        // key's mode or account. Log-side detail lives on the tape.
+        return jsonError(502, "could not load invoices — try again shortly");
+    }
+    let body = null;
+    try { body = request.json; } catch (_) { /* fall through */ }
+    if (!body || !Array.isArray(body.data)) return jsonError(502, "could not load invoices — try again shortly");
+    const invoices = [];
+    for (const inv of body.data) {
+        if (!inv || typeof inv.id !== "string") continue;
+        if (inv.customer !== ctx.cus) continue; // only ever this account's own
+        if (inv.status === "draft") continue;
+        invoices.push({
+            id: inv.id,
+            number: typeof inv.number === "string" ? inv.number : null,
+            status: typeof inv.status === "string" ? inv.status : null,
+            currency: typeof inv.currency === "string" ? inv.currency : null,
+            total: typeof inv.total === "number" ? inv.total : 0,
+            tax: typeof inv.tax === "number" ? inv.tax : null,
+            amount_due: typeof inv.amount_due === "number" ? inv.amount_due : 0,
+            amount_paid: typeof inv.amount_paid === "number" ? inv.amount_paid : 0,
+            amount_remaining: typeof inv.amount_remaining === "number" ? inv.amount_remaining : 0,
+            created_ms: stripeMs(inv.created),
+            period_start_ms: stripeMs(inv.period_start),
+            period_end_ms: stripeMs(inv.period_end),
+            due_ms: stripeMs(inv.due_date),
+            attempted: inv.attempted === true,
+            hosted_invoice_url: typeof inv.hosted_invoice_url === "string" ? inv.hosted_invoice_url : null,
+            invoice_pdf: typeof inv.invoice_pdf === "string" ? inv.invoice_pdf : null,
+        });
+    }
+    // The cursor is the last row STRIPE returned (drafts included), so a page
+    // of filtered drafts still advances.
+    const last = body.data.length ? body.data[body.data.length - 1] : null;
+    return {
+        invoices: invoices,
+        has_more: body.has_more === true,
+        next_cursor: body.has_more === true && last && typeof last.id === "string" ? last.id : null,
+    };
+}
+
 // GET /v1/accounts/:aid/export — the account-rows slice of the data export
 // (rove#340): members, roles, pending invites, instances, billing meta, as
 // one synchronous JSON attachment. Per-INSTANCE data (kv + code) has its own
@@ -3135,6 +3218,7 @@ const ROUTES = [
     ["POST",   "/v1/deletions/:aid/retry",      "root",          (c) => retryDeletion(c.caps, c.params.aid)],
     ["GET",    "/v1/accounts/:aid/export",      "accountMember", (c) => accountExport(c.caps.kv, c.params.aid)],
     ["GET",    "/v1/accounts/:aid/billing",     "accountMember", (c) => getBilling(c.caps.kv, c.params.aid)],
+    ["GET",    "/v1/accounts/:aid/billing/invoices", "accountOwner", (c) => listInvoices(c.caps, c.params.aid, c.query.starting_after)],
     ["GET",    "/v1/billing/config",            "authed",        (c) => billingConfigPk(c.caps.kv)],
     ["POST",   "/v1/accounts/:aid/billing/subscribe", "accountOwner", (c) => subscribeBilling(c.caps.after, c.caps.kv, c.caps.next, c.caps.webhook, c.params.aid, c.body.tier)],
     ["POST",   "/v1/accounts/:aid/billing/change",    "accountOwner", (c) => changeBilling(c.caps.after, c.caps.kv, c.caps.webhook, c.params.aid, c.body.tier)],

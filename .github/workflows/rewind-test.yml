@@ -125,7 +125,9 @@ jobs:
       # The admin browser bundle (`admin/_static/`) is not loaded by the handler
       # engine, so its checks run under node. Cheap, and no CLI needed.
       - name: Run the admin browser-bundle checks
-        run: node admin/_tests/_api_base.node.mjs
+        run: |
+          node admin/_tests/_api_base.node.mjs
+          node admin/_tests/_billing_view.node.mjs
 
       - name: Run the handler test suites
         run: |

@@ -525,6 +525,12 @@ export const api = {
   // ── Billing (rove#310) ─────────────────────────────────────────────
   async billingConfig() { return rest("GET", "/v1/billing/config"); },
   async getBilling(aid) { return rest("GET", "/v1/accounts/" + seg(aid) + "/billing"); },
+  /// Owner-only invoice history, newest first: `{invoices, has_more,
+  /// next_cursor}`; pass `next_cursor` back as `startingAfter` for the next page.
+  async listInvoices(aid, startingAfter = null) {
+    const qs = startingAfter ? "?starting_after=" + encodeURIComponent(startingAfter) : "";
+    return rest("GET", "/v1/accounts/" + seg(aid) + "/billing/invoices" + qs);
+  },
   async subscribeBilling(aid, tier) {
     return rest("POST", "/v1/accounts/" + seg(aid) + "/billing/subscribe", { tier });
   },
