@@ -14,8 +14,9 @@
 //   • next()     — hold the connection across LLM round-trips
 //
 // Swap the `on.fetch` block for any model; the rest is model-agnostic.
-// The LLM endpoint/key/model are read from `_config/*` so an operator
-// (or the smoke harness) can point this at a stub.
+// The LLM endpoint/key/model are deploy-time config (`_config/<name>.json`,
+// read through `config`) so an operator (or the smoke harness) can point
+// this at a stub.
 import browser from "@rewind/browser";
 
 const SYSTEM_PROMPT =
@@ -35,7 +36,7 @@ const DESTRUCTIVE_RE =
 const MAX_TRANSCRIPT = 24; // bound kv growth (see trim())
 
 // ── Activation: one inbound WS frame from the page ──────────────────
-export function onMessage({ after, kv, next, tag, stream }) {
+export function onMessage({ after, config, kv, next, tag, stream }) {
   const frame = browser.message();
   const ctx = request.ctx || {};
   if (!frame) return next(ctx);
@@ -57,7 +58,7 @@ export function onMessage({ after, kv, next, tag, stream }) {
       return next({ sid }); // the page sends its first snapshot next
     }
     case "snapshot":
-      return think(after, kv, next, stream, frame, ctx);
+      return think(after, config, kv, next, stream, frame, ctx);
 
     case "screenshot":
       // The pixels the brain asked for came back — feed them to the model.
@@ -90,7 +91,7 @@ export function onMessage({ after, kv, next, tag, stream }) {
 }
 
 // ── Decide the next action: call the LLM with the current view ──────
-function think(after, kv, next, stream, frame, ctx) {
+function think(after, config, kv, next, stream, frame, ctx) {
   const sid = frame.sid || ctx.sid;
 
   // Pending getReplay (the model asked "why?"): this is a read-only WS
@@ -106,7 +107,7 @@ function think(after, kv, next, stream, frame, ctx) {
     }
     // Couldn't issue (no connection ctx) — tell the model next turn.
     const note = { role: "user", content: [{ type: "tool_result", tool_use_id: ctx.replay_tool_id, content: "Replay unavailable." }] };
-    return callLLM(after, kv, next, stream, sid, note, { sid, user_turn: note, refs: ctx.refs || {} });
+    return callLLM(after, config, kv, next, stream, sid, note, { sid, user_turn: note, refs: ctx.refs || {} });
   }
 
   const goal = kv.get(`agent/${sid}/goal`) || "";
@@ -153,7 +154,7 @@ function think(after, kv, next, stream, frame, ctx) {
   } else {
     userTurn = { role: "user", content: `Goal: ${goal}\n\n${view}` };
   }
-  return callLLM(after, kv, next, stream, sid, userTurn, {
+  return callLLM(after, config, kv, next, stream, sid, userTurn, {
     sid, user_turn: userTurn, refs,
     // onLLM (a write activation) stores the pixels durably; think() is
     // read-only so it can't.
@@ -185,7 +186,7 @@ function onShot(next, stream, frame, ctx) {
 // onReplay is a read-only fetch callback, so it can bind the next LLM
 // turn directly: feed the session's recent activations back to the
 // model as the getReplay tool_result. callLLM stays read-only.
-export function onReplay({ after, kv, next }) {
+export function onReplay({ after, config, kv, next, stream }) {
   const ctx = request.ctx || {};
   const sid = ctx.sid;
   let view;
@@ -198,20 +199,34 @@ export function onReplay({ after, kv, next }) {
     role: "user",
     content: [{ type: "tool_result", tool_use_id: ctx.replay_tool_id, content: view }],
   };
-  return callLLM(after, kv, next, stream, sid, userTurn, { sid, user_turn: userTurn, refs: ctx.refs || {} });
+  return callLLM(after, config, kv, next, stream, sid, userTurn, { sid, user_turn: userTurn, refs: ctx.refs || {} });
+}
+
+// One deploy-time setting as a string, or null when this deployment carries
+// none. A config file holds JSON (`"https://…"`, `1`); a bare string reads as
+// itself, so either spelling of a scalar works.
+function setting(config, name) {
+  const raw = config.get(name);
+  if (raw === null) return null;
+  try {
+    const v = JSON.parse(raw);
+    return typeof v === "string" ? v : String(v);
+  } catch (_) {
+    return raw.trim();
+  }
 }
 
 // ── Shared LLM turn: hold the chain, call the model, wake onLLM ──────
 // READ-ONLY (no kv writes) so the on.fetch can bind to the held WS chain.
-function callLLM(after, kv, next, stream, sid, userTurn, parkCtx) {
+function callLLM(after, config, kv, next, stream, sid, userTurn, parkCtx) {
   const msgs = load(kv, sid);
-  const screenshots = kv.get("_config/screenshots") === "1";
-  const replay = kv.get("_config/replay") !== "0"; // on by default
+  const screenshots = setting(config, "screenshots") === "1";
+  const replay = setting(config, "replay") !== "0"; // on by default
   browser.status({ stream }, "thinking…");
 
-  const endpoint = kv.get("_config/llm_endpoint") || "https://api.anthropic.com/v1/messages";
-  const key = kv.get("_config/anthropic_api_key") || "";
-  const model = kv.get("_config/llm_model") || "claude-opus-4-8";
+  const endpoint = setting(config, "llm_endpoint") || "https://api.anthropic.com/v1/messages";
+  const key = setting(config, "anthropic_api_key") || "";
+  const model = setting(config, "llm_model") || "claude-opus-4-8";
 
   // Connection-scoped: binds to THIS held WS chain; the result wakes
   // onLLM while we still hold the socket. The key is the CUSTOMER's.
