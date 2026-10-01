@@ -32,20 +32,17 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  # The rove commit the `rewind` CLI is built from. Bump to pick up a harness fix.
-  # Must be >= rove ab76807d (the saga rename, rove#448): the embedded
-  # `rewind:test` harness gained `scenario({sagaId})`, and an older CLI
-  # silently ignores it — the identity goes unset and getReplay never
-  # builds its logs URL, which reads as a handler bug rather than a
-  # stale toolchain.
-  # rove abc6dcdf (#604). Bumped from 6931ea0c, which had fallen 63 commits
-  # behind and could no longer gate this repo honestly: the generated arena
-  # mirrors on main are produced from CURRENT rove sources (#88), so checking
-  # them against a stale pin reported STALE for content that is in fact fresh.
-  # The pin also predates rove#599, which added `@rewind/export` to the CLI's
-  # embedded first-party set — without it `rewind test ./admin` cannot resolve
-  # the admin manifest's dependency at all.
-  ROVE_REF: ada5b504cff530952cd01672d8f18e763d5d1f0b
+  # The rove commit the `rewind` CLI is built from. The CLI carries the sim
+  # engine, the `rewind:test` harness AND the embedded first-party @rewind/*
+  # package sources, so this pin fixes all three — not just a harness version.
+  # It must be at least as new as everything the suites and the committed
+  # generated files rely on: the replay-prelude check below compares
+  # `replay/_static/arena-prelude.js` against THIS commit's shim sources, and
+  # the admin suites call platform.* verbs the engine has to provide. A stale
+  # pin fails here for content that is in fact current, so move it forward
+  # with any apps change that needs a newer rove (rove#813 tracks replacing
+  # the pin).
+  ROVE_REF: ad8e5e9c5c21817257b630d30f2fe421b18cbcd8
   ZIG_VERSION: 0.15.2
 
 jobs:
