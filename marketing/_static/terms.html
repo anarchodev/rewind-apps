@@ -1,0 +1,213 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Terms of Service — rewind.js</title>
+  <meta name="description" content="The agreement between you and Loop46, Inc. for using the rewind.js service.">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' rx='4' fill='%2311111b'/%3E%3Crect x='1.5' y='3' width='13' height='10' rx='5' fill='%23cba6f7'/%3E%3Cpolygon points='7,5 7,11 4.3,8' fill='%2311111b'/%3E%3Cpolygon points='11,5 11,11 8.3,8' fill='%2311111b'/%3E%3C/svg%3E">
+  <!-- Fully self-contained, like privacy.html: no rewind.css (it imports
+       Google Fonts) and no other external request. -->
+  <style>
+    :root {
+      color-scheme: dark;
+      --crust: #11111b; --mantle: #181825; --base: #1e1e2e; --surface-0: #313244;
+      --text-0: #cdd6f4; --text-1: #bac2de; --text-2: #a6adc8; --text-3: #7f849c;
+      --c-brand: #cba6f7; --c-warn: #f9e2af;
+      --font-sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+      --font-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    }
+    body { margin: 0; background: var(--base); color: var(--text-1); font-family: var(--font-sans); }
+    .doc { max-width: 720px; margin: 0 auto; padding: 56px 24px 96px; }
+    .doc h1 { font-size: 38px; line-height: 1.15; letter-spacing: -1px; margin: 0 0 10px; color: var(--text-0); }
+    .doc h2 { font-size: 21px; margin: 44px 0 12px; color: var(--text-0); letter-spacing: -0.3px; }
+    .doc h3 { font-size: 16px; margin: 26px 0 8px; color: var(--text-1); }
+    .doc p, .doc li { font-size: 15.5px; line-height: 1.65; color: var(--text-2); }
+    .doc ul { padding-left: 22px; margin: 10px 0; }
+    .doc li { margin-bottom: 7px; }
+    .doc a { color: var(--c-brand); }
+    .doc strong { color: var(--text-1); }
+    .doc code { font-family: var(--font-mono); font-size: 13.5px; color: var(--text-1); }
+    .doc table { width: 100%; border-collapse: collapse; margin: 14px 0; font-size: 14px; }
+    .doc th, .doc td { text-align: left; padding: 9px 12px; border-bottom: 1px solid var(--surface-0); color: var(--text-2); vertical-align: top; }
+    .doc th { color: var(--text-1); font-weight: 600; }
+    .updated { font-family: var(--font-mono); font-size: 13px; color: var(--text-3); margin: 0 0 34px; }
+    .callout { border: 1px solid var(--surface-0); border-left: 3px solid var(--c-brand);
+               background: var(--mantle); padding: 16px 18px; margin: 20px 0; border-radius: 0 8px 8px 0; }
+    .callout p { margin: 0; font-size: 14.5px; }
+    .callout p + p { margin-top: 10px; }
+    .draft { border: 1px solid var(--c-warn); color: var(--c-warn); padding: 12px 16px; border-radius: 8px;
+             font-family: var(--font-mono); font-size: 13px; margin: 0 0 30px; }
+    .decide { background: rgba(249, 226, 175, .14); color: var(--c-warn); font-family: var(--font-mono);
+              font-size: 12.5px; padding: 1px 6px; border-radius: 4px; }
+    .doc footer { margin-top: 56px; padding-top: 20px; border-top: 1px solid var(--surface-0);
+                  font-size: 13px; color: var(--text-3); }
+  </style>
+</head>
+<body>
+<div class="doc">
+
+  <p class="updated"><a href="/">&larr; rewind.js</a></p>
+
+  <!-- DRAFT MARKERS: the .draft banner and every .decide span must be gone
+       before this page is published. They mark text awaiting sign-off. -->
+  <p class="draft">DRAFT — not in effect. Items marked DECISION are awaiting sign-off.</p>
+
+  <h1>Terms of Service</h1>
+  <p class="updated">Effective <span class="decide">DECISION: publication date</span></p>
+
+  <p>These terms are the agreement between you and Loop46, Inc., a Washington
+     corporation that operates rewind.js ("we", "us"). They cover the hosted
+     service at rewindjs.com, app.rewindjs.com and the hosts we serve apps on.
+     By creating an account or deploying an app you accept them. If you accept
+     them for an organisation, you confirm you can bind it, and "you" means
+     the organisation.</p>
+
+  <p>The software behind rewind.js is open source under the GNU Affero General
+     Public License v3. That licence governs the source code. These terms
+     govern our running service, and neither one limits the other.</p>
+
+  <h2>1. Beta</h2>
+  <p>rewind.js is in public beta. Features change, limits move, and things
+     break. We do not offer a service-level agreement or uptime commitment
+     during beta, and we do not credit or refund for downtime.</p>
+  <div class="callout">
+    <p><strong>Data continuity.</strong>
+       <span class="decide">DECISION: which promise, if any — see the PR</span>
+       We will not deliberately reset or wipe beta accounts or their data when
+       we change the platform: changes that affect stored data ship with a
+       migration. This is a promise about how we change the service, not a
+       guarantee against loss. Keep your own copy of anything you cannot
+       afford to lose; the dashboard exports it at any time.</p>
+  </div>
+
+  <h2>2. Your account</h2>
+  <ul>
+    <li>You must be at least 16 and able to form a binding contract.</li>
+    <li>You sign in with an email address. Keep control of that inbox:
+        anyone who can read it can sign in as you.</li>
+    <li>You are responsible for what happens under your account, including
+        by team members you invite.</li>
+    <li>Plans limit the number of apps, team members, storage, request size,
+        outbound requests and how long request records stay readable. Current
+        limits are on <a href="/pricing">our pricing page</a>. Free accounts
+        cannot make outbound requests or send email.</li>
+  </ul>
+
+  <h2>3. Your content</h2>
+  <p>Your code, your data, and the data your apps' users send are yours. You
+     give us the rights we need to host, run, record, replay, back up and
+     display it in order to provide the service to you, and for no other
+     purpose.</p>
+  <p><strong>rewind.js records requests so they can be replayed, including
+     request bodies.</strong> Our <a href="/privacy">privacy policy</a> lists
+     exactly what is recorded. You are responsible for telling your apps'
+     users what your app collects, for having a lawful basis to collect it,
+     and for not sending through rewind.js data you are not allowed to have
+     recorded. For your users' personal data we act as your processor under
+     our <span class="decide">DECISION: DPA link</span>.</p>
+  <p>You must follow our <a href="/acceptable-use">Acceptable Use
+     Policy</a>.</p>
+
+  <h2>4. Paid plans</h2>
+  <p>Paid plans are not available yet. When they are:</p>
+  <ul>
+    <li>Plans are billed monthly in advance through Stripe, at the price shown
+        when you subscribe, <span class="decide">DECISION: taxes — inclusive
+        or added</span>.</li>
+    <li>You can cancel at any time. Service continues to the end of the period
+        you paid for, then the account moves to the free plan. We do not refund
+        partial periods <span class="decide">DECISION: refund policy</span>.</li>
+    <li>If a payment fails, Stripe retries it for about two weeks and your
+        service continues meanwhile. If it still fails, the subscription ends
+        and the account moves to the free plan.</li>
+    <li><strong>Not paying never deletes your account or your apps.</strong>
+        They stay on the free plan. On the free plan, outbound requests stop
+        and records older than the free plan's window are hidden at once; we
+        will not delete those records for at least 30 days after the change.
+        Over-limit apps and data are kept; creating more is blocked until you
+        are back under the limit.</li>
+    <li>We will give you at least <span class="decide">DECISION: 30</span>
+        days' notice by email before a price increase takes effect.</li>
+  </ul>
+
+  <h2>5. Suspension and termination</h2>
+  <p><strong>You</strong> can delete your account from the dashboard at any
+     time. Deletion is immediate and permanent; export first if you want a
+     copy. The <a href="/privacy">privacy policy</a> says what deletion
+     removes and what remains.</p>
+  <p><strong>We</strong> may suspend an app — it stops serving, and nothing in
+     it is deleted — if it breaks the Acceptable Use Policy or these terms,
+     endangers the platform or other customers, or if the law requires it. We
+     will tell you why, by email, at the time or as soon as we safely can, and
+     restore it once the problem is resolved.</p>
+  <p>We may end your account for serious or repeated breaches, or if we stop
+     offering the service. Unless the law or an ongoing abuse prevents it, we
+     will give you <span class="decide">DECISION: 30</span> days' notice by
+     email, during which you can export your data. Non-payment is never a
+     reason we delete an account (section 4).</p>
+
+  <h2>6. Our responsibilities</h2>
+  <p>We will run the service with reasonable skill and care, protect your data
+     as our <a href="/privacy">privacy policy</a> describes, and tell you
+     without undue delay if we learn of a security breach affecting your
+     data.</p>
+
+  <h2>7. Disclaimers</h2>
+  <p>Apart from what section 6 says, the service is provided "as is" and "as
+     available". To the extent the law allows, we disclaim all other
+     warranties, including merchantability, fitness for a particular purpose,
+     and non-infringement, and we do not warrant that the service will be
+     uninterrupted, error-free, or that data will never be lost.</p>
+
+  <h2>8. Limitation of liability</h2>
+  <p>To the extent the law allows: neither party is liable for indirect,
+     incidental, special, consequential or punitive damages, or for lost
+     profits, revenue or data. Our total liability for all claims about the
+     service is limited to <span class="decide">DECISION: cap — e.g. the
+     greater of the fees you paid us in the 12 months before the claim, or
+     US$100</span>. These limits do not apply where the law forbids them,
+     including liability for fraud or for death or personal injury caused by
+     negligence.</p>
+
+  <h2>9. Indemnity</h2>
+  <p>You will defend and indemnify us against third-party claims arising from
+     your content or your apps, or from your breach of these terms or the
+     Acceptable Use Policy.</p>
+
+  <h2>10. Changes to these terms</h2>
+  <p>We may change these terms. For a material change we will email the address
+     on your account at least <span class="decide">DECISION: 30</span> days
+     before it takes effect. If you keep using the service after that, the new
+     terms apply; if you do not accept them, delete your account before
+     then.</p>
+
+  <h2>11. Law and disputes</h2>
+  <p>These terms are governed by the laws of
+     <span class="decide">DECISION: the State of Washington, USA</span>,
+     without regard to conflict-of-law rules. Disputes go to the state and
+     federal courts in <span class="decide">DECISION: King County,
+     Washington</span>, and both parties consent to their jurisdiction. If you
+     are a consumer, this does not take away protections the law of the
+     country where you live gives you.</p>
+
+  <h2>12. General</h2>
+  <p>These terms, the Acceptable Use Policy, the privacy policy and, where it
+     applies, the data processing agreement are the whole agreement between
+     us about the service. If a part is unenforceable the rest still applies.
+     Not enforcing a term is not a waiver of it. You may not transfer this
+     agreement without our consent; we may transfer it as part of a merger or
+     sale of the business, with notice to you.</p>
+
+  <h2>13. Contact</h2>
+  <p>
+    Loop46, Inc. — operator of rewind.js<br>
+    124 28th Ave, Seattle, WA 98122, USA<br>
+    <a href="mailto:support@loop46.com">support@loop46.com</a>
+  </p>
+
+  <footer>© 2026 Loop46, Inc. · <a href="/">rewind.js</a> · <a href="/support">Support</a></footer>
+
+</div>
+</body>
+</html>

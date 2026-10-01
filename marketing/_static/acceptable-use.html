@@ -1,0 +1,138 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Acceptable Use Policy — rewind.js</title>
+  <meta name="description" content="What you may not do with rewind.js, and what we do about it.">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' rx='4' fill='%2311111b'/%3E%3Crect x='1.5' y='3' width='13' height='10' rx='5' fill='%23cba6f7'/%3E%3Cpolygon points='7,5 7,11 4.3,8' fill='%2311111b'/%3E%3Cpolygon points='11,5 11,11 8.3,8' fill='%2311111b'/%3E%3C/svg%3E">
+  <!-- Fully self-contained, like privacy.html: no rewind.css (it imports
+       Google Fonts) and no other external request. -->
+  <style>
+    :root {
+      color-scheme: dark;
+      --crust: #11111b; --mantle: #181825; --base: #1e1e2e; --surface-0: #313244;
+      --text-0: #cdd6f4; --text-1: #bac2de; --text-2: #a6adc8; --text-3: #7f849c;
+      --c-brand: #cba6f7; --c-warn: #f9e2af;
+      --font-sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+      --font-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    }
+    body { margin: 0; background: var(--base); color: var(--text-1); font-family: var(--font-sans); }
+    .doc { max-width: 720px; margin: 0 auto; padding: 56px 24px 96px; }
+    .doc h1 { font-size: 38px; line-height: 1.15; letter-spacing: -1px; margin: 0 0 10px; color: var(--text-0); }
+    .doc h2 { font-size: 21px; margin: 44px 0 12px; color: var(--text-0); letter-spacing: -0.3px; }
+    .doc h3 { font-size: 16px; margin: 26px 0 8px; color: var(--text-1); }
+    .doc p, .doc li { font-size: 15.5px; line-height: 1.65; color: var(--text-2); }
+    .doc ul { padding-left: 22px; margin: 10px 0; }
+    .doc li { margin-bottom: 7px; }
+    .doc a { color: var(--c-brand); }
+    .doc strong { color: var(--text-1); }
+    .doc code { font-family: var(--font-mono); font-size: 13.5px; color: var(--text-1); }
+    .doc table { width: 100%; border-collapse: collapse; margin: 14px 0; font-size: 14px; }
+    .doc th, .doc td { text-align: left; padding: 9px 12px; border-bottom: 1px solid var(--surface-0); color: var(--text-2); vertical-align: top; }
+    .doc th { color: var(--text-1); font-weight: 600; }
+    .updated { font-family: var(--font-mono); font-size: 13px; color: var(--text-3); margin: 0 0 34px; }
+    .callout { border: 1px solid var(--surface-0); border-left: 3px solid var(--c-brand);
+               background: var(--mantle); padding: 16px 18px; margin: 20px 0; border-radius: 0 8px 8px 0; }
+    .callout p { margin: 0; font-size: 14.5px; }
+    .callout p + p { margin-top: 10px; }
+    .draft { border: 1px solid var(--c-warn); color: var(--c-warn); padding: 12px 16px; border-radius: 8px;
+             font-family: var(--font-mono); font-size: 13px; margin: 0 0 30px; }
+    .decide { background: rgba(249, 226, 175, .14); color: var(--c-warn); font-family: var(--font-mono);
+              font-size: 12.5px; padding: 1px 6px; border-radius: 4px; }
+    .doc footer { margin-top: 56px; padding-top: 20px; border-top: 1px solid var(--surface-0);
+                  font-size: 13px; color: var(--text-3); }
+  </style>
+</head>
+<body>
+<div class="doc">
+
+  <p class="updated"><a href="/">&larr; rewind.js</a></p>
+
+  <!-- DRAFT MARKERS: the .draft banner and every .decide span must be gone
+       before this page is published. They mark text awaiting sign-off. -->
+  <p class="draft">DRAFT — not in effect. Items marked DECISION are awaiting sign-off.</p>
+
+  <h1>Acceptable Use Policy</h1>
+  <p class="updated">Effective <span class="decide">DECISION: publication date</span></p>
+
+  <p>rewind.js runs your code on shared machines and, on paid plans, sends
+     HTTP requests and email on your behalf. This policy is what you may not do
+     with it. It is part of our <a href="/terms">Terms of Service</a> and
+     applies to everyone using an account, and to every app deployed on
+     rewind.js.</p>
+
+  <h2>1. Content and conduct</h2>
+  <p>Do not use rewind.js to host, send or facilitate:</p>
+  <ul>
+    <li>anything illegal where you or your users are, or in the United States
+        or Canada, where we operate;</li>
+    <li>child sexual abuse material — we report it to the authorities;</li>
+    <li>phishing, credential harvesting, or impersonating another person,
+        company or service;</li>
+    <li>malware, or command-and-control for it;</li>
+    <li>fraud, scams, or deceptive payment flows;</li>
+    <li>material that infringes someone else's intellectual property or
+        privacy;</li>
+    <li>harassment, threats, or incitement to violence.</li>
+  </ul>
+
+  <h2>2. Outbound requests and email</h2>
+  <p>On paid plans your handlers can make HTTP requests and send webhooks and
+     email. Do not use them to:</p>
+  <ul>
+    <li>send unsolicited bulk or commercial email, or email to addresses that
+        did not ask for it;</li>
+    <li>scan, probe or attack systems you are not authorised to test;</li>
+    <li>take part in, amplify or relay denial-of-service traffic;</li>
+    <li>scrape services against their terms, or evade their rate limits.</li>
+  </ul>
+  <p>Outbound requests are rate-limited per plan and cannot reach private or
+     internal network addresses. Do not try to get around either.</p>
+
+  <h2>3. The platform and other customers</h2>
+  <ul>
+    <li>Do not try to read, alter or disrupt another customer's apps or data,
+        or to break out of the isolation between apps.</li>
+    <li>Do not mine cryptocurrency, or run work designed to consume shared
+        resources rather than serve requests. Handlers run under time and
+        memory limits per request.</li>
+    <li>Do not get around plan limits — for example by spreading one workload
+        across several free accounts.</li>
+    <li>Do not resell the service or offer it as hosting to others without our
+        written agreement.</li>
+  </ul>
+  <p>Security research in good faith, within the scope of our
+     <span class="decide">DECISION: link /security once #327 publishes</span>
+     disclosure policy, is welcome and is not a breach of this policy.</p>
+
+  <h2>4. What we do about it</h2>
+  <p>We do not monitor app content in general. We act on reports and on what
+     our systems flag. Depending on how serious it is, we may:</p>
+  <ul>
+    <li>pause an app automatically: one that repeatedly runs past its
+        per-request time limit answers "unavailable" for a short period,
+        without notice. The pause lifts by itself, or as soon as you deploy a
+        fix;</li>
+    <li>disable outbound requests for an account;</li>
+    <li><strong>suspend</strong> an app: it stops serving, and nothing in it is
+        deleted, so it can be restored;</li>
+    <li>end the account, as the <a href="/terms">Terms</a> describe;</li>
+    <li>report illegal activity to the relevant authorities.</li>
+  </ul>
+  <p>We will tell you what we did and why, by email, unless doing so would
+     help the abuse continue or the law prevents it. If you think we got it
+     wrong, reply to that email and a person will review it.</p>
+
+  <h2>5. Reporting abuse</h2>
+  <p>To report an app on rewind.js, write to
+     <span class="decide">DECISION: abuse@loop46.com or support@loop46.com</span>
+     (operated by Loop46, Inc.) with the URL and what you saw. Report security
+     vulnerabilities to <a href="mailto:security@loop46.com">security@loop46.com</a>
+     instead.</p>
+
+  <footer>© 2026 Loop46, Inc. · <a href="/">rewind.js</a> · <a href="/support">Support</a></footer>
+
+</div>
+</body>
+</html>
