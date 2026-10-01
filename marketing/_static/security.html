@@ -1,0 +1,138 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Security — rewind.js</title>
+  <meta name="description" content="How to report a security vulnerability in rewind.js, what is in scope, and our safe-harbour commitment.">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' rx='4' fill='%2311111b'/%3E%3Crect x='1.5' y='3' width='13' height='10' rx='5' fill='%23cba6f7'/%3E%3Cpolygon points='7,5 7,11 4.3,8' fill='%2311111b'/%3E%3Cpolygon points='11,5 11,11 8.3,8' fill='%2311111b'/%3E%3C/svg%3E">
+  <!-- Fully self-contained, like privacy.html: no rewind.css (it imports
+       Google Fonts) and no other external request. -->
+  <style>
+    :root {
+      color-scheme: dark;
+      --crust: #11111b; --mantle: #181825; --base: #1e1e2e; --surface-0: #313244;
+      --text-0: #cdd6f4; --text-1: #bac2de; --text-2: #a6adc8; --text-3: #7f849c;
+      --c-brand: #cba6f7; --c-warn: #f9e2af;
+      --font-sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+      --font-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    }
+    body { margin: 0; background: var(--base); color: var(--text-1); font-family: var(--font-sans); }
+    .doc { max-width: 720px; margin: 0 auto; padding: 56px 24px 96px; }
+    .doc h1 { font-size: 38px; line-height: 1.15; letter-spacing: -1px; margin: 0 0 10px; color: var(--text-0); }
+    .doc h2 { font-size: 21px; margin: 44px 0 12px; color: var(--text-0); letter-spacing: -0.3px; }
+    .doc h3 { font-size: 16px; margin: 26px 0 8px; color: var(--text-1); }
+    .doc p, .doc li { font-size: 15.5px; line-height: 1.65; color: var(--text-2); }
+    .doc ul { padding-left: 22px; margin: 10px 0; }
+    .doc li { margin-bottom: 7px; }
+    .doc a { color: var(--c-brand); }
+    .doc strong { color: var(--text-1); }
+    .doc code { font-family: var(--font-mono); font-size: 13.5px; color: var(--text-1); }
+    .doc table { width: 100%; border-collapse: collapse; margin: 14px 0; font-size: 14px; }
+    .doc th, .doc td { text-align: left; padding: 9px 12px; border-bottom: 1px solid var(--surface-0); color: var(--text-2); vertical-align: top; }
+    .doc th { color: var(--text-1); font-weight: 600; }
+    .updated { font-family: var(--font-mono); font-size: 13px; color: var(--text-3); margin: 0 0 34px; }
+    .callout { border: 1px solid var(--surface-0); border-left: 3px solid var(--c-brand);
+               background: var(--mantle); padding: 16px 18px; margin: 20px 0; border-radius: 0 8px 8px 0; }
+    .callout p { margin: 0; font-size: 14.5px; }
+    .callout p + p { margin-top: 10px; }
+    .draft { border: 1px solid var(--c-warn); color: var(--c-warn); padding: 12px 16px; border-radius: 8px;
+             font-family: var(--font-mono); font-size: 13px; margin: 0 0 30px; }
+    .decide { background: rgba(249, 226, 175, .14); color: var(--c-warn); font-family: var(--font-mono);
+              font-size: 12.5px; padding: 1px 6px; border-radius: 4px; }
+    .doc footer { margin-top: 56px; padding-top: 20px; border-top: 1px solid var(--surface-0);
+                  font-size: 13px; color: var(--text-3); }
+  </style>
+</head>
+<body>
+<div class="doc">
+
+  <p class="updated"><a href="/">&larr; rewind.js</a></p>
+
+  <!-- DRAFT MARKERS: the .draft banner and every .decide span must be gone
+       before this page is published. They mark text awaiting sign-off. -->
+  <p class="draft">DRAFT — not in effect. Items marked DECISION are awaiting sign-off.</p>
+
+  <h1>Security disclosure policy</h1>
+  <p class="updated">Effective <span class="decide">DECISION: publication date</span></p>
+
+  <p>rewind.js runs untrusted JavaScript from many customers on shared
+     machines. If you have found a way to break that — or anything else that
+     puts our customers or their users at risk — we want to hear about it
+     privately, and we will work with you on fixing and disclosing it.</p>
+
+  <h2>Reporting</h2>
+  <p>Write to <a href="mailto:security@loop46.com">security@loop46.com</a>
+     (Loop46, Inc. is the company that operates rewind.js)
+     <span class="decide">DECISION: also GitHub private reporting on
+     anarchodev/rove</span>. Please do not open a public issue.</p>
+  <p>Tell us what you found, how to reproduce it, what an attacker gains, and
+     whether you accessed anyone else's data along the way. A proof of concept
+     against your own app is ideal.</p>
+
+  <h2>What to expect</h2>
+  <ul>
+    <li>We acknowledge within <strong>2 working days</strong>.</li>
+    <li>We tell you within <span class="decide">DECISION: 7 days</span>
+        whether we accept the report and how severe we think it is.</li>
+    <li>We aim to fix critical issues in production within
+        <span class="decide">DECISION: 7 days</span> and others within
+        <span class="decide">DECISION: 90 days</span>, and keep you updated.</li>
+    <li>We coordinate disclosure with you: by default we publish an advisory
+        once the fix is deployed, and no later than 90 days after your report
+        unless we agree otherwise.</li>
+    <li>We do not run a bug bounty and cannot pay for reports. We will credit
+        you if you would like.</li>
+  </ul>
+
+  <h2>Scope</h2>
+  <p>Most wanted — anything that crosses a tenant boundary:</p>
+  <ul>
+    <li>reading or altering another customer's code, data, request records or
+        replays;</li>
+    <li>escaping the JavaScript sandbox or its per-request time and memory
+        limits;</li>
+    <li>reaching the control plane, another customer's storage, or internal
+        network addresses from a handler;</li>
+    <li>reading data after its key has been destroyed with
+        <code>shredKey.destroy</code> or account deletion;</li>
+    <li>flaws in sign-in, the dashboard, or the platform session cookie.</li>
+  </ul>
+  <p><strong>In scope:</strong> rewindjs.com and its subdomains, apps served
+     under rewindjs.app (tested through your own app), and the open-source
+     engine at <a href="https://github.com/anarchodev/rove">github.com/anarchodev/rove</a>.</p>
+  <p><strong>Out of scope:</strong> volumetric denial of service; rate limits
+     or resource caps on the free plan; physical attacks or social engineering
+     of our staff; bugs in a customer's own app code; issues in third-party
+     services we use (report those to them); missing hardening headers or
+     version banners without a demonstrated impact; scanner output without a
+     working proof.</p>
+
+  <h2>Rules for testing</h2>
+  <ul>
+    <li>Test only against accounts and apps you own. Signing up is free.</li>
+    <li>Do not access, change or keep other people's data. If you reach any,
+        stop, tell us, and delete what you hold.</li>
+    <li>No denial of service, no spam through outbound requests or email, and
+        nothing that degrades the service for others.</li>
+    <li>Keep the details confidential until we have agreed on disclosure.</li>
+  </ul>
+
+  <h2>Safe harbour</h2>
+  <p><span class="decide">DECISION: wording — counsel to review</span>
+     If you research and report in good faith and follow this policy, we will
+     not pursue or support legal action against you for it, including under
+     anti-hacking or anti-circumvention laws or our
+     <a href="/terms">Terms of Service</a>, and we will make that known if a
+     third party takes action against you over it. If you are unsure whether
+     something is allowed, ask us first.</p>
+
+  <h2>Machine-readable contact</h2>
+  <p>Our <a href="/.well-known/security.txt">security.txt</a> follows
+     RFC 9116.</p>
+
+  <footer>© 2026 Loop46, Inc. · <a href="/">rewind.js</a> · <a href="/support">Support</a></footer>
+
+</div>
+</body>
+</html>
