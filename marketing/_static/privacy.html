@@ -191,8 +191,9 @@
      replicated log every write passes through. Other things are stored as
      written:</p>
   <ul>
-    <li>the record fields above other than payloads — paths and query strings,
-        header values, console output, tags;</li>
+    <li>everything in a request record other than those payloads — paths and
+        query strings, header values, the store values the handler read,
+        console output and exception messages, tags;</li>
     <li>key-value store contents, unless the app wrote them under a per-person
         key, and all key names;</li>
     <li>deployed code and static files.</li>
@@ -233,9 +234,11 @@
      request's recorded payloads and the key-value values it writes are then
      encrypted under that person's own key. <code>shredKey.destroy(id)</code>
      destroys the key on every server, permanently, and those payloads and
-     values become unreadable everywhere they are stored. It does not reach key
-     names, tags, paths and query strings, or recorded header values, so apps
-     should keep identifying details out of those.</p>
+     values become unreadable everywhere they are stored. It does not yet reach
+     the rest of a request record — paths and query strings, recorded header
+     values, store values the handler read, console output, exception messages
+     and tags — nor store key names. Apps should keep identifying details out
+     of those.</p>
 
   <h3>Account data</h3>
   <p>Kept while your account is open. When you delete your account, see section
