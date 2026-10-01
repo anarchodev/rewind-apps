@@ -577,7 +577,7 @@ export function deriveWireResponse(result, responseGlobal, effects, activationKi
     };
 }
 
-export function buildRequestEpilogue({ record = {}, requestReads = null, bodyBytes = null, exportName = "default", binaryBody = false, activation = "inbound", ctx = undefined, activationBag = undefined, result = null, middlewarePath = null, tenant = null, sagaId = null, captured = true, kvRefusals = null, payloadUnresolved = null } = {}) {
+export function buildRequestEpilogue({ record = {}, requestReads = null, bodyBytes = null, exportName = "default", binaryBody = false, activation = "inbound", ctx = undefined, activationBag = undefined, result = null, middlewarePath = null, tenant = null, sagaId = null, captured = true, kvRefusals = null, payloadUnresolved = null, random = null } = {}) {
     const reads = foldRequestReads(requestReads);
 
     const rawPath = record.path || "/";
@@ -638,6 +638,9 @@ export function buildRequestEpilogue({ record = {}, requestReads = null, bodyByt
         // Defaults TRUE: the shell only ever replays captures, so this changes
         // nothing there. The conformance suite passes false.
         captured: captured !== false,
+        // The capture's crypto.* draws (rtap.mjs `drawListFromRandom`), which
+        // the recorders replay in order. Null replays crypto.* from the seed.
+        random: random,
         // Outcome-replay (rove#516): guard refusals the capture recorded,
         // keyed "s"/"d" + key → the refusal CODE. On a captured world the
         // kv wrapper throws these verbatim and decides NOTHING itself — a
@@ -746,6 +749,9 @@ export function buildRequestEpilogue({ record = {}, requestReads = null, bodyByt
         "  globalThis.__rove_email_sends = 0;\n" +
         "  globalThis.__rove_activation_kind = D.kind;\n" +
         "  globalThis.__rove_captured = D.captured;\n" +
+        "  globalThis.__rove_random = D.random;\n" +
+        "  globalThis.__rove_random_pos = 0;\n" +
+        "  globalThis.__rove_random_off = 0;\n" +
         // The recorders make private bookkeeping reads under
         // `__rove_store/` — an outbound-budget marker, the admin gate, the
         // operator root token. No capture contains them (production has no

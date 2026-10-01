@@ -31,7 +31,7 @@
 //   ✗ scrubber drag
 //   ✗ variables drawer (needs engine.inspectAt — wired in phase C)
 
-import { buildTapesFromBlobs } from "./rtap.mjs";
+import { buildTapesFromBlobs, drawListFromRandom } from "./rtap.mjs";
 import { buildRequestEpilogue, exportForActivation, deriveActivationSurface, resolveMiddleware, MIDDLEWARE_PATHS, REPLAY_OUTPUT_KEY } from "./request-replay.mjs";
 import { SYSTEM_MODULES } from "./arena-system-modules.js";
 import { CursorEngine } from "./cursor.mjs";
@@ -2926,6 +2926,8 @@ async function main() {
     const epilogue = buildRequestEpilogue({
         record: bundle.request || {},
         requestReads: tapes.request_reads,
+        // The capture's crypto.* draws, replayed in order (rove#993).
+        random: drawListFromRandom(tapes.random),
         // Outcome-replay (rove#516): the capture's guard refusals ride the
         // kv tape (outcome=refused, value=code); the wrapper throws them
         // verbatim and decides nothing itself.

@@ -45,7 +45,7 @@ env:
   # The pin also predates rove#599, which added `@rewind/export` to the CLI's
   # embedded first-party set — without it `rewind test ./admin` cannot resolve
   # the admin manifest's dependency at all.
-  ROVE_REF: ada5b504cff530952cd01672d8f18e763d5d1f0b
+  ROVE_REF: a8553e185993005cf32ac30f40fd04f47b5e0c0c
   ZIG_VERSION: 0.15.2
 
 jobs:

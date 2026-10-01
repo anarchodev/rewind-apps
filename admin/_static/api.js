@@ -776,6 +776,8 @@ export const api = {
       // The activation's own record: the resolved export, and the Msg of a
       // ws_message (the [opcode][data] frame) or a wake_batch (the bag).
       activation: decodeB64(tapesField.activation_tape_b64),
+      // The activation's crypto.* draws (RTAP channel 6, rove#993).
+      random: decodeB64(tapesField.random_tape_b64),
     };
     // The resolved dispatch export the activation actually ran (the
     // `{to}` override or onFetchResult/Chunk/Done), recorded server-side

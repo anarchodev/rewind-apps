@@ -80,7 +80,11 @@ export const RTAP_MAGIC   = 0x52544150;
 // as `activation_tape_b64` instead of a raw `activation_bytes_b64`. The
 // logs door opens every payload and strips every wrap before a record
 // reaches this reader, so a v12 tape here is always plaintext.
-export const RTAP_VERSION = 12;
+// v13 adds the `random` channel: crypto.* draws, recorded instead of derived
+// from the seed (rove#993). Its entries are typed — [u8 kind][u32 len][lp
+// bytes][lp key] — and a kind this reader doesn't know is rejected, never
+// skipped, since skipping would replay later draws at the wrong offsets.
+export const RTAP_VERSION = 13;
 // The oldest layout this reader still understands (mirrors
 // src/replay/tape_decode.zig MIN_VERSION).
 //
@@ -113,6 +117,12 @@ export const CHANNEL_FETCH_RESPONSES = 2;
 export const CHANNEL_TRIGGER_PAYLOAD = 3;
 export const CHANNEL_REQUEST_READS = 4;
 export const CHANNEL_ACTIVATION    = 5;
+export const CHANNEL_RANDOM        = 6;
+
+// `random` entry kinds (rove src/tape/root.zig `RandomKind`). Only the kinds
+// this version produces; 1 (a secret-handle mint) is a later version's.
+export const RANDOM_DRAW   = 0;
+export const RANDOM_ELIDED = 2;
 
 // `request_reads` entry kinds — mirrors `RequestReadKind` in
 // src/tape/root.zig.
@@ -296,6 +306,17 @@ function decodeEntry(channel, bytes, version) {
             const body_key = off < bytes.length ? readLenPrefixed() : new Uint8Array(0);
             return { export_name, pool_ref, ref_len: pool_ref.len, inline_bytes, body_key };
         }
+        // The activation's crypto.* draws, in drawn order (v13).
+        case CHANNEL_RANDOM: {
+            const kind = view.getUint8(off); off += 1;
+            if (kind !== RANDOM_DRAW && kind !== RANDOM_ELIDED) {
+                throw new Error("unknown RTAP random kind " + kind);
+            }
+            const len = view.getUint32(off, false); off += 4;
+            const inline_bytes = readLenPrefixed();
+            const body_key = readLenPrefixed();
+            return { kind, len, inline_bytes, body_key };
+        }
         default:
             throw new Error("unknown RTAP channel " + channel);
     }
@@ -378,10 +399,10 @@ export function serializeTape(channel, entries) {
 // The WASM-side bindings consume Module.tapes with one array per
 // channel name (kv, module). Each array entry has the shape
 // decodeEntry returns. Cursors are added lazily by the EM_JS host
-// imports on first access. `Math.random` + `crypto.*` +
-// `Date.now()` are NOT tape-driven post §9 + fold-in — they
-// draw from per-context state seeded once via
-// `arena_set_random_seed` + `arena_set_date_now`.
+// imports on first access. `Math.random` + `Date.now()` are NOT
+// tape-driven — they draw from per-context state seeded once via
+// `arena_set_random_seed` + `arena_set_date_now`. `crypto.*` replays the
+// `random` channel (`drawListFromRandom`).
 
 export function buildTapesFromBlobs(blobs) {
     const out = {};
@@ -396,6 +417,7 @@ export function buildTapesFromBlobs(blobs) {
         fetch_responses: CHANNEL_FETCH_RESPONSES,
         trigger_payload: CHANNEL_TRIGGER_PAYLOAD,
         activation: CHANNEL_ACTIVATION,
+        random: CHANNEL_RANDOM,
     };
     for (const name of Object.keys(map)) {
         const blob = blobs[name];
@@ -407,4 +429,19 @@ export function buildTapesFromBlobs(blobs) {
         out[name] = entries;
     }
     return out;
+}
+
+// The decoded `random` channel as the replay recorders consume it
+// (rove system_recorders.js `replayDraws`): an ordered list of
+// `{draw:"<hex>"}` runs, `{unkept:n}` for draws whose bytes are not here (a
+// run the logs door could not open), and `{elided:n}` for draws past the
+// recording cap. Mirrors rove export_fixture.zig's world `random` list.
+export function drawListFromRandom(entries) {
+    return (entries || []).map((e) => {
+        if (e.kind === RANDOM_ELIDED) return { elided: e.len };
+        if (e.inline_bytes.length === 0 || e.body_key.length > 0) return { unkept: e.len };
+        let hex = "";
+        for (const b of e.inline_bytes) hex += (b < 16 ? "0" : "") + b.toString(16);
+        return { draw: hex };
+    });
 }
