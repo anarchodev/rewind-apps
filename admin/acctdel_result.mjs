@@ -5,6 +5,8 @@
 // The logic lives with its siblings in index.mjs; this is the door.
 import { onAcctdelCpDelete } from "./index.mjs";
 
-export default function () {
-    return onAcctdelCpDelete();
+// The activation's capabilities pass straight through: the continuation
+// reads and writes this tenant's kv, and receives it like every export.
+export default function (caps) {
+    return onAcctdelCpDelete(caps);
 }
