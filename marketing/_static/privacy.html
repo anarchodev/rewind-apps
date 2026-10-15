@@ -143,9 +143,9 @@
 
   <h3>Our websites</h3>
   <p>rewindjs.com and docs.rewindjs.com are static pages. We do not run
-     analytics on them and set no cookies there. Until we finish removing them,
-     some pages load fonts or icons from third parties, who receive your IP
-     address and browser details when they do; see section 7.</p>
+     analytics on them and set no cookies there. rewindjs.com loads nothing
+     from anyone else. Until we finish self-hosting its fonts, our
+     documentation site loads them from Google Fonts; see section 7.</p>
 
   <h2>4. What the platform records about traffic to apps</h2>
   <p>If you run an app on rewind.js, this is what we store about requests your
@@ -277,9 +277,10 @@
      with that provider; they are not our subprocessors.</p>
   <p>Two further services touch our websites rather than your data. Cloudflare
      provides DNS only — it answers lookups for our domains, does not carry our
-     traffic, and never sees request contents. Google Fonts and jsDelivr serve
-     fonts and icons to some of our pages and see the IP address and browser of
-     whoever loads them; we are removing both.</p>
+     traffic, and never sees request contents. Google Fonts serves the fonts
+     of our documentation site, replay viewer and dashboard, and sees the IP
+     address and browser of whoever loads them; we are moving those fonts onto
+     our own servers.</p>
   <p>We do not sell personal information, and we do not share it for
      advertising. We will update this list before adding anyone who processes
      account data or app data.</p>
