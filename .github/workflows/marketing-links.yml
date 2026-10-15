@@ -1,0 +1,25 @@
+name: marketing-links
+
+# Static checks on the marketing site: every internal link resolves, no page
+# loads from another host, no draft markers ship. The same script gates the
+# publish (the marketing tenant's `generate` hook in manifest.json); this runs
+# it on the PR, where a broken link is cheapest to fix. No secrets, no network.
+
+on:
+  pull_request:
+    paths:
+      - "marketing/**"
+      - ".github/workflows/marketing-links.yml"
+  push:
+    branches: [main]
+    paths:
+      - "marketing/**"
+      - ".github/workflows/marketing-links.yml"
+  workflow_dispatch: {}
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 marketing/_tests/check_links.py marketing

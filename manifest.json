@@ -35,7 +35,9 @@
       "dir": "marketing",
       "hosts": ["rewindjs.com"],
       "kind": "operator",
-      "provision": true
+      "provision": true,
+      "generate": [["python3", "marketing/_tests/check_links.py", "marketing"]],
+      "note": "generate is a gate, not a generator: a dead link, a third-party load or a draft marker aborts the publish."
     },
     {
       "tenant": "docs",
