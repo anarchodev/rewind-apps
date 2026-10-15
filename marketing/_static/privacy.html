@@ -205,6 +205,7 @@
     <tr><th>What</th><th>Where</th></tr>
     <tr><td>Handlers running, the databases behind them, and the replicated log</td><td>Beauharnois, Quebec, <strong>Canada</strong> (OVHcloud)</td></tr>
     <tr><td>Request records, request bodies, code bundles, static files, exports</td><td>Virginia, <strong>USA</strong> (OVHcloud)</td></tr>
+    <tr><td>Backups of all of the above</td><td>Oregon, <strong>USA</strong> (OVHcloud)</td></tr>
   </table>
   <p>We are a United States company. <strong>No data is stored in the European
      Union.</strong> For people in the EEA, the UK or Switzerland, transfers to
@@ -235,11 +236,27 @@
      request's recorded payloads and the key-value values it writes are then
      encrypted under that person's own key. <code>shredKey.destroy(id)</code>
      destroys the key on every server, permanently, and those payloads and
-     values become unreadable everywhere they are stored. It does not yet reach
+     values become unreadable on our live systems at once, and in our backups
+     once the backups taken before it expire (see Backups below). It does not
+     yet reach
      the rest of a request record — paths and query strings, recorded header
      values, store values the handler read, console output, exception messages
      and tags — nor store key names. Apps should keep identifying details out
      of those.</p>
+
+  <h3>Backups</h3>
+  <p>Once a day we back up every app's data stores and encryption keys, and
+     the stored request records, request bodies, code and files, to separate
+     OVHcloud storage in Oregon, USA, under separate credentials. The keys in a
+     backup are themselves encrypted under a key that is never backed up. We
+     keep the last 14 daily backups and 8 weekly ones, so each backup is
+     deleted about 10 weeks after it is taken.</p>
+  <p>That has a cost worth stating: a backup taken before an erasure or an
+     account deletion still holds the erased data, and the key that opens it,
+     until it expires. <strong>An erasure is complete in our backups about 10
+     weeks after it is made.</strong> Backups are with the same provider as
+     the live data, so they protect against our mistakes and failed servers,
+     not against losing our OVHcloud account.</p>
 
   <h3>Account data</h3>
   <p>Kept while your account is open. When you delete your account, see section
@@ -249,7 +266,7 @@
   <table>
     <tr><th>Who</th><th>What for</th><th>What they see</th><th>Where</th></tr>
     <tr><td>OVHcloud (Canada)</td><td>Servers that run apps</td><td>Everything apps process</td><td>Canada</td></tr>
-    <tr><td>OVHcloud (US)</td><td>Object storage</td><td>Request records and bodies, code, static files, exports — payloads encrypted as in section 4</td><td>USA</td></tr>
+    <tr><td>OVHcloud (US)</td><td>Object storage and backups</td><td>Request records and bodies, code, static files, exports — payloads encrypted as in section 4 — and backups of all app data</td><td>USA (Virginia; backups in Oregon)</td></tr>
     <tr><td>Resend</td><td>Sign-in and team-invitation email</td><td>Recipient address and message</td><td>USA</td></tr>
     <tr><td>Grafana Labs (Grafana Cloud)</td><td>Metrics, service logs, alerting</td><td>App identifiers and hostnames, service health; no request contents</td><td>USA</td></tr>
     <tr><td>Tuta (Tutao GmbH)</td><td>Our email inboxes</td><td>Messages you send to our @loop46.com addresses</td><td>Germany</td></tr>
@@ -287,12 +304,15 @@
 
   <h3>What deleting an account does to app data</h3>
   <p>Each deleted app's encryption key is destroyed on every server, so its
-     recorded payloads become unreadable wherever they are stored. Its code,
+     recorded payloads become unreadable on our live systems at once. Its code,
      static files, data stores and exports are deleted. What remains:</p>
   <ul>
     <li>the unencrypted fields of its request records (section 4) — hidden from
         every reading surface, and in storage until automatic deletion past the
         retention window is built;</li>
+    <li>copies in backups taken before the deletion — of the app's data and
+        key, and of your account records — until those backups expire, about
+        10 weeks later;</li>
     <li>a record that the deletion happened, including the account's email
         address, kept indefinitely as evidence that the deletion happened;</li>
     <li>the records of your own requests to our dashboard and sign-in pages
