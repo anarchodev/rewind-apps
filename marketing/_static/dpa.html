@@ -260,9 +260,11 @@
     <li><strong>Replication</strong>: every write is stored on a majority of
         three servers before it is acknowledged.</li>
     <li><strong>Backups</strong>: daily, to a separate storage region under
-        separate credentials that the live system cannot use, with each run
-        verified after it is written; servers upload with a key that cannot
-        list or delete.</li>
+        separate credentials that the live system cannot use; servers upload
+        with a key that cannot list or delete. After every run each stored
+        object is read back and checked. Restoring is tested automatically on
+        test data; a rehearsed restore of a production backup is still to
+        come.</li>
     <li><strong>Access</strong>: production access is limited to our
         operators; customer-facing access goes through sign-in by
         single-use email link.</li>
