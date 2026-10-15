@@ -1,0 +1,7 @@
+# Security contact for rewind.js, operated by Loop46, Inc.
+Contact: mailto:security@loop46.com
+Contact: https://github.com/anarchodev/rove/security/advisories/new
+Expires: 2027-04-01T00:00:00.000Z
+Preferred-Languages: en
+Canonical: https://rewindjs.com/.well-known/security.txt
+Policy: https://rewindjs.com/security
