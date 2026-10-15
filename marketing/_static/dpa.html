@@ -127,7 +127,9 @@
         <td>Tie a person's requests to them with <code>shredKey(id)</code>;
             <code>shredKey.destroy(id)</code> then makes their recorded
             payloads, and the store values written under that key,
-            permanently unreadable everywhere. Records a request never tied to a
+            permanently unreadable on our live systems at once, and in our
+            backups once those taken before it expire, about 10 weeks later
+            (section 9). Records a request never tied to a
             person can only be erased with the whole app.</td></tr>
     <tr><td>Everything else</td><td>You ask, we assist</td>
         <td>Write to <a href="mailto:privacy@loop46.com">privacy@loop46.com</a>.</td></tr>
@@ -183,11 +185,19 @@
         request records is available on request.</li>
     <li><strong>Deletion at the end of service.</strong> When an app or your
         account is deleted, the app's encryption key is destroyed on every
-        server, so all its recorded payloads become unreadable wherever they
-        are stored. Its code, static files, data store and exports are
+        server, so all its recorded payloads become unreadable on our live
+        systems at once. Its code, static files, data store and exports are
         deleted. The record fields listed in Annex 1 as unencrypted remain
         hidden in storage until automatic deletion past the retention window
         ships.</li>
+    <li><strong>Backups.</strong> Once a day we back up each app's data
+        store and encryption keys, and the stored request records, bodies,
+        code and files, to separate storage under separate credentials. Keys
+        in a backup are encrypted under a key that is never backed up. We keep
+        14 daily and 8 weekly backups, so each is deleted about 10 weeks after
+        it is taken. A backup taken before an erasure or a deletion holds the
+        erased data and its key until it expires: <strong>erasure and deletion
+        are complete in our backups about 10 weeks after they are made.</strong></li>
   </ul>
 
   <h2>10. Audits</h2>
@@ -220,7 +230,7 @@
       </ul>
       Response bodies are not recorded.</td></tr>
     <tr><th>Special categories</th><td>None intended by us. The Customer decides whether its apps process any, and is responsible for that decision in light of the recording described above.</td></tr>
-    <tr><th>Where</th><td>Running apps, their stores and the replicated log: Beauharnois, Canada. Request records, bodies, code and files: Virginia, USA.</td></tr>
+    <tr><th>Where</th><td>Running apps, their stores and the replicated log: Beauharnois, Canada. Request records, bodies, code and files: Virginia, USA. Backups of all of these: Oregon, USA.</td></tr>
   </table>
 
   <h2 id="annex-2">Annex 2 — Security measures</h2>
@@ -249,9 +259,13 @@
         values recorded only when read; response bodies not recorded.</li>
     <li><strong>Replication</strong>: every write is stored on a majority of
         three servers before it is acknowledged.</li>
+    <li><strong>Backups</strong>: daily, to a separate storage region under
+        separate credentials that the live system cannot use, with each run
+        verified after it is written; servers upload with a key that cannot
+        list or delete.</li>
     <li><strong>Access</strong>: production access is limited to our
-        operators; customer-facing access goes through sign-in by email
-        link, with link tokens stored hashed.</li>
+        operators; customer-facing access goes through sign-in by
+        single-use email link.</li>
   </ul>
   <h3>Not in place — stated so you can judge</h3>
   <ul>
@@ -261,8 +275,12 @@
         <code>shredKey</code>, store key names, code and static files are not
         encrypted by us, and we do not request encryption from our storage
         provider. Key destruction therefore does not reach them.</li>
-    <li>All three servers are in one datacenter: replication protects against
-        a server failing, not against the site failing.</li>
+    <li>All three live servers are in one datacenter. Recovery from losing
+        that site is from the last daily backup, so up to 24 hours of writes
+        could be lost, and how long such a recovery takes has not been
+        measured.</li>
+    <li>Backups are with the same provider as the live data, so they do not
+        protect against losing our account with that provider.</li>
     <li>No independent security certification or external penetration test
         yet.</li>
   </ul>
