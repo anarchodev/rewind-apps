@@ -261,8 +261,10 @@
         three servers before it is acknowledged.</li>
     <li><strong>Backups</strong>: daily, to a separate storage region under
         separate credentials that the live system cannot use; servers upload
-        with a key that cannot list or delete. After every run each stored
-        object is read back and checked. Restoring is tested automatically on
+        with a key that cannot list or delete. After every run the data-store
+        copies and keys are read back and checked; the copy of stored records,
+        code and files is checked against the run's own record of it.
+        Restoring is tested automatically on
         test data; a rehearsed restore of a production backup is still to
         come.</li>
     <li><strong>Access</strong>: production access is limited to our
